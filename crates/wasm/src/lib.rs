@@ -308,3 +308,27 @@ impl Gridline {
 pub fn engine_version() -> String {
     engine::engine_version().to_string()
 }
+
+/// Turn an action into its vocabulary name and redacted payload.
+///
+/// Redaction happens here, in the same Rust the tests cover, rather than in
+/// JavaScript: a second implementation of a privacy guarantee is a second
+/// chance to get it wrong. Returns `{"action": name, "payload": {...}}`.
+#[wasm_bindgen(js_name = describeAction)]
+pub fn describe_action(action_json: &str, mode: &str, salt: &str) -> Result<String, JsValue> {
+    let action: Action = serde_json::from_str(action_json).map_err(js_err)?;
+    let mode = engine::PrivacyMode::parse(mode)
+        .ok_or_else(|| JsValue::from_str("unknown privacy mode"))?;
+    let (name, payload) = engine::telemetry::describe(&action, mode, salt);
+    serde_json::to_string(&serde_json::json!({ "action": name, "payload": payload }))
+        .map_err(js_err)
+}
+
+/// The documented action vocabulary, for the transparency page.
+#[wasm_bindgen(js_name = actionVocabulary)]
+pub fn action_vocabulary() -> Vec<String> {
+    engine::telemetry::ACTION_VOCABULARY
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+}

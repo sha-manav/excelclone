@@ -1,0 +1,314 @@
+[
+  {
+    "action": "sheet_rename",
+    "from": "Sheet1",
+    "to": "Ledger"
+  },
+  {
+    "action": "sheet_add",
+    "name": "Rates"
+  },
+  {
+    "action": "cell_edit",
+    "sheet": "Rates",
+    "addr": {
+      "row": 0,
+      "col": 0
+    },
+    "input": "basic"
+  },
+  {
+    "action": "cell_edit",
+    "sheet": "Rates",
+    "addr": {
+      "row": 0,
+      "col": 1
+    },
+    "input": "120"
+  },
+  {
+    "action": "cell_edit",
+    "sheet": "Rates",
+    "addr": {
+      "row": 1,
+      "col": 0
+    },
+    "input": "pro"
+  },
+  {
+    "action": "cell_edit",
+    "sheet": "Rates",
+    "addr": {
+      "row": 1,
+      "col": 1
+    },
+    "input": "750"
+  },
+  {
+    "action": "cell_edit",
+    "sheet": "Ledger",
+    "addr": {
+      "row": 0,
+      "col": 0
+    },
+    "input": "member"
+  },
+  {
+    "action": "cell_edit",
+    "sheet": "Ledger",
+    "addr": {
+      "row": 0,
+      "col": 1
+    },
+    "input": "tier"
+  },
+  {
+    "action": "cell_edit",
+    "sheet": "Ledger",
+    "addr": {
+      "row": 0,
+      "col": 2
+    },
+    "input": "paid"
+  },
+  {
+    "action": "cell_edit",
+    "sheet": "Ledger",
+    "addr": {
+      "row": 0,
+      "col": 3
+    },
+    "input": "owed"
+  },
+  {
+    "action": "cell_edit",
+    "sheet": "Ledger",
+    "addr": {
+      "row": 1,
+      "col": 0
+    },
+    "input": "Ada"
+  },
+  {
+    "action": "cell_edit",
+    "sheet": "Ledger",
+    "addr": {
+      "row": 1,
+      "col": 1
+    },
+    "input": "pro"
+  },
+  {
+    "action": "cell_edit",
+    "sheet": "Ledger",
+    "addr": {
+      "row": 1,
+      "col": 2
+    },
+    "input": "750"
+  },
+  {
+    "action": "cell_edit",
+    "sheet": "Ledger",
+    "addr": {
+      "row": 2,
+      "col": 0
+    },
+    "input": "Grace"
+  },
+  {
+    "action": "cell_edit",
+    "sheet": "Ledger",
+    "addr": {
+      "row": 2,
+      "col": 1
+    },
+    "input": "basic"
+  },
+  {
+    "action": "cell_edit",
+    "sheet": "Ledger",
+    "addr": {
+      "row": 2,
+      "col": 2
+    },
+    "input": "0"
+  },
+  {
+    "action": "cell_edit",
+    "sheet": "Ledger",
+    "addr": {
+      "row": 3,
+      "col": 0
+    },
+    "input": "Alan"
+  },
+  {
+    "action": "cell_edit",
+    "sheet": "Ledger",
+    "addr": {
+      "row": 3,
+      "col": 1
+    },
+    "input": "pro"
+  },
+  {
+    "action": "cell_edit",
+    "sheet": "Ledger",
+    "addr": {
+      "row": 3,
+      "col": 2
+    },
+    "input": "150"
+  },
+  {
+    "action": "cell_edit",
+    "sheet": "Ledger",
+    "addr": {
+      "row": 4,
+      "col": 0
+    },
+    "input": "Edsger"
+  },
+  {
+    "action": "cell_edit",
+    "sheet": "Ledger",
+    "addr": {
+      "row": 4,
+      "col": 1
+    },
+    "input": "basic"
+  },
+  {
+    "action": "cell_edit",
+    "sheet": "Ledger",
+    "addr": {
+      "row": 4,
+      "col": 2
+    },
+    "input": "120"
+  },
+  {
+    "action": "cell_edit",
+    "sheet": "Ledger",
+    "addr": {
+      "row": 1,
+      "col": 3
+    },
+    "input": "=VLOOKUP(B2,Rates!A1:B2,2,FALSE)-C2"
+  },
+  {
+    "action": "fill_apply",
+    "sheet": "Ledger",
+    "source": {
+      "start": {
+        "row": 1,
+        "col": 3
+      },
+      "end": {
+        "row": 1,
+        "col": 3
+      }
+    },
+    "target": {
+      "start": {
+        "row": 1,
+        "col": 3
+      },
+      "end": {
+        "row": 4,
+        "col": 3
+      }
+    }
+  },
+  {
+    "action": "cell_edit",
+    "sheet": "Ledger",
+    "addr": {
+      "row": 0,
+      "col": 5
+    },
+    "input": "outstanding"
+  },
+  {
+    "action": "cell_edit",
+    "sheet": "Ledger",
+    "addr": {
+      "row": 1,
+      "col": 5
+    },
+    "input": "=SUM(D2:D5)"
+  },
+  {
+    "action": "range_paste",
+    "source_sheet": "Ledger",
+    "source": {
+      "start": {
+        "row": 1,
+        "col": 3
+      },
+      "end": {
+        "row": 4,
+        "col": 3
+      }
+    },
+    "target_sheet": "Ledger",
+    "target": {
+      "start": {
+        "row": 1,
+        "col": 4
+      },
+      "end": {
+        "row": 4,
+        "col": 4
+      }
+    },
+    "mode": "values",
+    "cut": false
+  },
+  {
+    "action": "sort_apply",
+    "sheet": "Ledger",
+    "range": {
+      "start": {
+        "row": 0,
+        "col": 0
+      },
+      "end": {
+        "row": 4,
+        "col": 4
+      }
+    },
+    "keys": [
+      {
+        "column": 0,
+        "ascending": true
+      }
+    ],
+    "has_header": true
+  },
+  {
+    "action": "row_insert",
+    "sheet": "Ledger",
+    "at": 1,
+    "count": 1
+  },
+  {
+    "action": "cell_edit",
+    "sheet": "Ledger",
+    "addr": {
+      "row": 1,
+      "col": 0
+    },
+    "input": "Zoe"
+  },
+  {
+    "action": "undo"
+  },
+  {
+    "action": "undo"
+  },
+  {
+    "action": "redo"
+  }
+]

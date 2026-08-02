@@ -1,0 +1,71 @@
+{
+  "sheets": [
+    {
+      "cells": {
+        "A2": {
+          "input": "=B2",
+          "value": "#CIRC!"
+        },
+        "A3": {
+          "input": "=TODAY()",
+          "value": "45292"
+        },
+        "B2": {
+          "input": "=A2",
+          "value": "#CIRC!"
+        },
+        "B3": {
+          "input": "=RAND()",
+          "value": "0.454721311943098"
+        },
+        "C2": {
+          "input": "=IF(FALSE,A2,42)",
+          "value": "42"
+        },
+        "C3": {
+          "input": "=SUM(C1:C9)",
+          "value": "#CIRC!"
+        },
+        "D2": {
+          "input": "=A2+1",
+          "value": "#CIRC!"
+        },
+        "D3": {
+          "input": "0.1",
+          "value": "0.1"
+        },
+        "E2": {
+          "input": "=1/0",
+          "value": "#DIV/0!"
+        },
+        "E3": {
+          "input": "=D3*3",
+          "value": "0.3"
+        },
+        "F2": {
+          "input": "=E2+1",
+          "value": "#DIV/0!"
+        },
+        "F3": {
+          "input": "café ☕",
+          "value": "café ☕"
+        },
+        "G2": {
+          "input": "=NOSUCH()",
+          "value": "#NAME?"
+        },
+        "G3": {
+          "input": "=#REF!",
+          "value": "#REF!"
+        },
+        "H2": {
+          "input": "=IFERROR(E2,\"caught\")",
+          "value": "caught"
+        }
+      },
+      "hidden_rows": [],
+      "merged": [],
+      "name": "Sheet1"
+    }
+  ]
+}

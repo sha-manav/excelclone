@@ -1,0 +1,138 @@
+{
+  "sheets": [
+    {
+      "cells": {
+        "A1": {
+          "input": "member",
+          "value": "member"
+        },
+        "A3": {
+          "input": "Ada",
+          "value": "Ada"
+        },
+        "A4": {
+          "input": "Alan",
+          "value": "Alan"
+        },
+        "A5": {
+          "input": "Edsger",
+          "value": "Edsger"
+        },
+        "A6": {
+          "input": "Grace",
+          "value": "Grace"
+        },
+        "B1": {
+          "input": "tier",
+          "value": "tier"
+        },
+        "B3": {
+          "input": "pro",
+          "value": "pro"
+        },
+        "B4": {
+          "input": "pro",
+          "value": "pro"
+        },
+        "B5": {
+          "input": "basic",
+          "value": "basic"
+        },
+        "B6": {
+          "input": "basic",
+          "value": "basic"
+        },
+        "C1": {
+          "input": "paid",
+          "value": "paid"
+        },
+        "C3": {
+          "input": "750",
+          "value": "750"
+        },
+        "C4": {
+          "input": "150",
+          "value": "150"
+        },
+        "C5": {
+          "input": "120",
+          "value": "120"
+        },
+        "C6": {
+          "input": "0",
+          "value": "0"
+        },
+        "D1": {
+          "input": "owed",
+          "value": "owed"
+        },
+        "D3": {
+          "input": "=VLOOKUP(B3,Rates!A1:B2,2,FALSE)-C3",
+          "value": "0"
+        },
+        "D4": {
+          "input": "=VLOOKUP(B4,Rates!A2:B3,2,FALSE)-C4",
+          "value": "600"
+        },
+        "D5": {
+          "input": "=VLOOKUP(B5,Rates!A3:B4,2,FALSE)-C5",
+          "value": "#N/A"
+        },
+        "D6": {
+          "input": "=VLOOKUP(B6,Rates!A4:B5,2,FALSE)-C6",
+          "value": "#N/A"
+        },
+        "E3": {
+          "input": "0",
+          "value": "0"
+        },
+        "E4": {
+          "input": "#N/A",
+          "value": "#N/A"
+        },
+        "E5": {
+          "input": "#N/A",
+          "value": "#N/A"
+        },
+        "E6": {
+          "input": "#N/A",
+          "value": "#N/A"
+        },
+        "F1": {
+          "input": "outstanding",
+          "value": "outstanding"
+        },
+        "F3": {
+          "input": "=SUM(D3:D6)",
+          "value": "#N/A"
+        }
+      },
+      "hidden_rows": [],
+      "merged": [],
+      "name": "Ledger"
+    },
+    {
+      "cells": {
+        "A1": {
+          "input": "basic",
+          "value": "basic"
+        },
+        "A2": {
+          "input": "pro",
+          "value": "pro"
+        },
+        "B1": {
+          "input": "120",
+          "value": "120"
+        },
+        "B2": {
+          "input": "750",
+          "value": "750"
+        }
+      },
+      "hidden_rows": [],
+      "merged": [],
+      "name": "Rates"
+    }
+  ]
+}

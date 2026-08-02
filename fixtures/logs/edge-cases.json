@@ -1,0 +1,202 @@
+[
+  {
+    "action": "cell_edit",
+    "sheet": "Sheet1",
+    "addr": {
+      "row": 2,
+      "col": 0
+    },
+    "input": "=B3"
+  },
+  {
+    "action": "cell_edit",
+    "sheet": "Sheet1",
+    "addr": {
+      "row": 2,
+      "col": 1
+    },
+    "input": "=A3"
+  },
+  {
+    "action": "cell_edit",
+    "sheet": "Sheet1",
+    "addr": {
+      "row": 2,
+      "col": 2
+    },
+    "input": "=IF(FALSE,A3,42)"
+  },
+  {
+    "action": "cell_edit",
+    "sheet": "Sheet1",
+    "addr": {
+      "row": 2,
+      "col": 3
+    },
+    "input": "=A3+1"
+  },
+  {
+    "action": "cell_edit",
+    "sheet": "Sheet1",
+    "addr": {
+      "row": 2,
+      "col": 4
+    },
+    "input": "=1/0"
+  },
+  {
+    "action": "cell_edit",
+    "sheet": "Sheet1",
+    "addr": {
+      "row": 2,
+      "col": 5
+    },
+    "input": "=E3+1"
+  },
+  {
+    "action": "cell_edit",
+    "sheet": "Sheet1",
+    "addr": {
+      "row": 2,
+      "col": 6
+    },
+    "input": "=NOSUCH()"
+  },
+  {
+    "action": "cell_edit",
+    "sheet": "Sheet1",
+    "addr": {
+      "row": 2,
+      "col": 7
+    },
+    "input": "=IFERROR(E3,\"caught\")"
+  },
+  {
+    "action": "cell_edit",
+    "sheet": "Sheet1",
+    "addr": {
+      "row": 3,
+      "col": 0
+    },
+    "input": "=TODAY()"
+  },
+  {
+    "action": "cell_edit",
+    "sheet": "Sheet1",
+    "addr": {
+      "row": 3,
+      "col": 1
+    },
+    "input": "=RAND()"
+  },
+  {
+    "action": "cell_edit",
+    "sheet": "Sheet1",
+    "addr": {
+      "row": 3,
+      "col": 2
+    },
+    "input": "=SUM(C1:C10)"
+  },
+  {
+    "action": "cell_edit",
+    "sheet": "Sheet1",
+    "addr": {
+      "row": 3,
+      "col": 3
+    },
+    "input": "0.1"
+  },
+  {
+    "action": "cell_edit",
+    "sheet": "Sheet1",
+    "addr": {
+      "row": 3,
+      "col": 4
+    },
+    "input": "=D4*3"
+  },
+  {
+    "action": "cell_edit",
+    "sheet": "Sheet1",
+    "addr": {
+      "row": 3,
+      "col": 5
+    },
+    "input": "café ☕"
+  },
+  {
+    "action": "sheet_add",
+    "name": "Other"
+  },
+  {
+    "action": "cell_edit",
+    "sheet": "Other",
+    "addr": {
+      "row": 0,
+      "col": 0
+    },
+    "input": "=Sheet1!E3"
+  },
+  {
+    "action": "sheet_rename",
+    "from": "Other",
+    "to": "Renamed"
+  },
+  {
+    "action": "cell_edit",
+    "sheet": "Sheet1",
+    "addr": {
+      "row": 3,
+      "col": 6
+    },
+    "input": "=Renamed!A1"
+  },
+  {
+    "action": "sheet_delete",
+    "name": "Renamed"
+  },
+  {
+    "action": "row_delete",
+    "sheet": "Sheet1",
+    "at": 0,
+    "count": 1
+  },
+  {
+    "action": "cell_edit",
+    "sheet": "NoSuchSheet",
+    "addr": {
+      "row": 0,
+      "col": 0
+    },
+    "input": "1"
+  },
+  {
+    "action": "cell_edit",
+    "sheet": "Sheet1",
+    "addr": {
+      "row": 0,
+      "col": 0
+    },
+    "input": "=1+"
+  },
+  {
+    "action": "sheet_delete",
+    "name": "Sheet1"
+  },
+  {
+    "action": "undo"
+  },
+  {
+    "action": "undo"
+  },
+  {
+    "action": "redo"
+  },
+  {
+    "action": "redo"
+  },
+  {
+    "action": "redo"
+  }
+]

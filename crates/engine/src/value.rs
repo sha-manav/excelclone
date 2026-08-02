@@ -86,19 +86,30 @@ impl Value {
     }
 }
 
-/// General number formatting: integers without decimal point, up to 15
-/// significant digits, no trailing zeros.
+/// General number formatting: integers without a decimal point, otherwise at
+/// most 15 significant digits with no trailing zeros.
+///
+/// The 15-digit cap is what makes Gridline agree with Excel on ordinary
+/// arithmetic. A double cannot represent 0.1 exactly, so `0.1*3` is really
+/// 0.30000000000000004; Excel rounds display to 15 significant digits and
+/// shows `0.3`. Printing the shortest round-trip representation instead would
+/// expose float noise on almost every decimal a user ever sees.
 pub fn format_number_general(n: f64) -> String {
     if n == n.trunc() && n.abs() < 1e15 {
         // Integral values print without a decimal point.
-        format!("{}", n as i64)
-    } else {
-        let mut out = format!("{}", n);
-        if out.contains('e') {
-            out = format!("{:E}", n);
-        }
-        out
+        return format!("{}", n as i64);
     }
+    // Round to 15 significant digits, then print the shortest representation
+    // of *that* value.
+    let rounded: f64 = format!("{:.14e}", n).parse().unwrap_or(n);
+    if rounded == rounded.trunc() && rounded.abs() < 1e15 {
+        return format!("{}", rounded as i64);
+    }
+    let mut out = format!("{}", rounded);
+    if out.contains('e') {
+        out = format!("{:E}", rounded);
+    }
+    out
 }
 
 #[cfg(test)]
@@ -118,6 +129,23 @@ mod tests {
         ] {
             assert_eq!(ErrorKind::from_code(e.code()), Some(e));
         }
+    }
+
+    #[test]
+    fn general_format_matches_excel_at_15_significant_digits() {
+        // All Excel-verified. Without the 15-digit cap the first three would
+        // show their raw float representation instead.
+        assert_eq!(format_number_general(0.1 * 3.0), "0.3");
+        assert_eq!(format_number_general(0.1 + 0.2), "0.3");
+        assert_eq!(format_number_general(1.1 * 3.0), "3.3");
+        assert_eq!(format_number_general(1.0 / 3.0), "0.333333333333333");
+        assert_eq!(format_number_general(2.0 / 3.0), "0.666666666666667");
+        assert_eq!(format_number_general(1.5), "1.5");
+        assert_eq!(format_number_general(-2.25), "-2.25");
+        assert_eq!(format_number_general(42.0), "42");
+        assert_eq!(format_number_general(-0.0), "0");
+        // Rounding at the cap must not turn a fraction into a bogus integer.
+        assert_eq!(format_number_general(0.9999999999999999), "1");
     }
 
     #[test]

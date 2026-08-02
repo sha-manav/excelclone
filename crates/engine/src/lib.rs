@@ -16,11 +16,13 @@ pub mod ops;
 pub mod parser;
 pub mod refs;
 pub mod serial;
+pub mod telemetry;
 pub mod value;
 
 pub use addr::{CellAddr, RangeAddr};
 pub use engine::{Action, ApplyError, Engine, Event, FilterSpec, PasteMode, SortKey};
 pub use model::{Cell, CellContent, CellKey, Sheet, SheetId, Workbook};
+pub use telemetry::{EventEnvelope, PrivacyMode};
 pub use value::{ErrorKind, Value};
 
 pub fn engine_version() -> &'static str {
