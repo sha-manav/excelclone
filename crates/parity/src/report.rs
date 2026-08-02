@@ -318,7 +318,10 @@ mod tests {
     fn targets() -> Targets {
         Targets {
             tier1: vec!["SUM".into(), "IF".into()],
-            tier2: vec!["SUMPRODUCT".into()],
+            // Deliberately not a real function: the test is about counting
+            // what is missing, and naming something we might implement later
+            // would make it fail for the wrong reason.
+            tier2: vec!["NOTAFUNCTION".into()],
         }
     }
 
@@ -375,7 +378,7 @@ mod tests {
         };
         let text = render(&s);
         assert!(text.contains("2 of 3 target functions"), "{text}");
-        assert!(text.contains("| `SUMPRODUCT` | — |"), "{text}");
+        assert!(text.contains("| `NOTAFUNCTION` | — |"), "{text}");
     }
 
     #[test]

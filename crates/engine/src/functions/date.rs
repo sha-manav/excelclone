@@ -290,6 +290,94 @@ pub fn randbetween(ctx: &EvalCtx, args: &[Expr]) -> Value {
     })())
 }
 
+// ---------------------------------------------------------------------------
+// Time of day, and the rest of the date arithmetic
+// ---------------------------------------------------------------------------
+
+/// TIME(hour, minute, second): a fraction of a day, always in [0, 1).
+///
+/// Excel wraps rather than erroring — TIME(25,0,0) is 1am — because the result
+/// is a time of day and a time of day has nowhere else to go.
+pub fn time(ctx: &EvalCtx, args: &[Expr]) -> Value {
+    if let Err(k) = expect_args(args, 3, 3) {
+        return Value::Error(k);
+    }
+    num_result((|| {
+        let h = ctx.eval_number(&args[0])?.trunc();
+        let m = ctx.eval_number(&args[1])?.trunc();
+        let s = ctx.eval_number(&args[2])?.trunc();
+        let total = h * 3600.0 + m * 60.0 + s;
+        if total < 0.0 {
+            return Err(ErrorKind::Num);
+        }
+        Ok((total % 86_400.0) / 86_400.0)
+    })())
+}
+
+fn time_part(ctx: &EvalCtx, args: &[Expr], f: impl Fn((u32, u32, u32)) -> f64) -> Value {
+    if let Err(k) = expect_args(args, 1, 1) {
+        return Value::Error(k);
+    }
+    num_result(arg_serial(ctx, &args[0]).map(|s| f(serial::serial_to_hms(s))))
+}
+
+pub fn hour(ctx: &EvalCtx, args: &[Expr]) -> Value {
+    time_part(ctx, args, |(h, _, _)| h as f64)
+}
+
+pub fn minute(ctx: &EvalCtx, args: &[Expr]) -> Value {
+    time_part(ctx, args, |(_, m, _)| m as f64)
+}
+
+pub fn second(ctx: &EvalCtx, args: &[Expr]) -> Value {
+    time_part(ctx, args, |(_, _, s)| s as f64)
+}
+
+/// DATEVALUE(text): the serial for a date written as text.
+///
+/// Text that is already a number is refused: DATEVALUE("45292") is #VALUE! in
+/// Excel, because the function converts a *date* and a bare number is not one.
+pub fn datevalue(ctx: &EvalCtx, args: &[Expr]) -> Value {
+    if let Err(k) = expect_args(args, 1, 1) {
+        return Value::Error(k);
+    }
+    num_result((|| {
+        let text = ctx.eval_text(&args[0])?;
+        serial::parse_date_text(&text)
+            .map(f64::floor)
+            .ok_or(ErrorKind::Value)
+    })())
+}
+
+/// EDATE(start, months): the same day, `months` away, clamped to the month's
+/// length — so a month on from 31 January is 28 or 29 February, never March.
+pub fn edate(ctx: &EvalCtx, args: &[Expr]) -> Value {
+    if let Err(k) = expect_args(args, 2, 2) {
+        return Value::Error(k);
+    }
+    num_result((|| {
+        let start = arg_serial(ctx, &args[0])?;
+        let months = ctx.eval_number(&args[1])?.trunc() as i64;
+        let shifted = serial::add_months(start, months).ok_or(ErrorKind::Num)?;
+        serial::date_to_serial(shifted).ok_or(ErrorKind::Num)
+    })())
+}
+
+/// DAYS(end, start): a signed day count, end minus start.
+///
+/// Note the argument order — end first, which is the opposite of DATEDIF and
+/// of every other two-date function in the language.
+pub fn days(ctx: &EvalCtx, args: &[Expr]) -> Value {
+    if let Err(k) = expect_args(args, 2, 2) {
+        return Value::Error(k);
+    }
+    num_result((|| {
+        let end = arg_serial(ctx, &args[0])?.floor();
+        let start = arg_serial(ctx, &args[1])?.floor();
+        Ok(end - start)
+    })())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

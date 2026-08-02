@@ -1341,6 +1341,7 @@ impl Engine {
         let ctx = EvalCtx {
             wb: &self.wb,
             sheet: key.sheet,
+            at: key.addr,
             now_ms: self.now_ms,
         };
         let ast = ast.clone();

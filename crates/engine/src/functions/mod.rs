@@ -54,6 +54,7 @@ pub const IMPLEMENTED: &[&str] = &[
     "LARGE",
     "SMALL",
     "RANK",
+    "SUMPRODUCT",
     // Logic
     "IF",
     "IFS",
@@ -78,6 +79,10 @@ pub const IMPLEMENTED: &[&str] = &[
     "MATCH",
     "XLOOKUP",
     "CHOOSE",
+    "ROW",
+    "COLUMN",
+    "ROWS",
+    "COLUMNS",
     // Text
     "CONCAT",
     "CONCATENATE",
@@ -120,6 +125,13 @@ pub const IMPLEMENTED: &[&str] = &[
     "WEEKDAY",
     "RAND",
     "RANDBETWEEN",
+    "TIME",
+    "HOUR",
+    "MINUTE",
+    "SECOND",
+    "DATEVALUE",
+    "EDATE",
+    "DAYS",
 ];
 
 pub fn call(ctx: &EvalCtx, name: &str, args: &[Expr]) -> Value {
@@ -156,6 +168,7 @@ pub fn call(ctx: &EvalCtx, name: &str, args: &[Expr]) -> Value {
         "LARGE" => math::large(ctx, args),
         "SMALL" => math::small(ctx, args),
         "RANK" => math::rank(ctx, args),
+        "SUMPRODUCT" => math::sumproduct(ctx, args),
         // Logic
         "IF" => logic::if_fn(ctx, args),
         "IFS" => logic::ifs(ctx, args),
@@ -180,6 +193,10 @@ pub fn call(ctx: &EvalCtx, name: &str, args: &[Expr]) -> Value {
         "MATCH" => lookup::match_fn(ctx, args),
         "XLOOKUP" => lookup::xlookup(ctx, args),
         "CHOOSE" => lookup::choose(ctx, args),
+        "ROW" => lookup::row(ctx, args),
+        "COLUMN" => lookup::column(ctx, args),
+        "ROWS" => lookup::rows(ctx, args),
+        "COLUMNS" => lookup::columns(ctx, args),
         // Text
         "CONCAT" => text::concat(ctx, args),
         "CONCATENATE" => text::concatenate(ctx, args),
@@ -222,6 +239,13 @@ pub fn call(ctx: &EvalCtx, name: &str, args: &[Expr]) -> Value {
         "WEEKDAY" => date::weekday(ctx, args),
         "RAND" => date::rand(ctx, args),
         "RANDBETWEEN" => date::randbetween(ctx, args),
+        "TIME" => date::time(ctx, args),
+        "HOUR" => date::hour(ctx, args),
+        "MINUTE" => date::minute(ctx, args),
+        "SECOND" => date::second(ctx, args),
+        "DATEVALUE" => date::datevalue(ctx, args),
+        "EDATE" => date::edate(ctx, args),
+        "DAYS" => date::days(ctx, args),
         _ => Value::Error(ErrorKind::Name),
     }
 }

@@ -9,6 +9,7 @@
 //!   abort the scan.
 
 use super::expect_args;
+use crate::addr::{CellAddr, RangeAddr};
 use crate::ast::Expr;
 use crate::eval::{compare_values, EvalCtx};
 use crate::value::{ErrorKind, Value};
@@ -442,6 +443,85 @@ fn wildcard_matches(pattern: &str, text: &str) -> bool {
     }
     // Whatever is left of the pattern must be able to match nothing.
     pat[p..].iter().all(|tk| matches!(tk, Tok::Star))
+}
+
+// ---------------------------------------------------------------------------
+// Reference functions
+// ---------------------------------------------------------------------------
+
+/// The range an argument denotes, or the cell it denotes as a 1x1 range.
+///
+/// `ROWS(A1)` is 1 rather than an error, so a single reference has to read as
+/// a range here even though everywhere else it degrades to a scalar.
+fn arg_range(ctx: &EvalCtx, e: &Expr) -> Result<RangeAddr, ErrorKind> {
+    match ctx.eval_operand(e) {
+        crate::eval::Operand::Range { range, .. } => Ok(range),
+        // A scalar where a reference was wanted: Excel says #VALUE!, and it is
+        // worth being loud because `ROWS(3)` is almost always a typo.
+        crate::eval::Operand::Scalar(_) => Err(ErrorKind::Value),
+    }
+}
+
+/// ROW([reference]): the row number, 1-based, of the reference's first cell —
+/// or of the cell the formula is in when there is no argument.
+pub fn row(ctx: &EvalCtx, args: &[Expr]) -> Value {
+    reference_position(ctx, args, |r| r.start.row, |a| a.row)
+}
+
+/// COLUMN([reference]): the same for columns. A is 1, not 0.
+pub fn column(ctx: &EvalCtx, args: &[Expr]) -> Value {
+    reference_position(ctx, args, |r| r.start.col, |a| a.col)
+}
+
+fn reference_position(
+    ctx: &EvalCtx,
+    args: &[Expr],
+    of_range: impl Fn(&RangeAddr) -> u32,
+    of_cell: impl Fn(&CellAddr) -> u32,
+) -> Value {
+    if let Err(k) = expect_args(args, 0, 1) {
+        return Value::Error(k);
+    }
+    let index = match args.first() {
+        // No argument: the cell holding the formula. This is what makes
+        // ROW() useful for numbering a column as it is filled down.
+        None => of_cell(&ctx.at),
+        Some(e) => match ctx.eval_operand(e) {
+            crate::eval::Operand::Range { range, .. } => of_range(&range),
+            // A single cell reference reaches here as a scalar, so the
+            // address has to come from the expression rather than the value.
+            crate::eval::Operand::Scalar(_) => match e {
+                Expr::Cell(c) => of_cell(&c.r.addr()),
+                _ => return Value::Error(ErrorKind::Value),
+            },
+        },
+    };
+    // Addresses are 0-based inside the engine and 1-based in the language.
+    Value::Number(index as f64 + 1.0)
+}
+
+/// ROWS(range) / COLUMNS(range): how many, not which.
+pub fn rows(ctx: &EvalCtx, args: &[Expr]) -> Value {
+    reference_extent(ctx, args, |r| r.end.row - r.start.row + 1)
+}
+
+pub fn columns(ctx: &EvalCtx, args: &[Expr]) -> Value {
+    reference_extent(ctx, args, |r| r.end.col - r.start.col + 1)
+}
+
+fn reference_extent(ctx: &EvalCtx, args: &[Expr], f: impl Fn(&RangeAddr) -> u32) -> Value {
+    if let Err(k) = expect_args(args, 1, 1) {
+        return Value::Error(k);
+    }
+    match args[0] {
+        // A single cell is a 1x1 range; `arg_range` cannot see that because
+        // the evaluator has already degraded it to a scalar.
+        Expr::Cell(_) => Value::Number(1.0),
+        _ => match arg_range(ctx, &args[0]) {
+            Ok(r) => Value::Number(f(&r) as f64),
+            Err(k) => Value::Error(k),
+        },
+    }
 }
 
 #[cfg(test)]

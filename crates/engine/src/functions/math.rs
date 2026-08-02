@@ -466,3 +466,58 @@ pub fn rank(ctx: &EvalCtx, args: &[Expr]) -> Value {
         Ok(better as f64 + 1.0)
     })())
 }
+
+/// SUMPRODUCT(range, ...): multiply the ranges cell by cell, then total.
+///
+/// The ranges must be the same shape — Excel answers #VALUE! rather than
+/// aligning them, because two columns of different length almost always mean
+/// one of them is pointing at the wrong rows. Non-numeric cells count as 0,
+/// which is what lets SUMPRODUCT be used as a conditional sum: a comparison
+/// yields TRUE/FALSE, and multiplying by it selects rows.
+pub fn sumproduct(ctx: &EvalCtx, args: &[Expr]) -> Value {
+    if args.is_empty() {
+        return Value::Error(ErrorKind::Value);
+    }
+    let mut columns: Vec<Vec<Value>> = Vec::new();
+    for a in args {
+        match ctx.eval_operand(a) {
+            // Flattened row-major, which is the order SUMPRODUCT pairs cells
+            // in when the ranges are the same shape.
+            crate::eval::Operand::Range { sheet, range } => {
+                columns.push(ctx.range_grid(sheet, range).into_iter().flatten().collect())
+            }
+            // A scalar multiplies every row, which is how SUMPRODUCT(A1:A3, 2)
+            // behaves.
+            crate::eval::Operand::Scalar(v) => columns.push(vec![v]),
+        }
+    }
+    let len = columns.iter().map(Vec::len).max().unwrap_or(0);
+    if columns.iter().any(|c| c.len() != len && c.len() != 1) {
+        return Value::Error(ErrorKind::Value);
+    }
+
+    let mut total = 0.0;
+    for i in 0..len {
+        let mut product = 1.0;
+        for c in &columns {
+            let v = if c.len() == 1 { &c[0] } else { &c[i] };
+            // An error anywhere propagates; text and blanks are zero.
+            if let Value::Error(k) = v {
+                return Value::Error(*k);
+            }
+            product *= match v {
+                Value::Number(n) => *n,
+                Value::Bool(b) => {
+                    if *b {
+                        1.0
+                    } else {
+                        0.0
+                    }
+                }
+                _ => 0.0,
+            };
+        }
+        total += product;
+    }
+    Value::Number(total)
+}

@@ -15,11 +15,11 @@ this file and fails if the result differs from what is committed.
 
 | Measure | Score | |
 | --- | --- | --- |
-| Cell match (settled cases) | **98.5%** | 199 of 202 |
-| Function coverage | **67.6%** | 92 of 136 target functions implemented |
-| Functions pinned by a case | **95.7%** | 88 of 92 implemented |
+| Cell match (settled cases) | **98.2%** | 220 of 224 |
+| Function coverage | **76.5%** | 104 of 136 target functions implemented |
+| Functions pinned by a case | **96.2%** | 100 of 104 implemented |
 | Round-trip fidelity | **100.0%** | 2 of 2 workbooks |
-| Recorded differences | 3 | counted as misses above |
+| Recorded differences | 4 | counted as misses above |
 | Open questions | 3 | excluded above |
 
 ## Functions
@@ -101,11 +101,11 @@ against anything but our own opinion.
 | `RAND` | yes | — |
 | `RANDBETWEEN` | yes | — |
 
-### Tier 2 — 26 of 70 implemented
+### Tier 2 — 38 of 70 implemented
 
 | Function | Implemented | Pinned |
 | --- | --- | --- |
-| `SUMPRODUCT` | — | — |
+| `SUMPRODUCT` | yes | yes |
 | `MEDIAN` | yes | yes |
 | `MODE` | — | — |
 | `STDEV` | — | — |
@@ -126,10 +126,10 @@ against anything but our own opinion.
 | `LOOKUP` | — | — |
 | `OFFSET` | — | — |
 | `INDIRECT` | — | — |
-| `ROW` | — | — |
-| `COLUMN` | — | — |
-| `ROWS` | — | — |
-| `COLUMNS` | — | — |
+| `ROW` | yes | yes |
+| `COLUMN` | yes | yes |
+| `ROWS` | yes | yes |
+| `COLUMNS` | yes | yes |
 | `TRANSPOSE` | — | — |
 | `UNIQUE` | — | — |
 | `SORT` | — | — |
@@ -146,17 +146,17 @@ against anything but our own opinion.
 | `CLEAN` | yes | yes |
 | `NUMBERVALUE` | — | — |
 | `LET` | — | — |
-| `TIME` | — | — |
-| `HOUR` | — | — |
-| `MINUTE` | — | — |
-| `SECOND` | — | — |
-| `DATEVALUE` | — | — |
+| `TIME` | yes | yes |
+| `HOUR` | yes | yes |
+| `MINUTE` | yes | yes |
+| `SECOND` | yes | yes |
+| `DATEVALUE` | yes | yes |
 | `TIMEVALUE` | — | — |
 | `NETWORKDAYS` | — | — |
 | `WORKDAY` | — | — |
 | `YEARFRAC` | — | — |
-| `EDATE` | — | — |
-| `DAYS` | — | — |
+| `EDATE` | yes | yes |
+| `DAYS` | yes | yes |
 | `PMT` | — | — |
 | `FV` | — | — |
 | `PV` | — | — |
@@ -183,6 +183,7 @@ against anything but our own opinion.
 | `date.eomonth-refuses-the-phantom-day` | `=EOMONTH(60,1)` | `91` | `#NUM!` | yes |
 | `number.a-comparison-of-nearly-equal-sums-is-true` | `=0.1+0.2=0.3` | `TRUE` | `FALSE` | yes |
 | `number.subtracting-nearly-equal-sums-gives-zero` | `=SUM(0.1,0.2)-0.3` | `0` | `0.0000000000000000555111512312578` | yes |
+| `t2b.sumproduct-counts-a-condition` | `=SUMPRODUCT((A1:A3>2)*1)` | `2` | `#VALUE!` | yes |
 
 A row marked **new** is a regression and fails the build. A recorded one is a
              difference we know about and have not fixed; it lowers the score above, and

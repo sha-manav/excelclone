@@ -151,10 +151,16 @@ Living checklist. Updated every session.
 - [x] 52 cases pinning them, including the sign rules Microsoft's own page
       spends a paragraph on and the difference between competition and dense
       ranking
-- [x] Coverage 48.5% → 67.6%; cell match 98.5%; 95.7% of implemented
+- [x] Coverage 48.5% → 76.5%; cell match 98.2%; 96.2% of implemented
       functions pinned
-- [ ] The reference family (ROW, COLUMN, ROWS, COLUMNS) and SUMPRODUCT
-- [ ] The date and financial blocks
+- [x] The reference family (ROW, COLUMN, ROWS, COLUMNS) — `EvalCtx` now
+      carries the cell being evaluated, which nothing else had needed
+- [x] SUMPRODUCT over plain ranges; a computed array argument
+      (`(A1:A3>2)*1`) is a recorded difference, because element-wise operators
+      are the same model change dynamic arrays need
+- [x] TIME, HOUR, MINUTE, SECOND, DATEVALUE, EDATE, DAYS
+- [ ] The financial block (PMT, FV, PV, NPV, IRR, RATE, NPER)
+- [ ] MODE, STDEV, SUBTOTAL, AGGREGATE, XMATCH, LOOKUP, OFFSET, INDIRECT
 - [ ] Dynamic arrays (UNIQUE, SORT, FILTER, SEQUENCE, TEXTSPLIT) need spilling
       first, which is a model change rather than a function
 

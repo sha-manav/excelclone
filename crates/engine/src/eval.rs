@@ -8,7 +8,7 @@
 //! - A range used in scalar context is #VALUE! (no implicit intersection in
 //!   v1; documented in DECISIONS.md).
 
-use crate::addr::RangeAddr;
+use crate::addr::{CellAddr, RangeAddr};
 use crate::ast::{BinOp, Expr};
 use crate::model::{CellKey, SheetId, Workbook};
 use crate::value::{ErrorKind, Value};
@@ -19,6 +19,10 @@ pub struct EvalCtx<'a> {
     pub wb: &'a Workbook,
     /// Sheet the evaluated formula lives on (for unqualified refs).
     pub sheet: SheetId,
+    /// The cell being evaluated. `ROW()` and `COLUMN()` with no argument are
+    /// asking about it, and nothing else in the evaluator needs to know where
+    /// it is — which is why it took until the reference functions to appear.
+    pub at: CellAddr,
     /// Injected clock (ms since Unix epoch) so NOW/TODAY are replayable.
     pub now_ms: i64,
 }
