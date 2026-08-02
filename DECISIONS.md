@@ -60,3 +60,17 @@ One-line rationale for every non-obvious choice.
 - **`_xlfn.` / `_xlws.` function prefixes are stripped at parse time** — xlsx stores every post-2007 function that way (`_xlfn.TEXTJOIN`, `_xlfn.XLOOKUP`, `_xlfn.IFS`, `_xlfn.CONCAT`) and Excel hides it. Without this, importing any modern real-world workbook produced `#NAME?`. Caught by the golden-workbook round trip, not by a unit test.
 - **A formula whose source contains `_xlfn.` is re-rendered from its AST for display**, so the formula bar shows `=TEXTJOIN(...)` like Excel; all other formula text is stored exactly as written.
 - **A formula our parser rejects imports as literal text plus a warning** — never silently dropped, and the original text survives the round trip.
+
+## M4 — Event spine
+
+- **The event envelope and privacy redaction live in `crates/engine/src/telemetry.rs`, not in the server or the client** — the client redacts by calling this same code compiled to wasm. A privacy guarantee implemented twice is a guarantee that will eventually be implemented differently, and the divergent copy is the one that leaks. It also keeps the engine I/O-free: these are pure data transforms.
+- **A test asserts the code's action vocabulary appears in `docs/EVENTS.md`** — the transparency page renders that document, so an action captured but not documented would be undisclosed capture. That fails the build rather than shipping.
+- **Salt and text are separated by a `0x1f` byte before hashing** — otherwise salt `"ab"` + value `"c"` would collide with salt `"a"` + value `"bc"`.
+- **Sheet names, filter values and search terms are hashed under `structural`, not just cell values** — a sheet named "Payroll Q3" or a filter on an email address is user content by any reasonable reading of the promise in `docs/PRIVACY.md`.
+- **Formulas are kept verbatim in `structural` mode** — their structure is the entire point of mining, and they describe shape rather than content. This is stated plainly in the consent copy rather than buried.
+- **The server rejects an envelope claiming `full` privacy mode when the actor's consent is `structural`** — beyond the spec, but without it a buggy or forged client could smuggle verbatim values in under a structural grant, contradicting what the user was promised.
+- **Sessions are derived server-side from `ts_ms` gaps rather than trusting the client's `session_id`** — the client's id is retained alongside so disagreements (reload, crash recovery, a tab left open over lunch) are visible rather than silent.
+- **`ts_ms` is the client wall clock, deliberately** — a batch flushed hours later still sessionizes where the work actually happened. `received_at` is used only for export `since` filtering. Clock skew can therefore fabricate or hide a split; noted as a known limit.
+- **Ingest is partially accepting: good events in a mixed batch are stored** and bad ones are reported with reasons. An all-or-nothing batch would let one malformed event discard a whole session's work.
+- **Rejected actions stay in the replay log** — replay must reject exactly the same actions the live session did, so a log records attempts, not just successes.
+- **`format_number_general` caps at 15 significant digits** — Excel's General format does, which is why `=0.1*3` shows `0.3` there. Printing the shortest round-trip float instead exposed IEEE noise on nearly every decimal a user sees.
