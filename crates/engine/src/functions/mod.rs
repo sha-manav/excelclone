@@ -15,6 +15,87 @@ use crate::ast::Expr;
 use crate::eval::{EvalCtx, Operand};
 use crate::value::{ErrorKind, Value};
 
+/// Every function name `call` answers to, in dispatch order.
+///
+/// Exists so the parity harness can ask what is implemented without guessing,
+/// and so "we support N functions" is a list somebody can read rather than a
+/// number somebody remembers. `the_list_matches_the_dispatcher` keeps it from
+/// drifting away from the `match` below.
+pub const IMPLEMENTED: &[&str] = &[
+    // Math
+    "SUM",
+    "PRODUCT",
+    "AVERAGE",
+    "MIN",
+    "MAX",
+    "COUNT",
+    "COUNTA",
+    "COUNTBLANK",
+    "ROUND",
+    "ROUNDUP",
+    "ROUNDDOWN",
+    "ABS",
+    "INT",
+    "MOD",
+    "POWER",
+    "SQRT",
+    // Logic
+    "IF",
+    "IFS",
+    "AND",
+    "OR",
+    "NOT",
+    "IFERROR",
+    "ISBLANK",
+    "ISNUMBER",
+    "ISTEXT",
+    "ISERROR",
+    // Lookup
+    "VLOOKUP",
+    "HLOOKUP",
+    "INDEX",
+    "MATCH",
+    "XLOOKUP",
+    "CHOOSE",
+    // Text
+    "CONCAT",
+    "CONCATENATE",
+    "TEXTJOIN",
+    "LEFT",
+    "RIGHT",
+    "MID",
+    "LEN",
+    "TRIM",
+    "UPPER",
+    "LOWER",
+    "PROPER",
+    "SUBSTITUTE",
+    "REPLACE",
+    "FIND",
+    "SEARCH",
+    "TEXT",
+    "VALUE",
+    // Conditional aggregation
+    "COUNTIF",
+    "COUNTIFS",
+    "SUMIF",
+    "SUMIFS",
+    "AVERAGEIF",
+    "AVERAGEIFS",
+    // Date/time
+    "TODAY",
+    "NOW",
+    "DATE",
+    "YEAR",
+    "MONTH",
+    "DAY",
+    "EOMONTH",
+    "DATEDIF",
+    "WEEKDAY",
+    "RAND",
+    "RANDBETWEEN",
+];
+
 pub fn call(ctx: &EvalCtx, name: &str, args: &[Expr]) -> Value {
     match name {
         // Math
@@ -161,5 +242,47 @@ pub fn num_result(r: Result<f64, ErrorKind>) -> Value {
         Ok(n) if n.is_finite() => Value::Number(n),
         Ok(_) => Value::Error(ErrorKind::Num),
         Err(k) => Value::Error(k),
+    }
+}
+
+#[cfg(test)]
+mod registry_tests {
+    use super::IMPLEMENTED;
+
+    /// `IMPLEMENTED` is a hand-written copy of the dispatcher's arms. If it
+    /// drifts, the parity report starts lying about what exists — in either
+    /// direction — so the two are compared against each other here.
+    #[test]
+    fn the_list_matches_the_dispatcher() {
+        let source = include_str!("mod.rs");
+        let body = source
+            .split_once("pub fn call(")
+            .expect("the dispatcher")
+            .1
+            .split_once("_ => Value::Error(ErrorKind::Name)")
+            .expect("the fallthrough")
+            .0;
+        let mut dispatched: Vec<&str> = body
+            .lines()
+            .filter_map(|line| {
+                let line = line.trim();
+                let rest = line.strip_prefix('"')?;
+                let (name, tail) = rest.split_once('"')?;
+                tail.trim_start().starts_with("=>").then_some(name)
+            })
+            .collect();
+        dispatched.sort_unstable();
+        dispatched.dedup();
+
+        let mut listed: Vec<&str> = IMPLEMENTED.to_vec();
+        listed.sort_unstable();
+        let before = listed.len();
+        listed.dedup();
+        assert_eq!(before, listed.len(), "IMPLEMENTED lists a name twice");
+
+        assert_eq!(
+            dispatched, listed,
+            "IMPLEMENTED has drifted from the dispatcher"
+        );
     }
 }

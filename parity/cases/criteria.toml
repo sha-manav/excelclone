@@ -1,0 +1,169 @@
+# COUNTIF and its family: the criteria mini-language, which is a string that
+# looks like an expression and is parsed by rules of its own.
+
+[[case]]
+id = "criteria.comparison-in-a-string"
+given = { A1 = "1", A2 = "5", A3 = "9" }
+formula = "=COUNTIF(A1:A3,\">2\")"
+expect = "2"
+source = "known"
+functions = ["COUNTIF"]
+note = "The operator lives inside the criteria string, not in the formula."
+
+[[case]]
+id = "criteria.a-bare-number-means-equal"
+given = { A1 = "1", A2 = "5", A3 = "5" }
+formula = "=COUNTIF(A1:A3,5)"
+expect = "2"
+source = "known"
+functions = ["COUNTIF"]
+note = "No operator means equality."
+
+[[case]]
+id = "criteria.numeric-text-matches-a-number"
+given = { A1 = "5" }
+formula = "=COUNTIF(A1:A3,\"5\")"
+expect = "1"
+source = "known"
+functions = ["COUNTIF"]
+note = """
+The criteria string "5" matches the *number* 5. Criteria are coerced, which is
+why COUNTIF cannot distinguish a numeric cell from a text one that looks the
+same.
+"""
+
+[[case]]
+id = "criteria.wildcards-match-text"
+given = { A1 = "'apple", A2 = "'apricot", A3 = "'banana" }
+formula = "=COUNTIF(A1:A3,\"ap*\")"
+expect = "2"
+source = "known"
+functions = ["COUNTIF"]
+note = "* matches any run of characters, including none."
+
+[[case]]
+id = "criteria.question-mark-matches-one-character"
+given = { A1 = "'cat", A2 = "'cart", A3 = "'coat" }
+formula = "=COUNTIF(A1:A3,\"c?t\")"
+expect = "1"
+source = "known"
+functions = ["COUNTIF"]
+note = "? is exactly one character, so only 'cat' matches."
+
+[[case]]
+id = "criteria.wildcard-matching-ignores-case"
+given = { A1 = "'Apple", A2 = "'apricot" }
+formula = "=COUNTIF(A1:A3,\"a*\")"
+expect = "2"
+source = "known"
+functions = ["COUNTIF"]
+note = "As every other text comparison in the language."
+
+[[case]]
+id = "criteria.not-equal-to-blank-counts-the-filled"
+given = { A1 = "1", A3 = "'x" }
+formula = "=COUNTIF(A1:A3,\"<>\")"
+expect = "2"
+source = "known"
+functions = ["COUNTIF"]
+note = """
+"<>" with nothing after it means 'not empty'. It is the idiom for counting
+filled cells with COUNTIF rather than COUNTA.
+"""
+
+[[case]]
+id = "criteria.not-equal-to-a-value"
+given = { A1 = "'a", A2 = "'b", A3 = "'a" }
+formula = "=COUNTIF(A1:A3,\"<>a\")"
+expect = "1"
+source = "known"
+functions = ["COUNTIF"]
+note = "Empty cells are not counted by a <> criterion against a value."
+
+[[case]]
+id = "criteria.sumif-with-a-separate-sum-range"
+given = { A1 = "1", B1 = "10", A2 = "5", B2 = "20", A3 = "9", B3 = "30" }
+formula = "=SUMIF(A1:A3,\">2\",B1:B3)"
+expect = "50"
+source = "known"
+functions = ["SUMIF"]
+note = "Test one column, total another."
+
+[[case]]
+id = "criteria.sumif-without-a-sum-range-totals-the-tested-one"
+given = { A1 = "1", A2 = "5", A3 = "9" }
+formula = "=SUMIF(A1:A3,\">2\")"
+expect = "14"
+source = "known"
+functions = ["SUMIF"]
+note = "Omitted, the range being tested is the range being summed."
+
+[[case]]
+id = "criteria.sumif-extends-a-short-sum-range"
+given = { A1 = "1", B1 = "10", A2 = "5", B2 = "20", A3 = "9", B3 = "30" }
+formula = "=SUMIF(A1:A3,\">2\",B1)"
+expect = "50"
+source = "known"
+functions = ["SUMIF"]
+note = """
+A sum_range smaller than the criteria range is extended from its top-left
+corner to the criteria range's shape, so B1 behaves as B1:B3. Documented by
+Microsoft, and a trap when someone edits one range and not the other.
+"""
+
+[[case]]
+id = "criteria.countifs-requires-every-condition"
+given = { A1 = "1", B1 = "'x", A2 = "5", B2 = "'x", A3 = "9", B3 = "'y" }
+formula = "=COUNTIFS(A1:A3,\">2\",B1:B3,\"x\")"
+expect = "1"
+source = "known"
+functions = ["COUNTIFS"]
+note = "Conditions are ANDed across the ranges, row by row."
+
+[[case]]
+id = "criteria.averageif-with-no-matches-is-a-div-zero"
+given = { A1 = "1", A2 = "2" }
+formula = "=AVERAGEIF(A1:A3,\">9\")"
+expect = "#DIV/0!"
+source = "known"
+functions = ["AVERAGEIF"]
+note = "Nothing matched, so nothing to divide by. Not 0 and not #N/A."
+
+[[case]]
+id = "criteria.countif-over-a-range-holding-an-error"
+given = { A1 = "1", A2 = "=1/0", A3 = "9" }
+formula = "=COUNTIF(A1:A3,\">0\")"
+expect = "2"
+source = "open"
+candidates = ["2 (skip the error cell)", "#DIV/0! (propagate it)"]
+functions = ["COUNTIF"]
+note = """
+Pinned from the M2 review and still unsettled. SUM propagates an error found
+in its range; the conditional aggregates may instead skip a cell that cannot
+satisfy the criterion, on the grounds that COUNTIF asks a question about each
+cell rather than combining them. Nobody here can settle which without Excel in
+front of them, so the case is excluded from the score and Gridline's current
+answer is recorded below.
+"""
+
+[[case]]
+id = "criteria.approximate-lookup-on-unsorted-data"
+given = { A1 = "20", B1 = "'high", A2 = "1", B2 = "'low", A3 = "10", B3 = "'mid" }
+formula = "=VLOOKUP(15,A1:B3,2,TRUE)"
+expect = "mid"
+source = "open"
+candidates = [
+  "mid (linear scan for the last key not greater than 15)",
+  "high (binary search that stops at the first row)",
+  "#N/A (a binary search that walks off the range)",
+]
+functions = ["VLOOKUP"]
+note = """
+The second question pinned from M2. Excel's approximate match is a binary
+search that assumes ascending order; on unsorted data the answer is a property
+of the search path rather than of the data, and Microsoft documents the result
+as unspecified. Gridline does a linear scan for the last key not greater than
+the lookup value, which is well-defined but not necessarily what Excel
+returns. Excluded from the score, recorded here so a future run on a machine
+with Excel can settle it in one line.
+"""

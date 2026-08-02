@@ -1,0 +1,156 @@
+# Dates. Serial numbers, rollover, and the 1900 leap-year bug Excel keeps for
+# compatibility with Lotus 1-2-3.
+#
+# Cases are written through YEAR/MONTH/DAY rather than against a serial where
+# the point is the calendar, because a raw serial also tests the display rule
+# and a failure would not say which one broke.
+
+[[case]]
+id = "date.serial-epoch"
+formula = "=DATE(2024,1,1)"
+expect = "45292"
+source = "known"
+functions = ["DATE"]
+note = """
+Excel counts days from 1899-12-31 as serial 1, with an extra day inserted for
+the non-existent 1900-02-29, which puts 2024-01-01 at 45292. Any engine that
+computed from a real proleptic calendar would be one day out for every date
+after February 1900.
+"""
+
+[[case]]
+id = "date.month-rolls-over"
+formula = "=YEAR(DATE(2024,13,1))"
+expect = "2025"
+source = "known"
+functions = ["DATE", "YEAR"]
+note = "Month 13 is January of the next year rather than an error."
+
+[[case]]
+id = "date.month-rolls-over-to-january"
+formula = "=MONTH(DATE(2024,13,1))"
+expect = "1"
+source = "known"
+functions = ["DATE", "MONTH"]
+note = "The other half of the same rollover."
+
+[[case]]
+id = "date.day-rolls-over"
+formula = "=MONTH(DATE(2024,2,30))"
+expect = "3"
+source = "known"
+functions = ["DATE", "MONTH"]
+note = "February 30th is March 1st. DATE normalises rather than validating."
+
+[[case]]
+id = "date.day-rolls-over-to-the-first"
+formula = "=DAY(DATE(2024,2,30))"
+expect = "1"
+source = "known"
+functions = ["DATE", "DAY"]
+note = "2024 is a leap year, so February has 29 days and the 30th is March 1."
+
+[[case]]
+id = "date.month-zero-is-december"
+formula = "=MONTH(DATE(2024,0,15))"
+expect = "12"
+source = "known"
+functions = ["DATE", "MONTH"]
+note = "Rollover works downwards too: month 0 is the previous December."
+
+[[case]]
+id = "date.eomonth-finds-the-last-day"
+formula = "=DAY(EOMONTH(DATE(2024,1,15),0))"
+expect = "31"
+source = "known"
+functions = ["EOMONTH", "DAY"]
+note = "Offset 0 is the end of the month the date is in."
+
+[[case]]
+id = "date.eomonth-handles-a-leap-february"
+formula = "=DAY(EOMONTH(DATE(2024,1,31),1))"
+expect = "29"
+source = "known"
+functions = ["EOMONTH", "DAY"]
+note = "One month on from 2024-01-31 ends on the 29th, because 2024 is a leap year."
+
+[[case]]
+id = "date.eomonth-goes-backwards"
+formula = "=MONTH(EOMONTH(DATE(2024,3,15),-1))"
+expect = "2"
+source = "known"
+functions = ["EOMONTH", "MONTH"]
+note = "A negative offset walks back."
+
+[[case]]
+id = "date.weekday-defaults-to-sunday-one"
+formula = "=WEEKDAY(DATE(2024,1,1))"
+expect = "2"
+source = "known"
+functions = ["WEEKDAY", "DATE"]
+note = """
+2024-01-01 was a Monday. The default return type numbers Sunday as 1, so
+Monday is 2 — the choice that makes WEEKDAY disagree with every other date
+library by one.
+"""
+
+[[case]]
+id = "date.weekday-type-two-starts-on-monday"
+formula = "=WEEKDAY(DATE(2024,1,1),2)"
+expect = "1"
+source = "known"
+functions = ["WEEKDAY"]
+note = "Type 2 is the ISO-style numbering."
+
+[[case]]
+id = "date.datedif-counts-whole-months"
+formula = "=DATEDIF(DATE(2024,1,1),DATE(2025,3,1),\"m\")"
+expect = "14"
+source = "known"
+functions = ["DATEDIF"]
+note = "Complete months between the two dates."
+
+[[case]]
+id = "date.datedif-does-not-round-up-a-partial-month"
+formula = "=DATEDIF(DATE(2024,1,31),DATE(2024,3,1),\"m\")"
+expect = "1"
+source = "known"
+functions = ["DATEDIF"]
+note = """
+From the 31st to the 1st of the month after next is one complete month, not
+two: DATEDIF counts whole months, so the day of the month has to be reached.
+"""
+
+[[case]]
+id = "date.datedif-days"
+formula = "=DATEDIF(DATE(2024,1,1),DATE(2024,1,31),\"d\")"
+expect = "30"
+source = "known"
+functions = ["DATEDIF"]
+note = "Plain day difference; the end date is exclusive of itself, not counted twice."
+
+[[case]]
+id = "date.year-of-a-serial"
+formula = "=YEAR(45292)"
+expect = "2024"
+source = "known"
+functions = ["YEAR"]
+note = "A date function takes the serial directly, not only a DATE() call."
+
+[[case]]
+id = "date.the-1900-leap-year-bug"
+formula = "=DAY(DATE(1900,2,29))"
+expect = "29"
+source = "known"
+known_difference = true
+functions = ["DATE", "DAY"]
+note = """
+Excel believes 1900 was a leap year. 1900-02-29 does not exist, but Excel
+accepts it as serial 60 and reports day 29 — a deliberate bug kept since 1985
+for compatibility with Lotus 1-2-3, and one that every serial after it depends
+on. Gridline gets serial numbers after February 1900 right (see
+`date.serial-epoch`) but normalises this date away instead of accepting it,
+which is the correct calendar and the wrong spreadsheet. Recorded rather than
+fixed: the fix is a special case in DATE, and it is worth doing deliberately
+rather than in passing.
+"""

@@ -1,0 +1,165 @@
+# Aggregation, and the asymmetry that catches everyone: an aggregate coerces
+# what you hand it directly and ignores what it finds behind a reference.
+#
+# Provenance: `known` throughout — this is documented in Microsoft's function
+# reference for each function ("logical values and text representations of
+# numbers that you type directly into the list of arguments are counted").
+
+[[case]]
+id = "agg.sum-ignores-text-in-a-range"
+given = { A1 = "1", A2 = "'2", A3 = "3" }
+formula = "=SUM(A1:A3)"
+expect = "4"
+source = "known"
+functions = ["SUM"]
+note = """
+A2 holds the text "2" (apostrophe-forced). SUM skips text found in a range,
+so the answer is 1+3 rather than 6. This is the rule that makes a column
+imported as text silently total wrong instead of erroring.
+"""
+
+[[case]]
+id = "agg.sum-coerces-a-direct-text-argument"
+formula = "=SUM(\"2\",3)"
+expect = "5"
+source = "known"
+functions = ["SUM"]
+note = """
+The other half: text typed directly into the argument list *is* coerced. Same
+function, same value, different answer depending on whether it arrived through
+a reference.
+"""
+
+[[case]]
+id = "agg.sum-ignores-booleans-in-a-range"
+given = { A1 = "1", A2 = "TRUE" }
+formula = "=SUM(A1:A2)"
+expect = "1"
+source = "known"
+functions = ["SUM"]
+note = "Booleans behind a reference are skipped, exactly as text is."
+
+[[case]]
+id = "agg.sum-coerces-a-direct-boolean"
+formula = "=SUM(TRUE,1)"
+expect = "2"
+source = "known"
+functions = ["SUM"]
+note = "And coerced when passed directly."
+
+[[case]]
+id = "agg.average-of-only-text-is-a-div-zero"
+given = { A1 = "'x" }
+formula = "=AVERAGE(A1)"
+expect = "#DIV/0!"
+source = "known"
+functions = ["AVERAGE"]
+note = """
+AVERAGE skips the text, finds nothing to average, and divides by zero. Not
+#VALUE!, which is what passing the text directly would give.
+"""
+
+[[case]]
+id = "agg.average-of-direct-text-is-a-value-error"
+formula = "=AVERAGE(\"x\")"
+expect = "#VALUE!"
+source = "known"
+functions = ["AVERAGE"]
+note = "Direct text is coerced, and coercion fails."
+
+[[case]]
+id = "agg.count-counts-numbers-only"
+given = { A1 = "1", A2 = "'x", A3 = "TRUE", A4 = "2" }
+formula = "=COUNT(A1:A4)"
+expect = "2"
+source = "known"
+functions = ["COUNT"]
+note = "COUNT is numbers; text and booleans in a range are not numbers."
+
+[[case]]
+id = "agg.counta-counts-anything-present"
+given = { A1 = "1", A2 = "'x", A3 = "TRUE" }
+formula = "=COUNTA(A1:A4)"
+expect = "3"
+source = "known"
+functions = ["COUNTA"]
+note = "COUNTA counts non-empty cells whatever they hold. A4 is empty."
+
+[[case]]
+id = "agg.countblank-counts-the-gaps"
+given = { A1 = "1", A3 = "2" }
+formula = "=COUNTBLANK(A1:A4)"
+expect = "2"
+source = "known"
+functions = ["COUNTBLANK"]
+note = "A2 and A4 are empty."
+
+[[case]]
+id = "agg.min-of-an-empty-range-is-zero"
+formula = "=MIN(A1:A3)"
+expect = "0"
+source = "known"
+functions = ["MIN"]
+note = """
+MIN and MAX over nothing return 0 rather than an error — a genuinely
+surprising choice, and one a conforming implementation cannot skip.
+"""
+
+[[case]]
+id = "agg.errors-in-a-range-propagate"
+given = { A1 = "1", A2 = "=1/0" }
+formula = "=SUM(A1:A2)"
+expect = "#DIV/0!"
+source = "known"
+functions = ["SUM"]
+note = """
+An error in the range is not skipped the way text is: it propagates. This is
+why a single bad cell turns a whole report into errors.
+"""
+
+[[case]]
+id = "agg.mod-follows-the-divisor-sign"
+formula = "=MOD(-3,2)"
+expect = "1"
+source = "known"
+functions = ["MOD"]
+note = """
+Excel's MOD takes the sign of the divisor (it is n - d*INT(n/d)), so MOD(-3,2)
+is 1, not -1 as C-style remainder gives.
+"""
+
+[[case]]
+id = "agg.int-rounds-towards-negative-infinity"
+formula = "=INT(-2.5)"
+expect = "-3"
+source = "known"
+functions = ["INT"]
+note = "INT floors; it does not truncate. TRUNC is the one that truncates."
+
+[[case]]
+id = "agg.round-half-goes-away-from-zero"
+formula = "=ROUND(-2.5,0)"
+expect = "-3"
+source = "known"
+functions = ["ROUND"]
+note = """
+Excel rounds halves away from zero, not to even. ROUND(2.5,0) is 3 and
+ROUND(-2.5,0) is -3, which differs from IEEE round-half-to-even and therefore
+from most standard libraries.
+"""
+
+[[case]]
+id = "agg.round-to-negative-places"
+formula = "=ROUND(1234.5,-2)"
+expect = "1200"
+source = "known"
+functions = ["ROUND"]
+note = "Negative digits round to the left of the decimal point."
+
+[[case]]
+id = "agg.sqrt-of-a-negative-is-a-num-error"
+formula = "=SQRT(-1)"
+expect = "#NUM!"
+source = "known"
+functions = ["SQRT"]
+note = "#NUM!, not NaN and not #VALUE!."

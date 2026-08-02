@@ -117,9 +117,23 @@ Living checklist. Updated every session.
       EVENTS.md, the consent notice and the transparency page all corrected to
       say that a formula's text literals and sheet names are recorded in clear
 
+## P0 — Parity harness (complete)
+- [x] `crates/parity`: corpus loader, runner, scorer, `PARITY.md` generator
+- [x] 126 cases across operators, aggregation, lookup, text, criteria, dates,
+      errors and number handling, each citing where its expectation comes from
+- [x] Round-trip fidelity measured part by part, not just "it opened"
+- [x] `engine::functions::IMPLEMENTED`, with a test comparing it against the
+      dispatcher so the coverage table cannot drift
+- [x] `make parity`; CI regenerates the report and fails on a diff
+- [x] The two Excel semantics pinned in M2 recorded as open questions with
+      every candidate answer, excluded from the score
+- [x] Five differences found and recorded; one of them — arithmetic overflow
+      returning IEEE infinity instead of `#NUM!` — fixed on the spot, because
+      `inf` is not a spreadsheet value and would have reached the dataset
+
 ## Notes
 
-- 385 Rust tests, 140 web unit tests, 44 Playwright end-to-end tests; full
+- 406 Rust tests, 140 web unit tests, 44 Playwright end-to-end tests; full
   CI gate (fmt, clippy -D warnings, tests, wasm build, vite build, e2e)
   passes locally.
 - M5 found a bug that had been latent since M2: **xlsx export had never
@@ -177,6 +191,12 @@ Living checklist. Updated every session.
   Rust path.
 
 ## Known gaps carried forward
+
+- Four measured parity differences are recorded rather than fixed, and are in
+  `PARITY.md`: Excel's 15-significant-digit rounding of a final result (which
+  is why `=0.1+0.2=0.3` is TRUE there and FALSE here), General switching to
+  scientific notation for large magnitudes, the negative section of a number
+  format code, and the 1900 leap-year bug.
 
 - A habit written with *relative* references to a fixed table is invisible to
   the miner, because the R1C1 shape differs in every row. That is faithful —

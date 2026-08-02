@@ -116,26 +116,21 @@ impl<'a> EvalCtx<'a> {
                     Err(k) => return Value::Error(k),
                 };
                 match op {
-                    BinOp::Add => Value::Number(a + b),
-                    BinOp::Sub => Value::Number(a - b),
-                    BinOp::Mul => Value::Number(a * b),
+                    BinOp::Add => finite(a + b),
+                    BinOp::Sub => finite(a - b),
+                    BinOp::Mul => finite(a * b),
                     BinOp::Div => {
                         if b == 0.0 {
                             Value::Error(ErrorKind::Div0)
                         } else {
-                            Value::Number(a / b)
+                            finite(a / b)
                         }
                     }
                     BinOp::Pow => {
                         if a == 0.0 && b == 0.0 {
                             return Value::Error(ErrorKind::Num);
                         }
-                        let p = a.powf(b);
-                        if p.is_finite() {
-                            Value::Number(p)
-                        } else {
-                            Value::Error(ErrorKind::Num)
-                        }
+                        finite(a.powf(b))
                     }
                     _ => unreachable!(),
                 }
@@ -240,6 +235,21 @@ pub fn parse_number_text(s: &str) -> Option<f64> {
         return stripped.trim().parse::<f64>().ok().map(|n| n / 100.0);
     }
     t.parse::<f64>().ok().filter(|n| n.is_finite())
+}
+
+/// A number, or `#NUM!` when the arithmetic left the real line.
+///
+/// Infinity and NaN are not spreadsheet values: Excel answers an overflow with
+/// `#NUM!`, and a cell displaying `inf` would travel from the grid into the
+/// state snapshot, the event log and the exported dataset. Found by the parity
+/// harness on `=1E+308*10`, which every operator except `^` was happy to
+/// return.
+fn finite(n: f64) -> Value {
+    if n.is_finite() {
+        Value::Number(n)
+    } else {
+        Value::Error(ErrorKind::Num)
+    }
 }
 
 pub fn to_text(v: &Value) -> Result<String, ErrorKind> {

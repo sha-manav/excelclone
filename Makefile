@@ -1,4 +1,4 @@
-.PHONY: dev demo server web wasm test lint fmt ci
+.PHONY: dev demo parity server web wasm test lint fmt ci
 
 # Start server + web dev environment
 dev:
@@ -7,6 +7,10 @@ dev:
 # Seed, mine and export the demonstration scenario into ./demo
 demo:
 	./scripts/demo.sh
+
+# Measure Excel parity and regenerate PARITY.md
+parity:
+	cargo run -q -p parity --bin gridline-parity -- report
 
 server:
 	cargo run -p server
@@ -28,4 +32,5 @@ lint:
 	cargo clippy --workspace --all-targets -- -D warnings
 
 ci: lint test
+	cargo run -q -p parity --bin gridline-parity -- report --check
 	cd apps/web && npm run build

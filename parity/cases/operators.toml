@@ -1,0 +1,149 @@
+# Operators, precedence and coercion.
+#
+# Excel's expression grammar disagrees with almost every programming language
+# in at least three places, and each of them is a bug people hit rather than a
+# curiosity: exponentiation associates left, unary minus binds tighter than
+# exponentiation, and comparison coerces across types by a fixed ordering.
+#
+# Provenance: every case below is `known` — behaviour documented by Microsoft
+# or reproduced identically by every spreadsheet implementation in wide use.
+# Nothing here was recorded by running Excel on this machine; see PARITY.md.
+
+[[case]]
+id = "op.power-associates-left"
+formula = "=2^3^2"
+expect = "64"
+source = "known"
+note = """
+Excel evaluates ^ left to right, so 2^3^2 is (2^3)^2 = 64. Most languages —
+and mathematical convention — associate it right, which would give 512. This
+is the single most common source of a formula that "works everywhere else".
+"""
+
+[[case]]
+id = "op.unary-minus-binds-tighter-than-power"
+formula = "=-2^2"
+expect = "4"
+source = "known"
+note = """
+In Excel unary minus is part of the operand, so -2^2 is (-2)^2 = 4, not
+-(2^2) = -4. Documented in Microsoft's "Calculation operators and precedence"
+page, which lists negation above exponentiation.
+"""
+
+[[case]]
+id = "op.percent-binds-tighter-than-multiply"
+formula = "=50%*10"
+expect = "5"
+source = "known"
+note = "Percent is a postfix operator above multiplication: (50%)*10 = 0.5*10."
+
+[[case]]
+id = "op.concat-uses-general-formatting"
+formula = "=\"a\"&1.5"
+expect = "a1.5"
+source = "known"
+note = """
+& converts a number to text the way General formatting displays it, so 1.5
+becomes "1.5" and not "1.500000". This is why concatenation of a computed
+number can differ from what the cell shows when the cell has its own format.
+"""
+
+[[case]]
+id = "op.boolean-coerces-to-one-in-arithmetic"
+formula = "=TRUE+1"
+expect = "2"
+source = "known"
+note = "TRUE is 1 and FALSE is 0 when an arithmetic operator coerces them."
+
+[[case]]
+id = "op.numeric-text-coerces-in-arithmetic"
+formula = "=\"3\"+4"
+expect = "7"
+source = "known"
+note = """
+Text that parses as a number is coerced by an arithmetic operator. Note the
+asymmetry with aggregation: SUM ignores text found in a range rather than
+coercing it, which is `agg.sum-ignores-text-in-a-range`.
+"""
+
+[[case]]
+id = "op.unparseable-text-is-a-value-error"
+formula = "=\"x\"+1"
+expect = "#VALUE!"
+source = "known"
+note = "Coercion that cannot succeed is an error, never a silent zero."
+
+[[case]]
+id = "op.zero-to-the-zero-is-a-num-error"
+formula = "=0^0"
+expect = "#NUM!"
+source = "known"
+note = """
+Excel refuses 0^0 with #NUM! rather than returning 1, which is what IEEE
+pow() and most languages give. A conforming implementation has to special-case
+it.
+"""
+
+[[case]]
+id = "op.divide-by-zero"
+formula = "=1/0"
+expect = "#DIV/0!"
+source = "known"
+note = "Not infinity, not an error value of another kind."
+
+[[case]]
+id = "op.errors-propagate-through-arithmetic"
+given = { A1 = "=1/0" }
+formula = "=A1+1"
+expect = "#DIV/0!"
+source = "known"
+note = """
+An error operand makes the whole expression that error, and the *first* error
+encountered is the one that propagates. Only IFERROR and friends stop it.
+"""
+
+[[case]]
+id = "op.empty-cell-is-zero-in-arithmetic"
+formula = "=Z99+5"
+expect = "5"
+source = "known"
+note = """
+An empty cell coerces to 0 in arithmetic and to "" in concatenation. It is not
+an error, which is what makes a half-filled column quietly sum to something.
+"""
+
+[[case]]
+id = "op.empty-cell-is-empty-text-in-concatenation"
+formula = "=\"x\"&Z99"
+expect = "x"
+source = "known"
+note = "The other half of the empty-cell rule: \"\" rather than \"0\"."
+
+[[case]]
+id = "op.comparison-orders-number-below-text"
+formula = "=1<\"1\""
+expect = "TRUE"
+source = "known"
+note = """
+Excel's comparison across types uses a fixed type ordering — number < text <
+logical — rather than coercing. Every number is less than every text value, so
+1 < "1" is TRUE even though they look equal.
+"""
+
+[[case]]
+id = "op.comparison-orders-text-below-logical"
+formula = "=\"zzz\"<TRUE"
+expect = "TRUE"
+source = "known"
+note = "The rest of the ordering: any text sorts below any boolean."
+
+[[case]]
+id = "op.text-comparison-ignores-case"
+formula = "=\"ABC\"=\"abc\""
+expect = "TRUE"
+source = "known"
+note = """
+= on text is case-insensitive. EXACT is the case-sensitive comparison, which is
+why it exists at all.
+"""

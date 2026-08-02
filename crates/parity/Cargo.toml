@@ -1,0 +1,25 @@
+[package]
+name = "parity"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "parity"
+path = "src/lib.rs"
+
+[[bin]]
+name = "gridline-parity"
+path = "src/main.rs"
+
+[dependencies]
+engine = { path = "../engine" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+# The corpus is hand-curated and reviewed in diffs, so it is TOML rather than
+# JSON: a case needs a multi-line note explaining where its expectation comes
+# from, and JSON cannot hold one readably.
+toml = "0.8"
+# Round-trip fidelity is measured part by part, so the harness opens the zip
+# itself rather than trusting the importer's view of it.
+zip = { version = "2", default-features = false, features = ["deflate"] }

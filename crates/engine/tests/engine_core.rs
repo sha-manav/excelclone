@@ -123,6 +123,31 @@ fn range_self_overlap_is_cycle() {
 }
 
 #[test]
+fn arithmetic_that_overflows_is_an_error_not_an_infinity() {
+    // `inf` is not a spreadsheet value. Before the parity harness noticed it,
+    // every operator except `^` would hand one back, and it would have
+    // travelled from the grid into the state snapshot, the event log and the
+    // exported dataset.
+    let mut e = Engine::new();
+    for (cell, formula) in [
+        ("A1", "=1E+308*10"),
+        ("A2", "=1E+308+1E+308"),
+        ("A3", "=-1E+308-1E+308"),
+        ("A4", "=1E+308/1E-308"),
+    ] {
+        set(&mut e, cell, formula);
+        assert_eq!(
+            err(&e, cell),
+            ErrorKind::Num,
+            "{formula} did not overflow to #NUM!"
+        );
+    }
+    // Arithmetic that stays on the real line is untouched.
+    set(&mut e, "B1", "=1E+308/10");
+    assert!(matches!(e.value_at("Sheet1", "B1"), Value::Number(n) if n > 0.0));
+}
+
+#[test]
 fn error_semantics() {
     let mut e = Engine::new();
     set(&mut e, "A1", "=1/0");

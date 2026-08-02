@@ -1,0 +1,95 @@
+# Numbers: how they are displayed, and where Excel departs from IEEE 754 on
+# purpose.
+#
+# This is the file the harness earned its keep on. Every recorded difference
+# below was found by running it, not by reading the code.
+
+[[case]]
+id = "number.general-shows-fifteen-significant-digits"
+formula = "=1/3"
+expect = "0.333333333333333"
+source = "known"
+note = """
+Excel carries a double but shows at most 15 significant decimal digits under
+General. An engine printing the shortest round-tripping representation would
+show 0.3333333333333333 — seventeen digits — and every number in the grid
+would look subtly unlike Excel's.
+"""
+
+[[case]]
+id = "number.overflow-is-a-num-error"
+formula = "=1E+308*10"
+expect = "#NUM!"
+source = "known"
+note = """
+Excel answers an overflow with #NUM!. Gridline used to return the IEEE
+infinity, which is not a spreadsheet value at all: it would have travelled
+from the grid into the state snapshot, the event log and the exported dataset.
+Found by this harness and fixed in the same commit that added it — every
+operator except `^` was affected.
+"""
+
+[[case]]
+id = "number.a-comparison-of-nearly-equal-sums-is-true"
+formula = "=0.1+0.2=0.3"
+expect = "TRUE"
+source = "known"
+known_difference = true
+note = """
+Excel rounds a final result to 15 significant digits before comparing it, so
+0.1+0.2 and 0.3 test equal even though the doubles differ in the last bit.
+Gridline compares the raw doubles and answers FALSE. This is the difference
+people notice first, because "why does my spreadsheet say these aren't equal"
+is a question nobody asks of Excel. Recorded rather than fixed: the rule has
+to be applied at the same point Excel applies it, and guessing that point
+would trade one wrong answer for a subtler one.
+"""
+
+[[case]]
+id = "number.subtracting-nearly-equal-sums-gives-zero"
+formula = "=SUM(0.1,0.2)-0.3"
+expect = "0"
+source = "known"
+known_difference = true
+note = """
+The same rule seen from the other side: Excel snaps a subtraction of nearly
+equal operands to exactly zero rather than leaving 5.55e-17. Gridline leaves
+the residue. Same fix, same reason for not guessing at it now.
+"""
+
+[[case]]
+id = "number.general-switches-to-scientific-when-large"
+formula = "=100000000000000000000"
+expect = "1E+20"
+source = "known"
+known_difference = true
+note = """
+General formatting switches to scientific notation once a number no longer
+fits the column in ordinary digits — for a value of 1E+20 Excel shows
+`1E+20`. Gridline writes all twenty-one digits. A display difference rather
+than a computation one, but it is what a user sees.
+"""
+
+[[case]]
+id = "number.text-of-a-negative-uses-the-second-format-section"
+formula = "=TEXT(-5,\"0;(0)\")"
+expect = "(5)"
+source = "known"
+known_difference = true
+functions = ["TEXT"]
+note = """
+A number format code has up to four sections separated by semicolons —
+positive; negative; zero; text — and the negative section is how accountants
+get parentheses instead of a minus sign. Gridline's format engine handles the
+common codes but not the section split, so it formats -5 with the positive
+section and returns "-5". Recorded; the fix belongs with the rest of the
+number-format work.
+"""
+
+[[case]]
+id = "number.percent-of-a-negative"
+formula = "=TEXT(-0.5,\"0%\")"
+expect = "-50%"
+source = "known"
+functions = ["TEXT"]
+note = "A single-section code applies to negatives with the sign in front."

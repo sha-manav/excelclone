@@ -51,8 +51,10 @@ crates/engine/   spreadsheet core — model, parser, evaluator, actions/events
 crates/wasm/     wasm-bindgen bindings, consumed by the web app
 crates/server/   axum + SQLite: auth, event ingest, consent, workbooks, routines
 crates/miner/    log normalization, sequence mining, routine synthesis, export
+crates/parity/   the Excel comparison harness and its scorecard
 apps/web/        React app: canvas grid, formula bar, consent UI, routines panel
 fixtures/        golden workbooks and recorded event logs used by tests
+parity/          the case corpus and the target function list
 docs/            ARCHITECTURE.md, EVENTS.md, PRIVACY.md, DATASET.md
 ```
 
@@ -89,10 +91,20 @@ are placeholders, not yours. The app renders the same vocabulary at
 ## Excel compatibility
 
 The goal is drop-in behavioral compatibility, pursued as a measured score
-rather than a claim. `crates/parity` runs a differential harness against an
-oracle corpus and regenerates `PARITY.md` in CI: function coverage, cell-match
+rather than a claim. `crates/parity` runs the engine against a corpus of cases
+and regenerates [`PARITY.md`](PARITY.md) in CI: function coverage, cell-match
 rate, and round-trip fidelity. Anything not yet implemented fails loudly
 (`#NAME?`, an import warning) and round-trips losslessly — opening and saving
 a file never destroys features Gridline does not yet understand.
+
+Every case in the corpus cites where its expectation comes from, and cases
+nobody here can settle are excluded from the score and listed as open
+questions instead. Excel does not run on the machines this is developed on, so
+no expectation was recorded by running it; `PARITY.md` says so at the top,
+because a score whose provenance is vague is worse than no score.
+
+```sh
+make parity   # measure and regenerate PARITY.md
+```
 
 No Microsoft UI assets, icons, or branding are used or reproduced.

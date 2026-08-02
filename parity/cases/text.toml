@@ -1,0 +1,219 @@
+# Text functions, including the two that look identical and are not: FIND is
+# case-sensitive and literal, SEARCH is case-insensitive and takes wildcards.
+
+[[case]]
+id = "text.left-clamps-rather-than-erroring"
+formula = "=LEFT(\"abc\",10)"
+expect = "abc"
+source = "known"
+functions = ["LEFT"]
+note = "Asking for more characters than there are gives the whole string."
+
+[[case]]
+id = "text.left-zero-is-empty"
+formula = "=LEFT(\"abc\",0)"
+expect = ""
+source = "known"
+functions = ["LEFT"]
+note = "Zero is legal and produces the empty string."
+
+[[case]]
+id = "text.left-negative-is-a-value-error"
+formula = "=LEFT(\"abc\",-1)"
+expect = "#VALUE!"
+source = "known"
+functions = ["LEFT"]
+note = "Negative is not."
+
+[[case]]
+id = "text.mid-past-the-end-is-empty"
+formula = "=MID(\"abc\",5,2)"
+expect = ""
+source = "known"
+functions = ["MID"]
+note = "Starting past the end is empty, not an error."
+
+[[case]]
+id = "text.mid-start-is-one-based"
+formula = "=MID(\"abcdef\",2,3)"
+expect = "bcd"
+source = "known"
+functions = ["MID"]
+note = "Character positions start at 1 everywhere in Excel."
+
+[[case]]
+id = "text.mid-zero-start-is-a-value-error"
+formula = "=MID(\"abc\",0,1)"
+expect = "#VALUE!"
+source = "known"
+functions = ["MID"]
+note = "Position 0 does not exist, so it is a malformed argument."
+
+[[case]]
+id = "text.trim-collapses-internal-runs"
+formula = "=TRIM(\"  a   b  \")"
+expect = "a b"
+source = "known"
+functions = ["TRIM"]
+note = """
+TRIM does more than strip the ends: it collapses every internal run of spaces
+to one. A function that only stripped the ends would pass a naive test and
+fail every real sheet pasted out of a PDF.
+"""
+
+[[case]]
+id = "text.find-is-case-sensitive"
+formula = "=FIND(\"B\",\"abc\")"
+expect = "#VALUE!"
+source = "known"
+functions = ["FIND"]
+note = "Not found is #VALUE!, and FIND does not ignore case."
+
+[[case]]
+id = "text.find-returns-a-one-based-position"
+formula = "=FIND(\"b\",\"abc\")"
+expect = "2"
+source = "known"
+functions = ["FIND"]
+note = "1-based."
+
+[[case]]
+id = "text.search-ignores-case"
+formula = "=SEARCH(\"B\",\"abc\")"
+expect = "2"
+source = "known"
+functions = ["SEARCH"]
+note = "The difference from FIND, and the reason both exist."
+
+[[case]]
+id = "text.search-takes-wildcards"
+formula = "=SEARCH(\"?c\",\"abc\")"
+expect = "2"
+source = "known"
+functions = ["SEARCH"]
+note = "? matches one character, * matches any run. FIND treats both literally."
+
+[[case]]
+id = "text.find-treats-a-wildcard-literally"
+formula = "=FIND(\"?c\",\"abc\")"
+expect = "#VALUE!"
+source = "known"
+functions = ["FIND"]
+note = "There is no literal '?c' in 'abc'."
+
+[[case]]
+id = "text.substitute-can-replace-one-occurrence"
+formula = "=SUBSTITUTE(\"aaa\",\"a\",\"b\",2)"
+expect = "aba"
+source = "known"
+functions = ["SUBSTITUTE"]
+note = "The fourth argument picks which occurrence, counting from 1."
+
+[[case]]
+id = "text.substitute-replaces-all-by-default"
+formula = "=SUBSTITUTE(\"aaa\",\"a\",\"b\")"
+expect = "bbb"
+source = "known"
+functions = ["SUBSTITUTE"]
+note = "Omitted, every occurrence is replaced."
+
+[[case]]
+id = "text.replace-works-by-position"
+formula = "=REPLACE(\"abcdef\",2,3,\"X\")"
+expect = "aXef"
+source = "known"
+functions = ["REPLACE"]
+note = """
+REPLACE takes a position and a length; SUBSTITUTE takes the text to look for.
+Confusing them is the most common text-function mistake there is.
+"""
+
+[[case]]
+id = "text.proper-capitalises-after-any-non-letter"
+formula = "=PROPER(\"o'neil mcdonald\")"
+expect = "O'Neil Mcdonald"
+source = "known"
+functions = ["PROPER"]
+note = """
+PROPER uppercases the first letter after every non-letter, so the N in O'Neil
+is capitalised — and 'mcdonald' becomes 'Mcdonald', which is wrong as a name
+and right as a definition of the function.
+"""
+
+[[case]]
+id = "text.len-counts-characters"
+formula = "=LEN(\"abc\")"
+expect = "3"
+source = "known"
+functions = ["LEN"]
+note = "Characters, not bytes. A non-ASCII string must not count as more."
+
+[[case]]
+id = "text.len-counts-characters-not-bytes"
+formula = "=LEN(\"café\")"
+expect = "4"
+source = "known"
+functions = ["LEN"]
+note = "é is one character. A byte-length implementation would answer 5."
+
+[[case]]
+id = "text.textjoin-can-skip-empties"
+given = { A1 = "'a", A3 = "'c" }
+formula = "=TEXTJOIN(\",\",TRUE,A1:A3)"
+expect = "a,c"
+source = "known"
+functions = ["TEXTJOIN"]
+note = "The second argument is ignore_empty; A2 is empty and leaves no gap."
+
+[[case]]
+id = "text.textjoin-can-keep-empties"
+given = { A1 = "'a", A3 = "'c" }
+formula = "=TEXTJOIN(\",\",FALSE,A1:A3)"
+expect = "a,,c"
+source = "known"
+functions = ["TEXTJOIN"]
+note = "With FALSE the gap is preserved, which is what makes it a join."
+
+[[case]]
+id = "text.text-formats-with-a-number-format"
+formula = "=TEXT(1234.5,\"$#,##0.00\")"
+expect = "$1,234.50"
+source = "known"
+functions = ["TEXT"]
+note = "TEXT applies a number format code and returns the result as text."
+
+[[case]]
+id = "text.text-percent"
+formula = "=TEXT(0.5,\"0%\")"
+expect = "50%"
+source = "known"
+functions = ["TEXT"]
+note = "The % in a format code scales by 100 as well as appending the sign."
+
+[[case]]
+id = "text.value-parses-a-number"
+formula = "=VALUE(\"123\")"
+expect = "123"
+source = "known"
+functions = ["VALUE"]
+note = "The inverse of TEXT for the simple case."
+
+[[case]]
+id = "text.value-of-nonsense-is-a-value-error"
+formula = "=VALUE(\"abc\")"
+expect = "#VALUE!"
+source = "known"
+functions = ["VALUE"]
+note = "Loud, not zero."
+
+[[case]]
+id = "text.concat-joins-a-range"
+given = { A1 = "'a", A2 = "'b" }
+formula = "=CONCAT(A1:A2)"
+expect = "ab"
+source = "known"
+functions = ["CONCAT"]
+note = """
+CONCAT accepts ranges, which is the difference from CONCATENATE and the reason
+it was added.
+"""
