@@ -45,6 +45,11 @@ test.beforeEach(async ({ page }) => {
   await expect(page.locator('canvas')).toBeVisible({ timeout: 30_000 })
   // Surface engine load failures immediately rather than as a mystery later.
   expect(errors, `page errors on load: ${errors.join('; ')}`).toHaveLength(0)
+  // First run shows the consent notice, which is modal by design. These tests
+  // are about the grid, so decline: capture off means no events and no
+  // network, and the rest of the suite behaves exactly as it did before.
+  await page.getByTestId('consent-decline').click()
+  await expect(page.getByTestId('consent-modal')).toHaveCount(0)
 })
 
 test('grid renders with headers and sheet tabs', async ({ page }) => {

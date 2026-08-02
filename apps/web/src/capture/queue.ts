@@ -170,7 +170,7 @@ export class EventQueue {
   private baseDelayMs: number
   private maxDelayMs: number
   private random: () => number
-  private onChange: ((state: QueueState) => void) | null
+  private listeners: ((state: QueueState) => void)[] = []
 
   private attempt = 0
   private discarded = 0
@@ -187,7 +187,7 @@ export class EventQueue {
     this.baseDelayMs = options.baseDelayMs ?? QUEUE_DEFAULTS.baseDelayMs
     this.maxDelayMs = options.maxDelayMs ?? QUEUE_DEFAULTS.maxDelayMs
     this.random = options.random ?? Math.random
-    this.onChange = options.onChange ?? null
+    if (options.onChange) this.listeners.push(options.onChange)
     this.ready = this.hydrate()
   }
 
@@ -225,12 +225,22 @@ export class EventQueue {
     }
   }
 
+  /** Observe pending/backoff/durability changes. Returns an unsubscribe fn. */
+  subscribe(listener: (state: QueueState) => void): () => void {
+    this.listeners.push(listener)
+    return () => {
+      this.listeners = this.listeners.filter((l) => l !== listener)
+    }
+  }
+
   private emit(): void {
-    if (!this.onChange) return
-    try {
-      this.onChange(this.state())
-    } catch {
-      // Never let an observer break delivery.
+    const state = this.state()
+    for (const l of this.listeners) {
+      try {
+        l(state)
+      } catch {
+        // Never let an observer break delivery.
+      }
     }
   }
 

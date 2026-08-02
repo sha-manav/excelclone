@@ -138,7 +138,7 @@ suite('retry with backoff', () => {
     expect(queue.state().attempt).toBe(2)
 
     // The second retry waits twice as long.
-    await vi.advanceTimersByTimeAsync(1_900)
+    await vi.advanceTimersByTimeAsync(1_800)
     expect(server.attempts).toHaveLength(2)
     await vi.advanceTimersByTimeAsync(200)
     expect(server.attempts).toHaveLength(3)

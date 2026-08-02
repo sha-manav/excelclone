@@ -2,9 +2,15 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Grid } from './components/Grid'
 import { FormulaBar } from './components/FormulaBar'
 import { SheetTabs } from './components/SheetTabs'
+import { CaptureChip } from './components/CaptureChip'
+import { ConsentModal } from './components/ConsentModal'
+import { TransparencyPage } from './components/TransparencyPage'
 import { useWorkbook } from './state/useWorkbook'
+import { useCapture } from './state/useCapture'
 import { range as mkRange, rangeA1, type Addr, type Range } from './engine/actions'
 import type { MoveDirection } from './state/useWorkbook'
+
+const TRANSPARENCY_PATH = '/transparency'
 
 /** Clipboard state lives in the app, not the engine: copying changes nothing. */
 interface Clipboard {
@@ -17,6 +23,25 @@ export default function App() {
   const wb = useWorkbook()
   const [clipboard, setClipboard] = useState<Clipboard | null>(null)
   const gridHostRef = useRef<HTMLDivElement>(null)
+
+  // Routing, such as it is: two screens do not justify a router, and the
+  // transparency page has to be linkable rather than a modal.
+  const [path, setPath] = useState(() => window.location.pathname)
+  useEffect(() => {
+    const onPop = () => setPath(window.location.pathname)
+    window.addEventListener('popstate', onPop)
+    return () => window.removeEventListener('popstate', onPop)
+  }, [])
+  const navigate = useCallback((to: string) => {
+    window.history.pushState({}, '', to)
+    setPath(to)
+  }, [])
+
+  const capture = useCapture({
+    engine: wb.engine,
+    sheet: wb.activeSheet,
+    selection: rangeA1(wb.selection.range),
+  })
 
   const activeInfo = wb.sheets.find((s) => s.name === wb.activeSheet)
   const active = wb.selection.anchor
@@ -147,6 +172,22 @@ export default function App() {
     )
   }
 
+  // The transparency page is reachable before consent is answered — the modal
+  // links to it, so covering it with the modal would make the link useless.
+  if (path === TRANSPARENCY_PATH) {
+    return (
+      <TransparencyPage
+        mode={capture.mode}
+        state={capture.state}
+        dropped={capture.dropped}
+        pending={capture.pending}
+        durable={capture.durable}
+        onChangeMode={capture.choose}
+        onBack={() => navigate('/')}
+      />
+    )
+  }
+
   const sel = wb.selection
 
   return (
@@ -197,6 +238,23 @@ export default function App() {
         </div>
         <div className="toolbar__spacer" />
         <span className="toolbar__status">{rangeA1(sel.range)}</span>
+        <CaptureChip
+          state={capture.state}
+          mode={capture.mode}
+          dropped={capture.dropped}
+          pending={capture.pending}
+          onToggle={capture.toggle}
+        />
+        <a
+          className="toolbar__link"
+          href={TRANSPARENCY_PATH}
+          onClick={(e) => {
+            e.preventDefault()
+            navigate(TRANSPARENCY_PATH)
+          }}
+        >
+          What&rsquo;s captured
+        </a>
       </header>
 
       <FormulaBar
@@ -329,6 +387,13 @@ export default function App() {
           <span>{wb.error}</span>
           <button onClick={wb.dismissError}>Dismiss</button>
         </div>
+      )}
+
+      {capture.needsConsent && (
+        <ConsentModal
+          onChoose={capture.choose}
+          onOpenTransparency={() => navigate(TRANSPARENCY_PATH)}
+        />
       )}
     </div>
   )

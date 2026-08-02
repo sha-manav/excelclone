@@ -279,3 +279,257 @@ button:disabled {
   border-color: var(--error);
   color: var(--error);
 }
+
+/* Capture chip */
+
+.capture-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: #fff;
+  color: var(--muted);
+  line-height: 1.6;
+  user-select: none;
+}
+
+.capture-chip__glyph {
+  font-size: 11px;
+  line-height: 1;
+}
+
+.capture-chip[data-state='capturing'] {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-wash);
+}
+
+.capture-chip[data-state='paused'] {
+  border-color: #b7791f;
+  color: #8a5b00;
+  background: rgba(183, 121, 31, 0.1);
+}
+
+.capture-chip[data-state='off'] {
+  border-style: dashed;
+}
+
+.capture-chip__warn {
+  color: var(--error);
+  font-variant-numeric: tabular-nums;
+}
+
+.toolbar__link {
+  color: var(--muted);
+  text-decoration: none;
+  border-bottom: 1px dotted var(--border);
+}
+
+.toolbar__link:hover {
+  color: var(--accent);
+}
+
+.linklike {
+  border: 0;
+  background: none;
+  padding: 0;
+  color: var(--accent);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.button--primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.button--primary:hover:not(:disabled) {
+  background: #196637;
+  border-color: #196637;
+}
+
+/* Consent modal */
+
+.consent-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(20, 20, 20, 0.45);
+  overflow: auto;
+}
+
+.consent {
+  width: min(640px, 100%);
+  max-height: 100%;
+  overflow: auto;
+  background: #fff;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+  padding: 24px 26px;
+  line-height: 1.5;
+}
+
+.consent h2 {
+  font-size: 17px;
+  margin-bottom: 10px;
+}
+
+.consent p {
+  margin-bottom: 12px;
+}
+
+.consent__note {
+  color: var(--muted);
+}
+
+.consent__modes {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin-bottom: 14px;
+}
+
+.consent__modes legend {
+  padding: 0 6px;
+  font-weight: 600;
+}
+
+.consent__mode {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 8px 0;
+  cursor: pointer;
+}
+
+.consent__mode + .consent__mode {
+  border-top: 1px solid var(--grid-line);
+}
+
+.consent__mode input {
+  margin-top: 3px;
+  flex: none;
+}
+
+.consent__badge {
+  display: inline-block;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--accent-wash);
+  color: var(--accent);
+  font-size: 11px;
+}
+
+.consent__actions {
+  display: flex;
+  gap: 10px;
+  margin: 16px 0 10px;
+}
+
+.consent__fineprint {
+  color: var(--muted);
+  font-size: 12px;
+  margin-bottom: 0;
+}
+
+.consent code,
+.transparency code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  background: #f2f2f2;
+  border-radius: 3px;
+  padding: 0 3px;
+}
+
+/* Transparency page */
+
+.transparency {
+  max-width: 780px;
+  margin: 0 auto;
+  padding: 28px 24px 64px;
+  line-height: 1.55;
+  overflow: auto;
+  height: 100vh;
+}
+
+.transparency__header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 20px;
+}
+
+.transparency h1 {
+  font-size: 20px;
+}
+
+.transparency h2 {
+  font-size: 15px;
+  margin: 26px 0 8px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+}
+
+.transparency h3 {
+  font-size: 13px;
+  margin: 14px 0 6px;
+  color: var(--muted);
+}
+
+.transparency p,
+.transparency dd {
+  margin-bottom: 10px;
+}
+
+.transparency dt {
+  font-weight: 600;
+  margin-top: 10px;
+}
+
+.transparency__muted {
+  color: var(--muted);
+}
+
+.transparency__status {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 6px;
+  padding: 12px 14px;
+  background: var(--surface);
+}
+
+.transparency__modes {
+  display: flex;
+  gap: 6px;
+}
+
+.transparency__modes .is-current {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-wash);
+}
+
+.transparency__vocab,
+.transparency__never {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.transparency__never {
+  gap: 6px;
+}
+
+.transparency__never li::before {
+  content: '— ';
+  color: var(--muted);
+}

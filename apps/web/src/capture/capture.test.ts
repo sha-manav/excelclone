@@ -277,12 +277,16 @@ suite('the envelope matches docs/EVENTS.md', () => {
       expect(e.workbook_id).toBe('wb_test')
       expect(typeof e.ts_ms).toBe('number')
       expect(e.client_version).toBe('0.1.0')
-      expect(e.context).toEqual({
-        sheet: 'Sheet1',
-        selection: 'A1',
-        privacy_mode: 'structural',
-      })
+      expect(e.context.selection).toBe('A1')
+      expect(e.context.privacy_mode).toBe('structural')
+      // The sheet name rides on every envelope, so structural mode hashes it
+      // here too. Sending it in clear while hashing it in payloads would leak
+      // the name anyway and reveal its hash under this workbook's salt.
+      expect(e.context.sheet).not.toBe('Sheet1')
+      expect(e.context.sheet).toMatch(/^[0-9a-f]{16}$/)
     }
+    // The same name always hashes the same way, so sessions stay groupable.
+    expect(events[0].context.sheet).toBe(events[1].context.sheet)
     expect(events[0].seq).toBe(1)
     expect(events[1].seq).toBe(2)
     expect(events[0].session_id).toBe(events[1].session_id)

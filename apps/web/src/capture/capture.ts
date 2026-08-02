@@ -20,6 +20,7 @@
 import {
   actionVocabulary as wasmActionVocabulary,
   describeAction as wasmDescribeAction,
+  redactLabel as wasmRedactLabel,
 } from 'gridline-wasm'
 import type { Action } from '../engine/actions'
 
@@ -79,6 +80,9 @@ export interface AttachableEngine {
 /** `describeAction`'s signature, injectable so tests can run without wasm. */
 export type DescribeFn = (actionJson: string, mode: string, salt: string) => string
 
+/** `redactLabel`'s signature, injectable for the same reason. */
+export type RedactLabelFn = (text: string, mode: string, salt: string) => string
+
 export interface CaptureOptions {
   actorId: string
   workbookId: string
@@ -93,6 +97,7 @@ export interface CaptureOptions {
   sink: CaptureSink
   mode?: PrivacyMode
   describe?: DescribeFn
+  redactLabel?: RedactLabelFn
   clientVersion?: string
   /** Hard cap on buffered events before the oldest are dropped. */
   capacity?: number
@@ -270,6 +275,7 @@ export class CaptureController {
   private readContext: () => { sheet: string; selection: string }
   private sink: CaptureSink
   private describe: DescribeFn
+  private redactLabel: RedactLabelFn
 
   private mode: PrivacyMode
   private paused = false
@@ -297,6 +303,7 @@ export class CaptureController {
     this.readContext = options.context
     this.sink = options.sink
     this.describe = options.describe ?? wasmDescribeAction
+    this.redactLabel = options.redactLabel ?? wasmRedactLabel
     this.mode = options.mode ?? 'off'
     this.opts = {
       capacity: options.capacity ?? DEFAULTS.capacity,
@@ -542,7 +549,10 @@ export class CaptureController {
       action,
       payload,
       context: {
-        sheet: ctx.sheet,
+        // The sheet name rides on every event, so it is redacted exactly as
+        // payload sheet names are. Leaving it clear would leak the name and
+        // expose a matched hash/plaintext pair for this workbook's salt.
+        sheet: this.redactSheet(ctx.sheet),
         selection: ctx.selection,
         privacy_mode: this.mode,
       },
@@ -550,6 +560,17 @@ export class CaptureController {
     })
 
     if (this.buffer.size >= this.opts.batchSize) this.scheduleImmediateFlush()
+  }
+
+  /** Redact the context sheet name, failing closed if the redactor throws. */
+  private redactSheet(name: string): string {
+    if (name === '' || this.mode === 'full') return name
+    try {
+      return this.redactLabel(name, this.mode, this.salt)
+    } catch {
+      // Never transmit the raw name because redaction failed.
+      return ''
+    }
   }
 
   // -- delivery ------------------------------------------------------------

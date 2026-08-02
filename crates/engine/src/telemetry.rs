@@ -167,6 +167,25 @@ fn redact_label(text: &str, mode: PrivacyMode, salt: &str) -> Json {
     }
 }
 
+/// Redact a label that has to stay a plain string on the wire, such as
+/// `context.sheet`.
+///
+/// The envelope's context carries the sheet name on *every* event. Leaving it
+/// in clear while hashing the same name inside payloads would be worse than
+/// not hashing at all: it leaks the name anyway, and it hands an observer a
+/// matched hash/plaintext pair for this workbook's salt, which unpicks every
+/// other hash of that value.
+pub fn redact_label_text(text: &str, mode: PrivacyMode, salt: &str) -> String {
+    match mode {
+        PrivacyMode::Full => text.to_string(),
+        PrivacyMode::Off => String::new(),
+        PrivacyMode::Structural => hash_literal(text, "text", salt)["hash"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string(),
+    }
+}
+
 fn a1(addr: &crate::addr::CellAddr) -> String {
     addr.to_a1()
 }
@@ -402,6 +421,32 @@ mod tests {
         // The shape survives: a filter on one column with one allowed value.
         assert_eq!(payload["range"], "A1:A9");
         assert_eq!(payload["allowed_count"], 1);
+    }
+
+    #[test]
+    fn context_labels_are_redacted_consistently_with_payloads() {
+        // The same sheet name must not be hashed in one place and clear in
+        // another: that leaks it and reveals the hash of a known value.
+        let payload_hash = describe(
+            &Action::SheetAdd {
+                name: "Payroll Q3".into(),
+            },
+            PrivacyMode::Structural,
+            "s",
+        )
+        .1["name"]["hash"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let context = redact_label_text("Payroll Q3", PrivacyMode::Structural, "s");
+        assert_eq!(context, payload_hash);
+        assert!(!context.contains("Payroll"));
+
+        assert_eq!(
+            redact_label_text("Payroll Q3", PrivacyMode::Full, "s"),
+            "Payroll Q3"
+        );
+        assert_eq!(redact_label_text("Payroll Q3", PrivacyMode::Off, "s"), "");
     }
 
     #[test]

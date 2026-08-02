@@ -324,6 +324,15 @@ pub fn describe_action(action_json: &str, mode: &str, salt: &str) -> Result<Stri
         .map_err(js_err)
 }
 
+/// Redact a label that stays a plain string on the wire, such as the sheet
+/// name carried in every envelope's `context`.
+#[wasm_bindgen(js_name = redactLabel)]
+pub fn redact_label(text: &str, mode: &str, salt: &str) -> Result<String, JsValue> {
+    let mode = engine::PrivacyMode::parse(mode)
+        .ok_or_else(|| JsValue::from_str("unknown privacy mode"))?;
+    Ok(engine::telemetry::redact_label_text(text, mode, salt))
+}
+
 /// The documented action vocabulary, for the transparency page.
 #[wasm_bindgen(js_name = actionVocabulary)]
 pub fn action_vocabulary() -> Vec<String> {

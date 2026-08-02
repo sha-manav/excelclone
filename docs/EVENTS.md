@@ -54,7 +54,7 @@ Every event is a JSON object with this shape (`schema_version` 1):
 | `ts_ms` | Client wall clock, milliseconds since the Unix epoch. |
 | `action` | One of the vocabulary entries below. |
 | `payload` | Action-specific fields, documented per action. |
-| `context` | Sheet, current selection, and the privacy mode in force when captured. |
+| `context` | Sheet, current selection, and the privacy mode in force when captured. Under `structural` the sheet name is replaced by its salted hash, exactly as payload sheet names are — it would otherwise be disclosed on every single event. |
 | `client_version` | Version of the web app that produced the event. |
 
 ## Privacy modes
@@ -72,6 +72,11 @@ it contains.
 Under `structural`, a cell edit of `12345` records the hash, the type
 `number`, and the length `5` — enough to mine repetition, not enough to
 recover the number. The salt is per workbook and never leaves the server.
+
+The same rule applies wherever a name appears, including `context.sheet`.
+Hashing a value in one field while sending it in clear in another would be
+worse than not hashing it: the value leaks anyway, and the pair reveals that
+value's hash under this workbook's salt, unpicking every other occurrence.
 
 ## Action vocabulary
 
