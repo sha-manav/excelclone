@@ -1,3 +1,4 @@
+/// <reference types="vitest/config" />
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
@@ -10,5 +11,11 @@ export default defineConfig({
   optimizeDeps: { exclude: ['gridline-wasm'] },
   server: {
     fs: { allow: ['..', '../../crates/wasm/pkg'] },
+  },
+  test: {
+    // `e2e/` belongs to Playwright, which has its own runner; without this
+    // vitest tries to execute the specs and fails on its missing globals.
+    include: ['src/**/*.test.{ts,tsx}'],
+    environment: 'node',
   },
 })
