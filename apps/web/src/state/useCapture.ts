@@ -197,6 +197,13 @@ export function useCapture({ engine, sheet, selection }: CaptureInput): CaptureA
     let cancelled = false
     void api.getConsent().then((res) => {
       if (cancelled || !res.ok) return
+      // The server tells us who it thinks we are; adopt that before sending
+      // anything, or every envelope is rejected as a mismatched actor.
+      const serverActor = (res.data as { actor_id?: string } | undefined)?.actor_id
+      if (serverActor) {
+        writeLocal(ACTOR_KEY, serverActor)
+        controller.setActorId(serverActor)
+      }
       const record = validConsent(res.data)
       // No record on file means the notice has not been answered. Leave the
       // modal showing rather than inventing an answer on the user's behalf.

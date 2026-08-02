@@ -30,14 +30,14 @@ function trackIngest(page: Page): { count: () => number; bodies: () => string[] 
  * own gating has its own suite, and a network dependency would make this
  * flaky rather than more truthful.
  */
-async function stubApi(page: Page) {
+async function stubApi(page: Page, consentBody?: Record<string, unknown>) {
   await page.route('**/v1/**', async (route) => {
     const url = route.request().url()
     if (url.includes('/v1/consent/me')) {
       return route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify({ mode: null, captures: false }),
+        body: JSON.stringify(consentBody ?? { mode: null, captures: false }),
       })
     }
     return route.fulfill({
@@ -48,8 +48,11 @@ async function stubApi(page: Page) {
   })
 }
 
-async function gotoFresh(page: Page, opts: { consent?: string } = {}) {
-  await stubApi(page)
+async function gotoFresh(
+  page: Page,
+  opts: { consent?: string; consentBody?: Record<string, unknown> } = {},
+) {
+  await stubApi(page, opts.consentBody)
   await page.addInitScript(
     ({ key, tokenKey, consent }) => {
       window.localStorage.clear()
@@ -224,6 +227,41 @@ test.describe('capture control', () => {
     expect(sent.length, 'nothing was sent, so this proves nothing').toBeGreaterThan(0)
     expect(sent, 'the sheet name was transmitted in clear').not.toContain(sheetName)
   })
+})
+
+test('envelopes carry the actor id the server authenticated, not a local one', async ({
+  page,
+}) => {
+  // The client mints a local id so capture works before the first response,
+  // but the server rejects any envelope whose actor_id is not the
+  // authenticated one — that check is what stops a client writing into
+  // someone else's log. If the client does not converge on the server's
+  // answer, every single event is refused and capture silently does nothing.
+  const serverActor = 'u_server_side_id'
+  await gotoFresh(page, {
+    consent: grantedConsent('structural'),
+    consentBody: {
+      actor_id: serverActor,
+      mode: 'structural',
+      captures: true,
+      consent_text_version: '1',
+    },
+  })
+  await expect(page.locator('canvas')).toBeVisible({ timeout: 30_000 })
+  const ingest = trackIngest(page)
+
+  await clickCell(page, 0, 0)
+  await typeInCell(page, 'anything')
+  await page.waitForTimeout(6000)
+
+  const bodies = ingest.bodies()
+  expect(bodies.length, 'nothing was sent, so this proves nothing').toBeGreaterThan(0)
+  for (const body of bodies) {
+    const batch = JSON.parse(body) as { events: { actor_id: string }[] }
+    for (const e of batch.events) {
+      expect(e.actor_id, 'envelope used a client-invented actor id').toBe(serverActor)
+    }
+  }
 })
 
 test('the transparency page lists the live action vocabulary', async ({ page }) => {

@@ -42,11 +42,18 @@ Living checklist. Updated every session.
 - [ ] Virtualized canvas grid: selection, editing, formula bar, sheet tabs
 - [ ] Live recalc; 60fps scroll on 50k-cell fixture
 
-## M4 — Event spine
-- [ ] Action→Event pipeline; client capture (batch, offline queue)
-- [ ] Consent modal, privacy modes, capture status chip
-- [ ] Server ingest (idempotent, consent-gated)
-- [ ] Determinism/replay tests incl. proptest
+## M4 — Event spine (complete)
+- [x] Event envelope and privacy redaction in the engine, so the client
+      redacts through the same Rust the tests cover
+- [x] Client capture: ring buffer, 5s/200-event batching, IndexedDB offline
+      queue degrading to memory, nav.select sampling, never blocks the UI
+- [x] Consent modal, privacy modes, capture chip, transparency page
+- [x] axum server: idempotent + consent-gated ingest, admin-only JSONL export,
+      server-derived sessionization, SHA-256-only tokens
+- [x] Determinism/replay suite: fixture logs, resumable replay, deterministic
+      event streams, full-recalc-after-every-action property
+- [x] Verified end to end against the running server: consent gating,
+      dedupe, hashed values and sheet names, formulas preserved
 
 ## M5 — Grid completeness
 - [ ] Fill handle, context menus, formatting toolbar, sort/filter UI
@@ -64,8 +71,9 @@ Living checklist. Updated every session.
 
 ## Notes
 
-- 149 engine tests green; full CI gate (fmt, clippy -D warnings, tests,
-  wasm build, vite build) passes locally.
+- 189 Rust tests, 120 web unit tests, 18 Playwright end-to-end tests; full
+  CI gate (fmt, clippy -D warnings, tests, wasm build, vite build, e2e)
+  passes locally.
 - The property suite caught a real determinism bug: cells that only
   *syntactically* referenced a cycle (an untaken `IF` branch) were marked
   `#CIRC!` by a full recalculation but evaluated correctly by an incremental
@@ -81,6 +89,15 @@ Living checklist. Updated every session.
   `apply()` inside a `setState` updater, so React's double-invocation applied
   every cell edit twice. The second would have duplicated every captured
   event in M4.
+- Running the real client against the real server caught two more that both
+  sides' own suites had passed: the client minted its own `actor_id` while
+  the server authenticated a different one, so every event was rejected as a
+  mismatched actor; and `context.sheet` was transmitted in clear while
+  payload sheet names were hashed, leaking the name on every event and
+  exposing a matched hash/plaintext pair for the workbook salt. Identity is
+  now stamped at flush time (so events buffered before the server answers are
+  not permanently mis-attributed) and context labels redact through the same
+  Rust path.
 
 ## Known gaps carried forward
 
@@ -94,7 +111,6 @@ Living checklist. Updated every session.
 - Auto-scroll while drag-selecting past the viewport edge is not implemented.
 
 ## Resume point
-M0-M3 complete and green. Next: M4 — the event spine (client capture with
-batching and an offline queue, consent modal and capture chip, axum server
-ingest with idempotency and consent gating, and the determinism/replay
-suite over recorded fixture logs).
+M0-M4 complete and green. Next: M5 — grid completeness (fill handle polish,
+context menus, formatting toolbar, sort/filter UI, find & replace, and the
+import-warnings drawer).

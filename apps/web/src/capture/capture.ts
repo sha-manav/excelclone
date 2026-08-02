@@ -562,6 +562,25 @@ export class CaptureController {
     if (this.buffer.size >= this.opts.batchSize) this.scheduleImmediateFlush()
   }
 
+  /**
+   * Adopt the actor id the server authenticated us as.
+   *
+   * The client mints a local id so capture works before the first response,
+   * but the server rejects any envelope whose `actor_id` is not the
+   * authenticated one — that check is what stops a client forging another
+   * user's log, so the client has to converge on the server's answer rather
+   * than the other way round.
+   */
+  setActorId(actorId: string): void {
+    if (!actorId || actorId === this.actorId) return
+    this.actorId = actorId
+  }
+
+  /** The id envelopes are currently stamped with, for tests and diagnostics. */
+  currentActorId(): string {
+    return this.actorId
+  }
+
   /** Redact the context sheet name, failing closed if the redactor throws. */
   private redactSheet(name: string): string {
     if (name === '' || this.mode === 'full') return name
@@ -602,6 +621,12 @@ export class CaptureController {
   async flushNow(): Promise<void> {
     const pending = this.buffer.take(this.buffer.size)
     if (pending.length > 0) {
+      // Stamp identity on the way out, not on the way in. The server's
+      // actor id arrives asynchronously, and anything buffered before it
+      // lands would otherwise carry the client's placeholder and be
+      // rejected as a mismatched actor — permanently, since a rejected
+      // event is retried unchanged.
+      for (const envelope of pending) envelope.actor_id = this.actorId
       try {
         this.sink.enqueue(pending)
       } catch {
