@@ -4,7 +4,8 @@
 //! through `Engine::apply`; a field starting with `=` is a formula. Export
 //! writes the computed values of a sheet's used range, never formula text.
 
-use super::{apply_cell, install_sheets, ImportResult, IoError};
+use super::{apply_cell, install_sheets};
+pub use super::{ImportResult, IoError};
 use crate::addr::CellAddr;
 use crate::engine::Engine;
 use crate::model::{SheetId, Workbook};

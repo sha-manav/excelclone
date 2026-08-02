@@ -23,7 +23,9 @@ use quick_xml::Reader as XmlReader;
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
-use super::{apply_cell, install_sheets, ImportResult, ImportWarning, ImportWarningKind, IoError};
+use super::{apply_cell, install_sheets};
+// Re-exported so callers can spell them `xlsx::ImportResult` too.
+pub use super::{ImportResult, ImportWarning, ImportWarningKind, IoError};
 use crate::addr::{CellAddr, RangeAddr};
 use crate::engine::{Action, Engine};
 use crate::model::{Cell, CellContent, Sheet, Workbook};
