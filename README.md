@@ -29,11 +29,20 @@ capture mode; nothing is recorded until you do.
 Other targets:
 
 ```sh
+make demo     # seed a worked workbook and history, mine it, export the dataset
 make test     # cargo test --workspace
 make lint     # cargo fmt --check + clippy -D warnings
 make wasm     # build the engine for the browser
 make ci       # everything CI runs
 ```
+
+## The demo
+
+`make demo` builds the whole story from an empty directory: a dues ledger with
+three sittings of scripted work in it, a database holding the event log that
+work produced, the routine mined out of it, and a demonstration dataset — plus
+a second actor who declined capture, whose events are in the log and in none of
+the output. It prints the browser steps when it finishes.
 
 ## Layout
 
@@ -44,7 +53,7 @@ crates/server/   axum + SQLite: auth, event ingest, consent, workbooks, routines
 crates/miner/    log normalization, sequence mining, routine synthesis, export
 apps/web/        React app: canvas grid, formula bar, consent UI, routines panel
 fixtures/        golden workbooks and recorded event logs used by tests
-docs/            ARCHITECTURE.md, EVENTS.md, PRIVACY.md
+docs/            ARCHITECTURE.md, EVENTS.md, PRIVACY.md, DATASET.md
 ```
 
 ## How it works
@@ -71,8 +80,10 @@ replacing the literal values you type with salted hashes. There are no
 third-party analytics or telemetry SDKs in this project; data goes only to
 your own server.
 
-`docs/PRIVACY.md` explains this in plain terms and `docs/EVENTS.md` is the
-machine-readable contract. The app renders the same vocabulary at
+`docs/PRIVACY.md` explains this in plain terms, `docs/EVENTS.md` is the
+machine-readable contract, and `docs/DATASET.md` describes what an exported
+dataset contains — including the fact that under the default mode its values
+are placeholders, not yours. The app renders the same vocabulary at
 `/transparency`.
 
 ## Excel compatibility

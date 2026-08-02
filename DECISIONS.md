@@ -205,3 +205,8 @@ One-line rationale for every non-obvious choice.
 **The demo's own conventions**
 
 - **The ledger labels every column it uses and formats the rows it will grow into.** Six unlabelled columns under a header band is what an unfinished sheet looks like, and a currency band that stops at the last filled row makes the next row someone types look like a different sheet.
+
+**Saying plainly what "formulas are verbatim" costs**
+
+- **A formula's text literals and sheet names are recorded in clear, and the documents now say so where a user reads them.** `structural` hashes every literal value and every sheet name — except the ones written *inside a formula*, because the formula is kept as typed. Reading `PRIVACY.md` and `EVENTS.md` together, a careful user would have concluded sheet names are never disclosed; a dataset record showing `=VLOOKUP(B7,Rates!$A$1:$B$3,2,FALSE)` beside a hashed `context.sheet` says otherwise. Found while checking the new `DATASET.md` against a real exported record, which is the point of writing documentation against output rather than against intent.
+- **The disclosure was documented, not redacted.** Blanking string literals inside formulas would break the dataset — a replay of `=IF(F7<=0,"","")` computes something the user never saw — and the mining pipeline already reduces formulas to shapes with the text blanked and the sheet qualifier anonymised before it looks for a pattern. What was wrong was the description, not the behaviour. The consent notice, the transparency page, `PRIVACY.md`, `EVENTS.md` and `DATASET.md` now all say the same thing, and the honest advice for a sensitive sheet name is `off`.

@@ -113,7 +113,9 @@ Living checklist. Updated every session.
       seeded database: open, routines panel, preview, run, one-undo, add and
       rename a sheet, save, reopen, transparency page. Three real bugs fixed
       (see DECISIONS.md)
-- [ ] Docs complete; README
+- [x] `docs/DATASET.md`; README quick start and demo section; PRIVACY.md,
+      EVENTS.md, the consent notice and the transparency page all corrected to
+      say that a formula's text literals and sheet names are recorded in clear
 
 ## Notes
 

@@ -54,7 +54,7 @@ Every event is a JSON object with this shape (`schema_version` 1):
 | `ts_ms` | Client wall clock, milliseconds since the Unix epoch. |
 | `action` | One of the vocabulary entries below. |
 | `payload` | Action-specific fields, documented per action. |
-| `context` | Sheet, current selection, and the privacy mode in force when captured. Under `structural` the sheet name is replaced by its salted hash, exactly as payload sheet names are — it would otherwise be disclosed on every single event. |
+| `context` | Sheet, current selection, and the privacy mode in force when captured. Under `structural` the sheet name is replaced by its salted hash, exactly as payload sheet names are — it would otherwise be disclosed on every single event. A sheet name written *inside a formula* is not hashed, because the formula is recorded verbatim; see `PRIVACY.md`. |
 | `client_version` | Version of the web app that produced the event. |
 
 ## Privacy modes
