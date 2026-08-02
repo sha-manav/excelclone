@@ -283,7 +283,313 @@
           "value": "$120.00"
         }
       },
-      "formats": {},
+      "formats": {
+        "A1": {
+          "align": "center",
+          "bold": true,
+          "borders": {
+            "bottom": true,
+            "left": true,
+            "right": true,
+            "top": true
+          },
+          "fill_color": "#dbeae1"
+        },
+        "A10": {
+          "borders": {
+            "bottom": false,
+            "left": true,
+            "right": false,
+            "top": false
+          }
+        },
+        "A11": {
+          "borders": {
+            "bottom": false,
+            "left": true,
+            "right": false,
+            "top": false
+          }
+        },
+        "A12": {
+          "borders": {
+            "bottom": false,
+            "left": true,
+            "right": false,
+            "top": false
+          }
+        },
+        "A13": {
+          "borders": {
+            "bottom": false,
+            "left": true,
+            "right": false,
+            "top": false
+          }
+        },
+        "A14": {
+          "borders": {
+            "bottom": false,
+            "left": true,
+            "right": false,
+            "top": false
+          }
+        },
+        "A15": {
+          "borders": {
+            "bottom": false,
+            "left": true,
+            "right": false,
+            "top": false
+          }
+        },
+        "A16": {
+          "borders": {
+            "bottom": true,
+            "left": true,
+            "right": false,
+            "top": false
+          },
+          "font_color": "#b3261e",
+          "italic": true
+        },
+        "A9": {
+          "borders": {
+            "bottom": false,
+            "left": true,
+            "right": false,
+            "top": true
+          }
+        },
+        "B1": {
+          "align": "center",
+          "bold": true,
+          "borders": {
+            "bottom": true,
+            "left": true,
+            "right": true,
+            "top": true
+          },
+          "fill_color": "#dbeae1"
+        },
+        "B10": {
+          "borders": {
+            "bottom": false,
+            "left": false,
+            "right": true,
+            "top": false
+          }
+        },
+        "B11": {
+          "borders": {
+            "bottom": false,
+            "left": false,
+            "right": true,
+            "top": false
+          }
+        },
+        "B12": {
+          "borders": {
+            "bottom": false,
+            "left": false,
+            "right": true,
+            "top": false
+          }
+        },
+        "B13": {
+          "borders": {
+            "bottom": false,
+            "left": false,
+            "right": true,
+            "top": false
+          }
+        },
+        "B14": {
+          "borders": {
+            "bottom": false,
+            "left": false,
+            "right": true,
+            "top": false
+          }
+        },
+        "B15": {
+          "borders": {
+            "bottom": false,
+            "left": false,
+            "right": true,
+            "top": false
+          }
+        },
+        "B16": {
+          "borders": {
+            "bottom": true,
+            "left": false,
+            "right": true,
+            "top": false
+          },
+          "font_color": "#b3261e",
+          "italic": true
+        },
+        "B9": {
+          "borders": {
+            "bottom": false,
+            "left": false,
+            "right": true,
+            "top": true
+          }
+        },
+        "C1": {
+          "align": "center",
+          "bold": true,
+          "borders": {
+            "bottom": true,
+            "left": true,
+            "right": true,
+            "top": true
+          },
+          "fill_color": "#dbeae1"
+        },
+        "D1": {
+          "align": "center",
+          "bold": true,
+          "borders": {
+            "bottom": true,
+            "left": true,
+            "right": true,
+            "top": true
+          },
+          "fill_color": "#dbeae1"
+        },
+        "D2": {
+          "number_format": "$#,##0.00"
+        },
+        "D3": {
+          "number_format": "$#,##0.00"
+        },
+        "D4": {
+          "number_format": "$#,##0.00"
+        },
+        "D5": {
+          "number_format": "$#,##0.00"
+        },
+        "D6": {
+          "number_format": "$#,##0.00"
+        },
+        "E1": {
+          "align": "center",
+          "bold": true,
+          "borders": {
+            "bottom": true,
+            "left": true,
+            "right": true,
+            "top": true
+          },
+          "fill_color": "#dbeae1"
+        },
+        "E2": {
+          "number_format": "$#,##0.00"
+        },
+        "E3": {
+          "number_format": "$#,##0.00"
+        },
+        "E4": {
+          "number_format": "$#,##0.00"
+        },
+        "E5": {
+          "number_format": "$#,##0.00"
+        },
+        "E6": {
+          "number_format": "$#,##0.00"
+        },
+        "F1": {
+          "align": "center",
+          "bold": true,
+          "borders": {
+            "bottom": true,
+            "left": true,
+            "right": true,
+            "top": true
+          },
+          "fill_color": "#dbeae1"
+        },
+        "F2": {
+          "number_format": "$#,##0.00"
+        },
+        "F3": {
+          "number_format": "$#,##0.00"
+        },
+        "F4": {
+          "number_format": "$#,##0.00"
+        },
+        "F5": {
+          "number_format": "$#,##0.00"
+        },
+        "F6": {
+          "number_format": "$#,##0.00"
+        },
+        "G1": {
+          "align": "center",
+          "bold": true,
+          "borders": {
+            "bottom": true,
+            "left": true,
+            "right": true,
+            "top": true
+          },
+          "fill_color": "#dbeae1"
+        },
+        "H1": {
+          "align": "center",
+          "bold": true,
+          "borders": {
+            "bottom": true,
+            "left": true,
+            "right": true,
+            "top": true
+          },
+          "fill_color": "#dbeae1"
+        },
+        "I1": {
+          "align": "center",
+          "bold": true,
+          "borders": {
+            "bottom": true,
+            "left": true,
+            "right": true,
+            "top": true
+          },
+          "fill_color": "#dbeae1"
+        },
+        "J1": {
+          "align": "center",
+          "bold": true,
+          "borders": {
+            "bottom": true,
+            "left": true,
+            "right": true,
+            "top": true
+          },
+          "fill_color": "#dbeae1"
+        },
+        "K1": {
+          "fill_color": "#f5f5f5"
+        },
+        "K2": {
+          "fill_color": "#f5f5f5"
+        },
+        "K3": {
+          "fill_color": "#f5f5f5"
+        },
+        "K4": {
+          "fill_color": "#f5f5f5"
+        },
+        "K5": {
+          "fill_color": "#f5f5f5"
+        },
+        "K6": {
+          "fill_color": "#f5f5f5"
+        }
+      },
       "hidden_rows": [],
       "merged": [],
       "name": "Ledger"
@@ -315,7 +621,26 @@
           "value": "750"
         }
       },
-      "formats": {},
+      "formats": {
+        "A1": {
+          "bold": true
+        },
+        "A2": {
+          "bold": true
+        },
+        "A3": {
+          "bold": true
+        },
+        "B1": {
+          "bold": true
+        },
+        "B2": {
+          "bold": true
+        },
+        "B3": {
+          "bold": true
+        }
+      },
       "hidden_rows": [],
       "merged": [],
       "name": "Rates"

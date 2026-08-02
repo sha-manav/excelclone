@@ -8,7 +8,7 @@
 //! whole failure mode these tests exist to catch.
 
 use engine::io::xlsx;
-use engine::{Action, CellAddr, Engine};
+use engine::{Action, BorderPreset, CellAddr, CellFormat, Engine, FormatPatch, HAlign, RangeAddr};
 use std::path::PathBuf;
 
 fn fixtures_dir() -> PathBuf {
@@ -27,6 +27,22 @@ fn set(e: &mut Engine, sheet: &str, a1: &str, input: &str) {
         input: input.into(),
     })
     .unwrap();
+}
+
+fn fmt(e: &mut Engine, sheet: &str, range: &str, patches: Vec<FormatPatch>) {
+    e.apply(&Action::FormatApply {
+        sheet: sheet.into(),
+        range: RangeAddr::parse_a1(range).unwrap(),
+        patches,
+    })
+    .unwrap();
+}
+
+/// The resolved format at an address.
+fn format_at(e: &Engine, sheet: &str, a1: &str) -> CellFormat {
+    let s = e.wb.sheet_by_name(sheet).expect("sheet exists");
+    e.wb.formats
+        .resolve(s.format_id(CellAddr::parse_a1(a1).unwrap()))
 }
 
 /// A dues ledger exercising the function families a real back-office sheet
@@ -141,6 +157,51 @@ fn dues_ledger() -> Engine {
         "B16",
         "=VLOOKUP(\"gold\",Rates!A1:B3,2,FALSE)",
     );
+
+    // Dress it the way someone actually would, so the round trip has real
+    // formatting to lose: a header band, currency columns, a boxed summary,
+    // and a red flag on the error row.
+    fmt(
+        &mut e,
+        "Ledger",
+        "A1:J1",
+        vec![
+            FormatPatch::Bold(true),
+            FormatPatch::FillColor(Some("#dbeae1".into())),
+            FormatPatch::Align(Some(HAlign::Center)),
+            FormatPatch::Border(BorderPreset::All),
+        ],
+    );
+    fmt(
+        &mut e,
+        "Ledger",
+        "D2:F6",
+        vec![FormatPatch::NumberFormat(Some("$#,##0.00".into()))],
+    );
+    fmt(
+        &mut e,
+        "Ledger",
+        "A9:B16",
+        vec![FormatPatch::Border(BorderPreset::Outline)],
+    );
+    fmt(
+        &mut e,
+        "Ledger",
+        "A16:B16",
+        vec![
+            FormatPatch::FontColor(Some("#b3261e".into())),
+            FormatPatch::Italic(true),
+        ],
+    );
+    // A format with no cell under it: the column heading for a field nobody
+    // has filled in yet.
+    fmt(
+        &mut e,
+        "Ledger",
+        "K1:K6",
+        vec![FormatPatch::FillColor(Some("#f5f5f5".into()))],
+    );
+    fmt(&mut e, "Rates", "A1:B3", vec![FormatPatch::Bold(true)]);
 
     e
 }
@@ -265,4 +326,139 @@ fn golden_fixtures_round_trip_losslessly() {
             "{name}: state changed on the second round trip"
         );
     }
+}
+
+/// Formatting must survive the trip through xlsx, not merely exist in memory.
+#[test]
+fn formatting_survives_a_round_trip() {
+    let built = dues_ledger();
+    let bytes = xlsx::export(&built.wb).expect("export");
+    let back = xlsx::import(&bytes).expect("import").engine;
+
+    let header = format_at(&back, "Ledger", "A1");
+    assert!(header.bold, "header lost its weight");
+    assert_eq!(header.fill_color.as_deref(), Some("#dbeae1"));
+    assert_eq!(header.align, Some(HAlign::Center));
+    assert!(header.borders.top && header.borders.bottom);
+
+    assert_eq!(
+        format_at(&back, "Ledger", "E3").number_format.as_deref(),
+        Some("$#,##0.00")
+    );
+
+    let flag = format_at(&back, "Ledger", "A16");
+    assert!(flag.italic);
+    assert_eq!(flag.font_color.as_deref(), Some("#b3261e"));
+
+    // The summary box: an outline puts edges only on the perimeter, and that
+    // asymmetry has to survive too — a round trip that turned every cell into
+    // a full box would still "have borders".
+    assert!(format_at(&back, "Ledger", "A9").borders.top);
+    assert!(!format_at(&back, "Ledger", "A10").borders.top);
+
+    // A formatted cell with nothing in it must come back formatted and still
+    // empty.
+    assert_eq!(
+        format_at(&back, "Ledger", "K3").fill_color.as_deref(),
+        Some("#f5f5f5")
+    );
+    assert!(
+        !back
+            .wb
+            .sheet_by_name("Ledger")
+            .unwrap()
+            .cells
+            .contains_key(&CellAddr::parse_a1("K3").unwrap()),
+        "an empty formatted cell came back holding something"
+    );
+}
+
+#[test]
+fn a_freshly_opened_workbook_has_nothing_to_undo() {
+    // Import replays the file through `apply`, so without an explicit reset
+    // the first Ctrl+Z after opening a file un-types a cell the user never
+    // typed — and the second, and the third.
+    let bytes = xlsx::export(&dues_ledger().wb).expect("export");
+    let imported = xlsx::import(&bytes).expect("import").engine;
+    assert!(!imported.can_undo());
+    assert!(!imported.can_redo());
+}
+
+/// Changing one cell's formatting in an *imported* workbook must append to
+/// `xl/styles.xml` rather than rewrite it, so every other cell keeps exactly
+/// the formatting it arrived with — including the parts we do not model.
+#[test]
+fn reformatting_an_imported_workbook_leaves_the_rest_alone() {
+    let bytes = xlsx::export(&dues_ledger().wb).expect("export");
+    let mut engine = xlsx::import(&bytes).expect("import").engine;
+    assert!(
+        engine.wb.preserved.is_some(),
+        "the preserved-package path is the one under test here"
+    );
+
+    let before_header = format_at(&engine, "Ledger", "A1");
+    fmt(
+        &mut engine,
+        "Ledger",
+        "A9",
+        vec![FormatPatch::FillColor(Some("#ffff00".into()))],
+    );
+
+    let patched = xlsx::export(&engine.wb).expect("re-export through the preserved package");
+    let back = xlsx::import(&patched).expect("re-import").engine;
+
+    // The edit landed, keeping the outline border it already had.
+    let edited = format_at(&back, "Ledger", "A9");
+    assert_eq!(edited.fill_color.as_deref(), Some("#ffff00"));
+    assert!(edited.borders.top, "the edit dropped the existing border");
+
+    // Everything else is exactly as it was.
+    assert_eq!(format_at(&back, "Ledger", "A1"), before_header);
+    assert_eq!(
+        format_at(&back, "Ledger", "E3").number_format.as_deref(),
+        Some("$#,##0.00")
+    );
+    assert_eq!(
+        format_at(&back, "Ledger", "A16").font_color.as_deref(),
+        Some("#b3261e")
+    );
+    assert_eq!(
+        format_at(&back, "Ledger", "K3").fill_color.as_deref(),
+        Some("#f5f5f5")
+    );
+    // And the values are untouched: a style patch must not disturb the data.
+    assert_eq!(
+        back.wb.state_snapshot()["sheets"][0]["cells"],
+        engine.wb.state_snapshot()["sheets"][0]["cells"]
+    );
+}
+
+/// Saving an imported workbook without touching its formatting must not add a
+/// single record to the style sheet. This is what makes "open and save" safe
+/// on a file full of formatting we do not model.
+#[test]
+fn saving_an_untouched_import_does_not_grow_the_style_sheet() {
+    let bytes = xlsx::export(&dues_ledger().wb).expect("export");
+    let imported = xlsx::import(&bytes).expect("import").engine;
+    let original_styles = imported
+        .wb
+        .preserved
+        .as_ref()
+        .and_then(|p| p.part("xl/styles.xml"))
+        .expect("the fixture has a style sheet")
+        .to_vec();
+
+    let resaved = xlsx::export(&imported.wb).expect("re-export");
+    let after = xlsx::import(&resaved).expect("re-import");
+    let after_styles = after
+        .engine
+        .wb
+        .preserved
+        .as_ref()
+        .and_then(|p| p.part("xl/styles.xml"))
+        .expect("style sheet survived");
+    assert_eq!(
+        original_styles, after_styles,
+        "an untouched save rewrote xl/styles.xml"
+    );
 }

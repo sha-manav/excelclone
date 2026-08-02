@@ -514,6 +514,18 @@ impl Engine {
         self.rebuild_deps_and_recalc_all();
     }
 
+    /// Forget the undo and redo history, keeping the workbook.
+    ///
+    /// Import replays a file cell by cell through `apply`, which is what keeps
+    /// the importer honest — but it also means a freshly opened workbook
+    /// arrives with one undo entry per imported cell, and the user's first
+    /// Ctrl+Z un-types a cell they never typed. Opening a file is a new
+    /// starting point, not an edit.
+    pub fn clear_history(&mut self) {
+        self.undo_stack.clear();
+        self.redo_stack.clear();
+    }
+
     pub fn can_undo(&self) -> bool {
         !self.undo_stack.is_empty()
     }

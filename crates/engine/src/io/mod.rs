@@ -9,6 +9,7 @@
 //! export can write unmodeled parts back untouched.
 
 pub mod csv;
+pub(crate) mod styles;
 pub mod xlsx;
 
 use crate::addr::CellAddr;

@@ -23,13 +23,18 @@ use quick_xml::Reader as XmlReader;
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
+use super::styles::{StyleAdditions, StyleSheet};
 use super::{apply_cell, install_sheets};
 // Re-exported so callers can spell them `xlsx::ImportResult` too.
 pub use super::{ImportResult, ImportWarning, ImportWarningKind, IoError};
 use crate::addr::{CellAddr, RangeAddr};
 use crate::engine::{Action, Engine};
+use crate::format::CellFormat;
 use crate::model::{Cell, CellContent, Sheet, Workbook};
 use crate::value::Value;
+
+/// The part every xlsx keeps its formatting in.
+const STYLES_PART: &str = "xl/styles.xml";
 
 /// Refuse packages whose declared uncompressed size is absurd, so a zip bomb
 /// cannot exhaust memory during import.
@@ -82,6 +87,10 @@ pub struct PreservedPackage {
     sheet_parts: Vec<(String, String)>,
     /// Part name -> detail captured from the original sheet XML.
     sheets: HashMap<String, PreservedSheet>,
+    /// `xl/styles.xml`, parsed down to the formatting we model, so export can
+    /// tell an untouched cell (write its original `s` back) from an edited one
+    /// (append a new `<xf>`).
+    styles: StyleSheet,
 }
 
 impl fmt::Debug for PreservedPackage {
@@ -138,6 +147,7 @@ impl PreservedPackage {
             entries,
             sheet_parts: Vec::new(),
             sheets: HashMap::new(),
+            styles: StyleSheet::default(),
         })
     }
 }
@@ -267,6 +277,18 @@ pub fn import(bytes: &[u8]) -> Result<ImportResult, IoError> {
         let sheet = scan_worksheet(&xml, &mut features)?;
         package.sheets.insert(part, sheet);
     }
+    // A style sheet we cannot parse is reported rather than fatal: the cells
+    // still import, they just arrive unformatted, and the original indices are
+    // preserved so an unedited round trip is still lossless.
+    if let Some(bytes) = package.part(STYLES_PART).map(|b| b.to_vec()) {
+        match StyleSheet::parse(&bytes) {
+            Ok(s) => package.styles = s,
+            Err(e) => warnings.push(ImportWarning::new(
+                ImportWarningKind::UnsupportedFeature,
+                format!("{STYLES_PART} could not be read ({e}); cell formatting was not imported"),
+            )),
+        }
+    }
     warnings.extend(features.warnings());
 
     let mut engine = Engine::new();
@@ -302,8 +324,42 @@ pub fn import(bytes: &[u8]) -> Result<ImportResult, IoError> {
         }
     }
 
+    install_formats(&mut engine, &package);
     engine.wb.preserved = Some(package);
+    // Opening a file is a starting point, not an edit.
+    engine.clear_history();
     Ok(ImportResult { engine, warnings })
+}
+
+/// Populate `Sheet::formats` from the original `s` indices.
+///
+/// This is written straight into the model rather than replayed as
+/// `FormatApply` actions. Formatting is not something the user did in this
+/// session, and pushing thousands of format actions onto the undo stack would
+/// make the first Ctrl+Z after opening a file unformat part of it.
+fn install_formats(engine: &mut Engine, package: &PreservedPackage) {
+    for (name, part) in &package.sheet_parts {
+        let Some(detail) = package.sheets.get(part) else {
+            continue;
+        };
+        let Some(sid) = engine.wb.sheet_id_by_name(name) else {
+            continue;
+        };
+        for (addr, s) in &detail.styles {
+            let format = package.styles.format_for(Some(s));
+            if format.is_default() {
+                continue;
+            }
+            if let Some(id) = engine.wb.formats.intern(format) {
+                engine
+                    .wb
+                    .sheet_mut(sid)
+                    .expect("sheet exists")
+                    .formats
+                    .insert(*addr, id);
+            }
+        }
+    }
 }
 
 /// The user-visible input string for every populated cell of one worksheet:
@@ -712,6 +768,28 @@ fn export_preserved(wb: &Workbook, package: &PreservedPackage) -> Result<Vec<u8>
         }
     }
 
+    // Resolve every cell's style index first, because doing so is what
+    // discovers which new `<xf>` records `xl/styles.xml` needs; the sheets and
+    // the style sheet then get patched from the same answer.
+    let mut additions = StyleAdditions::new(&package.styles);
+    let mut style_attrs: HashMap<&str, BTreeMap<CellAddr, String>> = HashMap::new();
+    for (name, part) in &package.sheet_parts {
+        let (Some(sheet), Some(detail)) = (wb.sheet_by_name(name), package.sheets.get(part)) else {
+            continue;
+        };
+        style_attrs.insert(
+            part.as_str(),
+            resolve_style_indices(wb, sheet, detail, package, &mut additions),
+        );
+    }
+
+    if !additions.is_empty() && package.part(STYLES_PART).is_none() {
+        return Err(IoError::Unrepresentable(format!(
+            "the workbook has no {STYLES_PART} to record new formatting in; \
+             formatting a package without a style sheet is not supported yet"
+        )));
+    }
+
     let mut patched: HashMap<&str, Vec<u8>> = HashMap::new();
     for (name, part) in &package.sheet_parts {
         let (Some(sheet), Some(entry)) = (
@@ -721,7 +799,16 @@ fn export_preserved(wb: &Workbook, package: &PreservedPackage) -> Result<Vec<u8>
             continue;
         };
         let detail = package.sheets.get(part).cloned().unwrap_or_default();
-        patched.insert(part.as_str(), patch_sheet_xml(&entry.data, sheet, &detail)?);
+        let attrs = style_attrs.remove(part.as_str()).unwrap_or_default();
+        patched.insert(
+            part.as_str(),
+            patch_sheet_xml(&entry.data, sheet, &detail, &attrs)?,
+        );
+    }
+    if !additions.is_empty() {
+        if let Some(original) = package.part(STYLES_PART) {
+            patched.insert(STYLES_PART, additions.patch(original)?);
+        }
     }
 
     let mut out = Vec::new();
@@ -752,10 +839,50 @@ fn export_preserved(wb: &Workbook, package: &PreservedPackage) -> Result<Vec<u8>
 /// merges) in the original worksheet part, leaving every sibling element -
 /// cols, sheetPr, autoFilter, conditionalFormatting, drawing references - as
 /// it was.
+/// The `s` index every cell should carry on export, as a ready-to-splice
+/// attribute string.
+///
+/// A cell whose format still matches what its original `<xf>` said keeps that
+/// exact index, so a workbook opened and saved without touching the formatting
+/// is byte-identical in this respect — including for the parts of that `<xf>`
+/// we never modelled. Only a cell whose format actually changed gets a new
+/// index, and that index is appended rather than substituted, so nothing else
+/// in the file shifts.
+fn resolve_style_indices(
+    wb: &Workbook,
+    sheet: &Sheet,
+    detail: &PreservedSheet,
+    package: &PreservedPackage,
+    additions: &mut StyleAdditions,
+) -> BTreeMap<CellAddr, String> {
+    let mut out = BTreeMap::new();
+    let addrs: BTreeSet<CellAddr> = detail
+        .styles
+        .keys()
+        .copied()
+        .chain(sheet.formats.keys().copied())
+        .collect();
+    for addr in addrs {
+        let original_s = detail.styles.get(&addr);
+        let current: CellFormat = wb.formats.resolve(sheet.format_id(addr));
+        if current == package.styles.format_for(original_s.map(|s| s.as_str())) {
+            if let Some(s) = original_s {
+                out.insert(addr, s.clone());
+            }
+            continue;
+        }
+        let base = original_s.and_then(|s| s.parse::<usize>().ok());
+        let index = additions.index_for(&package.styles, &current, base);
+        out.insert(addr, index.to_string());
+    }
+    out
+}
+
 fn patch_sheet_xml(
     original: &[u8],
     sheet: &Sheet,
     detail: &PreservedSheet,
+    style_attrs: &BTreeMap<CellAddr, String>,
 ) -> Result<Vec<u8>, IoError> {
     let spans = scan_spans(original)?;
     let Some(sheet_data) = spans.sheet_data.clone() else {
@@ -766,7 +893,7 @@ fn patch_sheet_xml(
     };
 
     let mut edits: Vec<(ByteSpan<usize>, String)> =
-        vec![(sheet_data, write_sheet_data(sheet, detail))];
+        vec![(sheet_data, write_sheet_data(sheet, detail, style_attrs))];
 
     let current: BTreeSet<String> = sheet.merged.iter().map(|r| r.to_a1()).collect();
     if current != detail.merged {
@@ -787,14 +914,16 @@ fn patch_sheet_xml(
     // `<dimension>` is a hint that readers trust; a stale one hides cells we
     // just added.
     if let Some(span) = spans.dimension.clone() {
-        let bounds = emitted_bounds(sheet, detail)
+        let bounds = emitted_bounds(sheet, detail, style_attrs)
             .map(|r| r.to_a1())
             .unwrap_or_else(|| "A1".to_string());
         edits.push((span, format!("<dimension ref=\"{}\"/>", bounds)));
     }
 
     // Apply from the end so earlier spans keep their offsets.
-    edits.sort_by_key(|(span, _)| span.start);
+    // (start, end), so a zero-length insertion that shares an offset with a
+    // replacement is applied after it rather than being overwritten by it.
+    edits.sort_by_key(|(span, _)| (span.start, span.end));
     let mut out = original.to_vec();
     for (span, text) in edits.into_iter().rev() {
         if span.start > out.len() || span.end > out.len() || span.start > span.end {
@@ -807,8 +936,16 @@ fn patch_sheet_xml(
 
 /// Bounding box of everything `write_sheet_data` emits: model cells plus the
 /// formatting-only cells we carry over.
-fn emitted_bounds(sheet: &Sheet, detail: &PreservedSheet) -> Option<RangeAddr> {
-    let mut addrs = sheet.cells.keys().chain(detail.styles.keys());
+fn emitted_bounds(
+    sheet: &Sheet,
+    detail: &PreservedSheet,
+    style_attrs: &BTreeMap<CellAddr, String>,
+) -> Option<RangeAddr> {
+    let mut addrs = sheet
+        .cells
+        .keys()
+        .chain(detail.styles.keys())
+        .chain(style_attrs.keys());
     let first = *addrs.next()?;
     let mut range = RangeAddr::single(first);
     for a in addrs {
@@ -835,14 +972,18 @@ fn write_merge_cells(ranges: &BTreeSet<String>) -> String {
 /// Generate `<sheetData>` from the model, re-attaching each cell's original
 /// style index and each row's original attributes. Rows and cells that carry
 /// only formatting are emitted empty so that formatting is not lost.
-fn write_sheet_data(sheet: &Sheet, detail: &PreservedSheet) -> String {
+fn write_sheet_data(
+    sheet: &Sheet,
+    detail: &PreservedSheet,
+    style_attrs: &BTreeMap<CellAddr, String>,
+) -> String {
     let mut rows: BTreeMap<u32, BTreeMap<u32, Option<&Cell>>> = BTreeMap::new();
     for (addr, cell) in &sheet.cells {
         rows.entry(addr.row)
             .or_default()
             .insert(addr.col, Some(cell));
     }
-    for addr in detail.styles.keys() {
+    for addr in detail.styles.keys().chain(style_attrs.keys()) {
         rows.entry(addr.row)
             .or_default()
             .entry(addr.col)
@@ -869,8 +1010,7 @@ fn write_sheet_data(sheet: &Sheet, detail: &PreservedSheet) -> String {
         out.push_str(&format!("<row r=\"{}\"{}>", r + 1, attrs));
         for (c, cell) in cells {
             let addr = CellAddr::new(r, c);
-            let style = detail
-                .styles
+            let style = style_attrs
                 .get(&addr)
                 .map(|s| format!(" s=\"{}\"", escape_xml(s)))
                 .unwrap_or_default();
@@ -955,7 +1095,7 @@ fn number_xml(n: f64) -> Option<String> {
     n.is_finite().then(|| format!("{}", n))
 }
 
-fn escape_xml(s: &str) -> String {
+pub(crate) fn escape_xml(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for ch in s.chars() {
         match ch {
@@ -994,37 +1134,120 @@ fn export_fresh(wb: &Workbook) -> Result<Vec<u8>, IoError> {
             ws.merge_range(r0, c0, r1, c1, "", &rust_xlsxwriter::Format::default())?;
         }
 
-        let mut cells: Vec<(&CellAddr, &Cell)> = sheet.cells.iter().collect();
-        cells.sort_by_key(|(a, _)| **a);
-        for (addr, cell) in cells {
-            let (row, col) = rc(*addr)?;
-            match &cell.content {
-                CellContent::Literal(Value::Number(n)) => {
+        // Addresses that carry formatting but no value still have to be
+        // written, or a bold empty column would vanish on save.
+        let addrs: BTreeSet<CellAddr> = sheet
+            .cells
+            .keys()
+            .copied()
+            .chain(sheet.formats.keys().copied())
+            .collect();
+        for addr in addrs {
+            let (row, col) = rc(addr)?;
+            let format = writer_format(&wb.formats.resolve(sheet.format_id(addr)));
+            let fmt = format.as_ref();
+            let Some(cell) = sheet.cells.get(&addr) else {
+                if let Some(f) = fmt {
+                    ws.write_blank(row, col, f)?;
+                }
+                continue;
+            };
+            match (&cell.content, fmt) {
+                (CellContent::Literal(Value::Number(n)), None) => {
                     ws.write_number(row, col, *n)?;
                 }
-                CellContent::Literal(Value::Text(t)) => {
+                (CellContent::Literal(Value::Number(n)), Some(f)) => {
+                    ws.write_number_with_format(row, col, *n, f)?;
+                }
+                (CellContent::Literal(Value::Text(t)), None) => {
                     ws.write_string(row, col, t)?;
                 }
-                CellContent::Literal(Value::Bool(b)) => {
+                (CellContent::Literal(Value::Text(t)), Some(f)) => {
+                    ws.write_string_with_format(row, col, t, f)?;
+                }
+                (CellContent::Literal(Value::Bool(b)), None) => {
                     ws.write_boolean(row, col, *b)?;
+                }
+                (CellContent::Literal(Value::Bool(b)), Some(f)) => {
+                    ws.write_boolean_with_format(row, col, *b, f)?;
                 }
                 // Excel has no literal error cell; the text round-trips back
                 // to an error because our parser reads error codes.
-                CellContent::Literal(Value::Error(e)) => {
+                (CellContent::Literal(Value::Error(e)), None) => {
                     ws.write_string(row, col, e.code())?;
                 }
-                CellContent::Literal(Value::Empty) => {}
-                CellContent::Formula { src, cached, .. } => {
+                (CellContent::Literal(Value::Error(e)), Some(f)) => {
+                    ws.write_string_with_format(row, col, e.code(), f)?;
+                }
+                (CellContent::Literal(Value::Empty), None) => {}
+                (CellContent::Literal(Value::Empty), Some(f)) => {
+                    ws.write_blank(row, col, f)?;
+                }
+                (CellContent::Formula { src, cached, .. }, fmt) => {
                     let mut f = rust_xlsxwriter::Formula::new(src);
                     if !matches!(cached, Value::Empty) {
                         f = f.set_result(cached.display());
                     }
-                    ws.write_formula(row, col, f)?;
+                    match fmt {
+                        Some(style) => ws.write_formula_with_format(row, col, f, style)?,
+                        None => ws.write_formula(row, col, f)?,
+                    };
                 }
             }
         }
     }
     Ok(book.save_to_buffer()?)
+}
+
+/// Translate a `CellFormat` into the writer's own format type. `None` for the
+/// default, so unformatted cells are written exactly as they were before
+/// formatting existed.
+fn writer_format(f: &CellFormat) -> Option<rust_xlsxwriter::Format> {
+    use rust_xlsxwriter::{Color, Format, FormatAlign, FormatBorder};
+    if f.is_default() {
+        return None;
+    }
+    let mut out = Format::new();
+    if f.bold {
+        out = out.set_bold();
+    }
+    if f.italic {
+        out = out.set_italic();
+    }
+    if let Some(c) = f.font_color.as_deref().and_then(parse_rgb) {
+        out = out.set_font_color(Color::RGB(c));
+    }
+    if let Some(c) = f.fill_color.as_deref().and_then(parse_rgb) {
+        out = out.set_background_color(Color::RGB(c));
+    }
+    if f.borders.top {
+        out = out.set_border_top(FormatBorder::Thin);
+    }
+    if f.borders.bottom {
+        out = out.set_border_bottom(FormatBorder::Thin);
+    }
+    if f.borders.left {
+        out = out.set_border_left(FormatBorder::Thin);
+    }
+    if f.borders.right {
+        out = out.set_border_right(FormatBorder::Thin);
+    }
+    if let Some(code) = &f.number_format {
+        out = out.set_num_format(code);
+    }
+    if let Some(a) = f.align {
+        out = out.set_align(match a {
+            crate::format::HAlign::Left => FormatAlign::Left,
+            crate::format::HAlign::Center => FormatAlign::Center,
+            crate::format::HAlign::Right => FormatAlign::Right,
+        });
+    }
+    Some(out)
+}
+
+/// `#rrggbb` to the 0xRRGGBB the writer wants.
+fn parse_rgb(c: &str) -> Option<u32> {
+    u32::from_str_radix(c.trim_start_matches('#'), 16).ok()
 }
 
 fn rc(addr: CellAddr) -> Result<(u32, u16), IoError> {

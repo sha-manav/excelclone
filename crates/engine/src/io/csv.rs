@@ -49,6 +49,8 @@ pub fn import(bytes: &[u8], sheet_name: &str) -> Result<ImportResult, IoError> {
             apply_cell(&mut engine, name, addr, field, &mut warnings)?;
         }
     }
+    // Opening a file is a starting point, not an edit.
+    engine.clear_history();
     Ok(ImportResult { engine, warnings })
 }
 
