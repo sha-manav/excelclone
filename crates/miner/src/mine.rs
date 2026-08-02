@@ -179,7 +179,18 @@ fn runs_within(steps: &[Step], cfg: MineConfig, base: usize) -> Vec<Pattern> {
 /// item: at 1, `a c b` still matches `a b` but `a c d b` does not. Unbounded
 /// gaps would make almost any pair of common tokens "frequent".
 pub fn prefixspan(steps: &[Step], cfg: MineConfig) -> Vec<Pattern> {
-    let sessions = split_sessions(steps);
+    prefixspan_excluding(steps, &vec![false; steps.len()], cfg)
+}
+
+/// PrefixSpan over the steps a loop has not already accounted for.
+///
+/// `explained[i]` marks a step that a tandem repeat already covers. Such a
+/// step may not be matched, but it still *occupies its position*, so it counts
+/// against the gap tolerance exactly as an unrelated action would. Deleting it
+/// instead would make the work either side of a loop look adjacent, and
+/// manufacture a pattern out of two things that were minutes apart.
+pub fn prefixspan_excluding(steps: &[Step], explained: &[bool], cfg: MineConfig) -> Vec<Pattern> {
+    let sessions = split_sessions(steps, explained);
     if sessions.len() < cfg.min_support {
         return Vec::new();
     }
@@ -216,10 +227,19 @@ struct Projection {
     at: usize,
 }
 
-/// One session's steps, each with its index in the original stream.
-type Session = Vec<(usize, Token)>;
+/// One step of a session, with its index in the original stream.
+#[derive(Debug, Clone)]
+struct SessionStep {
+    index: usize,
+    token: Token,
+    /// A loop already accounts for this step, so no recurring pattern may
+    /// claim it as evidence.
+    explained: bool,
+}
 
-fn split_sessions(steps: &[Step]) -> Vec<Session> {
+type Session = Vec<SessionStep>;
+
+fn split_sessions(steps: &[Step], explained: &[bool]) -> Vec<Session> {
     let mut out: Vec<Session> = Vec::new();
     let mut current: Option<&str> = None;
     for (i, s) in steps.iter().enumerate() {
@@ -227,9 +247,11 @@ fn split_sessions(steps: &[Step]) -> Vec<Session> {
             current = Some(s.session_id.as_str());
             out.push(Vec::new());
         }
-        out.last_mut()
-            .expect("a session exists")
-            .push((i, s.token.clone()));
+        out.last_mut().expect("a session exists").push(SessionStep {
+            index: i,
+            token: s.token.clone(),
+            explained: explained.get(i).copied().unwrap_or(false),
+        });
     }
     out
 }
@@ -255,8 +277,10 @@ fn grow(
             (p.at + cfg.gap_tolerance + 1).min(session.len())
         };
         let mut seen_here: Vec<&Token> = Vec::new();
-        for (offset, (_, token)) in session.iter().enumerate().take(limit).skip(p.at) {
-            if seen_here.contains(&token) {
+        for (offset, step) in session.iter().enumerate().take(limit).skip(p.at) {
+            let token = &step.token;
+            // Skipped but not removed: the position still counts as a gap.
+            if step.explained || seen_here.contains(&token) {
                 continue;
             }
             seen_here.push(token);
@@ -302,8 +326,8 @@ fn occurrences_of(sessions: &[Session], pattern: &[Token], cfg: MineConfig) -> V
         let mut from = 0;
         while let Some((first, last)) = match_from(session, pattern, from, cfg) {
             out.push(Occurrence {
-                start: session[first].0,
-                end: session[last].0 + 1,
+                start: session[first].index,
+                end: session[last].index + 1,
             });
             from = last + 1; // non-overlapping
         }
@@ -320,7 +344,7 @@ fn match_from(
 ) -> Option<(usize, usize)> {
     let mut start = from;
     while start < session.len() {
-        if session[start].1 != pattern[0] {
+        if session[start].explained || session[start].token != pattern[0] {
             start += 1;
             continue;
         }
@@ -328,7 +352,7 @@ fn match_from(
         let mut ok = true;
         for want in &pattern[1..] {
             let limit = (at + cfg.gap_tolerance + 1).min(session.len());
-            match (at..limit).find(|i| session[*i].1 == *want) {
+            match (at..limit).find(|i| !session[*i].explained && session[*i].token == *want) {
                 Some(found) => at = found + 1,
                 None => {
                     ok = false;
@@ -366,14 +390,60 @@ fn is_subsequence(needle: &[Token], hay: &[Token]) -> bool {
 /// Both miners, loops first, with any recurring pattern that merely restates
 /// a loop dropped.
 pub fn mine_all(steps: &[Step], cfg: MineConfig) -> Vec<Pattern> {
-    let loops = tandem_repeats(steps, cfg);
+    let loops = merge_loops(tandem_repeats(steps, cfg));
+
+    // Steps a loop already accounts for are not independent evidence of
+    // anything else. Without this, twelve identical rows typed over three
+    // sittings produce not one proposal but a hundred and fifty: every
+    // subsequence that straddles a row boundary reaches support, and the ones
+    // that hit `max_length` look maximal only because the search stopped
+    // there. The loop is the honest description of that work; the straddles
+    // are an artefact of where you start counting.
+    let mut explained = vec![false; steps.len()];
+    for l in &loops {
+        for occ in &l.occurrences {
+            for flag in explained
+                .iter_mut()
+                .take(occ.end.min(steps.len()))
+                .skip(occ.start)
+            {
+                *flag = true;
+            }
+        }
+    }
+
     let mut out = loops.clone();
-    for p in prefixspan(steps, cfg) {
+    for p in prefixspan_excluding(steps, &explained, cfg) {
         if loops.iter().any(|l| l.tokens == p.tokens) {
             continue;
         }
         out.push(p);
     }
+    out
+}
+
+/// One loop shape, however many sittings it turned up in.
+///
+/// The detector works per session, so a habit run every morning arrives as
+/// several identical patterns. Proposing each of them separately would offer
+/// the same routine three times and understate what it saved: the user did it
+/// twelve times, not four.
+fn merge_loops(found: Vec<Pattern>) -> Vec<Pattern> {
+    let mut out: Vec<Pattern> = Vec::new();
+    for p in found {
+        match out.iter_mut().find(|q| q.tokens == p.tokens) {
+            Some(q) => {
+                q.support += p.support;
+                q.occurrences.extend(p.occurrences);
+            }
+            None => out.push(p),
+        }
+    }
+    out.sort_by(|a, b| {
+        (b.tokens.len() * b.support)
+            .cmp(&(a.tokens.len() * a.support))
+            .then(a.occurrences[0].start.cmp(&b.occurrences[0].start))
+    });
     out
 }
 

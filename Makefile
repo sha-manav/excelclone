@@ -1,8 +1,12 @@
-.PHONY: dev server web wasm test lint fmt ci
+.PHONY: dev demo server web wasm test lint fmt ci
 
 # Start server + web dev environment
 dev:
 	./scripts/dev.sh
+
+# Seed, mine and export the demonstration scenario into ./demo
+demo:
+	./scripts/demo.sh
 
 server:
 	cargo run -p server

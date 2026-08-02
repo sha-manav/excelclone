@@ -83,7 +83,11 @@ pub fn synthesize(
 
     Some(Routine {
         id: routine_id(&scored.pattern),
-        summary: summarize(&scored.pattern, scored.minutes_saved),
+        summary: summarize(
+            &scored.pattern,
+            scored.minutes_saved,
+            sittings(&scored.pattern, steps),
+        ),
         actions,
         anchor: base.to_a1(),
         requires,
@@ -285,7 +289,7 @@ fn primary_addr(a: &Action) -> Option<CellAddr> {
 
 /// A one-line description. Deliberately plain: the panel is asking someone to
 /// trust a suggestion, and vocabulary names are not an explanation.
-fn summarize(p: &Pattern, minutes: f64) -> String {
+fn summarize(p: &Pattern, minutes: f64, sittings: usize) -> String {
     use crate::normalize::Token;
     let mut parts: Vec<String> = Vec::new();
     let mut formulas = 0;
@@ -329,6 +333,13 @@ fn summarize(p: &Pattern, minutes: f64) -> String {
         parts.push(format!("{} steps", p.tokens.len()));
     }
     let repeated = match p.kind {
+        // "In a row" is a claim about one sitting. The same loop run on three
+        // separate mornings is twelve repetitions but not twelve in a row, and
+        // saying so would put a sentence in front of the user that did not
+        // happen to them.
+        PatternKind::Loop if sittings > 1 => {
+            format!("repeated {} times across {sittings} sittings", p.support)
+        }
         PatternKind::Loop => format!("repeated {} times in a row", p.support),
         PatternKind::Recurring => format!("seen in {} sessions", p.support),
     };
@@ -337,6 +348,19 @@ fn summarize(p: &Pattern, minutes: f64) -> String {
         capitalize(&parts.join(", ")),
         minutes
     )
+}
+
+/// How many distinct sittings a pattern's occurrences fall in.
+fn sittings(p: &Pattern, steps: &[Step]) -> usize {
+    let mut seen: Vec<&str> = Vec::new();
+    for occ in &p.occurrences {
+        if let Some(step) = steps.get(occ.start) {
+            if !seen.contains(&step.session_id.as_str()) {
+                seen.push(&step.session_id);
+            }
+        }
+    }
+    seen.len().max(1)
 }
 
 fn plural(n: usize) -> &'static str {
@@ -668,10 +692,19 @@ mod tests {
             occurrences: vec![Occurrence { start: 0, end: 3 }],
             kind: PatternKind::Loop,
         };
-        let text = summarize(&p, 7.4);
+        let text = summarize(&p, 7.4, 1);
         assert!(text.starts_with("Enter 1 formula"), "{text}");
         assert!(text.contains("repeated 12 times in a row"), "{text}");
         assert!(text.contains("about 7 min"), "{text}");
+
+        // The same loop run on three separate mornings is twelve repetitions
+        // but not twelve in a row, and the sentence has to say which.
+        let across = summarize(&p, 7.4, 3);
+        assert!(
+            across.contains("repeated 12 times across 3 sittings"),
+            "{across}"
+        );
+        assert!(!across.contains("in a row"), "{across}");
     }
 
     #[test]

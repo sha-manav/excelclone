@@ -358,3 +358,129 @@ fn a_routine_body_survives_the_round_trip_the_server_puts_it_through() {
         routines[0].actions_at("Sheet1", CellAddr::new(30, 4))
     );
 }
+
+/// The demo's own shape: a ten-cell row entered four times a sitting, three
+/// sittings running.
+fn ledger_rows(session: &str, first_row: u32, count: u32) -> Vec<EventEnvelope> {
+    let mut out = Vec::new();
+    for i in 0..count {
+        let row = first_row + i;
+        for (col, kind) in [("A", "text"), ("B", "text"), ("C", "text"), ("D", "number")] {
+            out.push(hashed_literal(
+                session,
+                out.len() as u64,
+                &format!("{col}{row}"),
+                kind,
+            ));
+        }
+        for (col, src) in [
+            ("E", format!("=VLOOKUP(B{row},Rates!$A$1:$B$3,2,FALSE)")),
+            ("F", format!("=E{row}-D{row}")),
+            ("G", format!("=IF(F{row}<=0,\"a\",\"b\")")),
+            ("H", format!("=PROPER(A{row})")),
+            ("I", format!("=VALUE(LEFT(C{row},4))")),
+            ("J", format!("=TEXT(E{row},\"$#,##0.00\")")),
+        ] {
+            out.push(formula(
+                session,
+                out.len() as u64,
+                &format!("{col}{row}"),
+                &src,
+            ));
+        }
+    }
+    out
+}
+
+#[test]
+fn a_loop_run_over_several_sittings_is_one_proposal_not_a_hundred() {
+    // Found by running the miner on the real demo log, where twelve identical
+    // rows produced 155 routines: every subsequence straddling a row boundary
+    // reached support, and the ones that hit the length cap looked maximal
+    // only because the search stopped there. A loop explains the steps it
+    // covers, so nothing else may count them as evidence.
+    let mut log = Vec::new();
+    for (i, session) in ["s1", "s2", "s3"].iter().enumerate() {
+        log.extend(ledger_rows(session, 7 + (i as u32) * 4, 4));
+    }
+    let routines = miner::mine_routines(&log, MineConfig::default());
+    assert_eq!(
+        routines.len(),
+        1,
+        "expected one proposal, got {}:\n{}",
+        routines.len(),
+        routines
+            .iter()
+            .take(5)
+            .map(|r| format!("  {}", r.summary))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+
+    let r = &routines[0];
+    assert_eq!(r.kind, "loop");
+    // Six formulas run; the four hashed literals are reported, not invented.
+    assert_eq!(r.actions.len(), 6, "{:?}", r.summary);
+    assert_eq!(r.requires.len(), 4);
+    // Twelve repetitions, but only four of them were consecutive.
+    assert_eq!(r.support, 12);
+    assert!(
+        r.summary.contains("across 3 sittings"),
+        "the summary claims more than happened: {}",
+        r.summary
+    );
+}
+
+#[test]
+fn work_outside_a_loop_is_still_mined() {
+    // The masking must not silence everything else in the session: a habit
+    // that happens to share a sitting with a loop is still a habit.
+    // A closing summary block, written once at the end of every sitting.
+    let closing = |session: &str, base: u64| -> Vec<EventEnvelope> {
+        [
+            ("B20", "=SUM(E7:E18)"),
+            ("B21", "=SUM(F7:F18)"),
+            ("B22", "=COUNTIF(G7:G18,\"a\")"),
+            ("B23", "=AVERAGE(E7:E18)"),
+            ("B24", "=MAX(F7:F18)"),
+            ("B25", "=MIN(F7:F18)"),
+            ("B26", "=SUMIF(B7:B18,\"x\",E7:E18)"),
+            ("B27", "=COUNTA(A7:A18)"),
+        ]
+        .iter()
+        .enumerate()
+        .map(|(i, (addr, src))| formula(session, base + i as u64, addr, src))
+        .collect()
+    };
+
+    // Control: on its own, the closing gesture is worth proposing. Without
+    // this the test could pass for the wrong reason — a gesture too small to
+    // clear the threshold looks exactly like one the masking swallowed.
+    let mut alone = Vec::new();
+    for session in ["s1", "s2", "s3"] {
+        alone.extend(closing(session, 0));
+    }
+    assert!(
+        miner::mine_routines(&alone, MineConfig::default())
+            .iter()
+            .any(|r| r.kind == "recurring"),
+        "the control never found it, so the real assertion below proves nothing"
+    );
+
+    let mut log = Vec::new();
+    for (i, session) in ["s1", "s2", "s3"].iter().enumerate() {
+        log.extend(ledger_rows(session, 7 + (i as u32) * 4, 4));
+        let base = log.len() as u64;
+        log.extend(closing(session, base));
+    }
+    let routines = miner::mine_routines(&log, MineConfig::default());
+    let summaries: Vec<&String> = routines.iter().map(|r| &r.summary).collect();
+    assert!(
+        routines.iter().any(|r| r.kind == "loop"),
+        "the loop went missing: {summaries:?}"
+    );
+    assert!(
+        routines.iter().any(|r| r.kind == "recurring"),
+        "the closing gesture went missing: {summaries:?}"
+    );
+}

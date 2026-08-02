@@ -105,11 +105,15 @@ Living checklist. Updated every session.
       relationships and `[Content_Types].xml` are spliced, never regenerated,
       and a package with no `xl/styles.xml` is given the default one at import
       so formatting always has somewhere to go
-- [ ] Demo workbook + scripted data; docs complete; README
+- [x] Seeded demo: `scripts/demo.sh` / `make demo` builds, seeds a database
+      with scripted history (including an actor who declined), writes the
+      worked workbook, mines it, exports the dataset and checks that the
+      refusal held
+- [ ] Walk the demo in the browser; docs complete; README
 
 ## Notes
 
-- 382 Rust tests, 140 web unit tests, 44 Playwright end-to-end tests; full
+- 384 Rust tests, 140 web unit tests, 44 Playwright end-to-end tests; full
   CI gate (fmt, clippy -D warnings, tests, wasm build, vite build, e2e)
   passes locally.
 - M5 found a bug that had been latent since M2: **xlsx export had never
@@ -167,6 +171,11 @@ Living checklist. Updated every session.
   Rust path.
 
 ## Known gaps carried forward
+
+- A habit written with *relative* references to a fixed table is invisible to
+  the miner, because the R1C1 shape differs in every row. That is faithful —
+  the formulas really do mean different things — but it means a sheet with
+  that latent bug in it also gets no suggestions.
 
 - `docProps/app.xml` still lists the sheet names the file arrived with. Excel
   rewrites it on save and no reader validates it against `workbook.xml`, so a

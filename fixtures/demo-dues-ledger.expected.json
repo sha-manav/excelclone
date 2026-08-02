@@ -6,37 +6,41 @@
           "input": "member",
           "value": "member"
         },
-        "A10": {
-          "input": "total outstanding",
-          "value": "total outstanding"
-        },
-        "A11": {
-          "input": "unpaid count",
-          "value": "unpaid count"
-        },
-        "A12": {
-          "input": "pro dues",
-          "value": "pro dues"
-        },
-        "A13": {
-          "input": "average owed",
-          "value": "average owed"
-        },
-        "A14": {
-          "input": "members joined before 2022",
-          "value": "members joined before 2022"
-        },
-        "A15": {
-          "input": "longest name",
-          "value": "longest name"
-        },
-        "A16": {
-          "input": "missing tier",
-          "value": "missing tier"
-        },
         "A2": {
           "input": "Ada",
           "value": "Ada"
+        },
+        "A22": {
+          "input": "total owed",
+          "value": "total owed"
+        },
+        "A23": {
+          "input": "total outstanding",
+          "value": "total outstanding"
+        },
+        "A24": {
+          "input": "unpaid count",
+          "value": "unpaid count"
+        },
+        "A25": {
+          "input": "pro dues",
+          "value": "pro dues"
+        },
+        "A26": {
+          "input": "average owed",
+          "value": "average owed"
+        },
+        "A27": {
+          "input": "members joined before 2022",
+          "value": "members joined before 2022"
+        },
+        "A28": {
+          "input": "longest name",
+          "value": "longest name"
+        },
+        "A29": {
+          "input": "missing tier",
+          "value": "missing tier"
         },
         "A3": {
           "input": "Grace",
@@ -54,45 +58,45 @@
           "input": "Edsger",
           "value": "Edsger"
         },
-        "A9": {
-          "input": "total owed",
-          "value": "total owed"
-        },
         "B1": {
           "input": "tier",
           "value": "tier"
         },
-        "B10": {
-          "input": "=SUM(F2:F6)",
-          "value": "270"
-        },
-        "B11": {
-          "input": "=COUNTIF(G2:G6,\"unpaid\")",
-          "value": "1"
-        },
-        "B12": {
-          "input": "=SUMIF(B2:B6,\"pro\",E2:E6)",
-          "value": "1500"
-        },
-        "B13": {
-          "input": "=AVERAGE(E2:E6)",
-          "value": "408"
-        },
-        "B14": {
-          "input": "=COUNTIF(I2:I6,\"<2022\")",
-          "value": "3"
-        },
-        "B15": {
-          "input": "=MAX(LEN(A2),LEN(A3),LEN(A4),LEN(A5),LEN(A6))",
-          "value": "9"
-        },
-        "B16": {
-          "input": "=VLOOKUP(\"gold\",Rates!A1:B3,2,FALSE)",
-          "value": "#N/A"
-        },
         "B2": {
           "input": "pro",
           "value": "pro"
+        },
+        "B22": {
+          "input": "=SUM(E2:E20)",
+          "value": "2040"
+        },
+        "B23": {
+          "input": "=SUM(F2:F20)",
+          "value": "270"
+        },
+        "B24": {
+          "input": "=COUNTIF(G2:G20,\"unpaid\")",
+          "value": "1"
+        },
+        "B25": {
+          "input": "=SUMIF(B2:B20,\"pro\",E2:E20)",
+          "value": "1500"
+        },
+        "B26": {
+          "input": "=AVERAGE(E2:E20)",
+          "value": "408"
+        },
+        "B27": {
+          "input": "=COUNTIF(I2:I20,\"<2022\")",
+          "value": "3"
+        },
+        "B28": {
+          "input": "=MAX(LEN(A2),LEN(A3),LEN(A4),LEN(A5),LEN(A6))",
+          "value": "9"
+        },
+        "B29": {
+          "input": "=VLOOKUP(\"gold\",Rates!$A$1:$B$3,2,FALSE)",
+          "value": "#N/A"
         },
         "B3": {
           "input": "basic",
@@ -109,10 +113,6 @@
         "B6": {
           "input": "basic",
           "value": "basic"
-        },
-        "B9": {
-          "input": "=SUM(E2:E6)",
-          "value": "2040"
         },
         "C1": {
           "input": "joined",
@@ -163,23 +163,23 @@
           "value": "120"
         },
         "E2": {
-          "input": "=VLOOKUP(B2,Rates!A1:B3,2,FALSE)",
+          "input": "=VLOOKUP(B2,Rates!$A$1:$B$3,2,FALSE)",
           "value": "750"
         },
         "E3": {
-          "input": "=VLOOKUP(B3,Rates!A1:B3,2,FALSE)",
+          "input": "=VLOOKUP(B3,Rates!$A$1:$B$3,2,FALSE)",
           "value": "120"
         },
         "E4": {
-          "input": "=VLOOKUP(B4,Rates!A1:B3,2,FALSE)",
+          "input": "=VLOOKUP(B4,Rates!$A$1:$B$3,2,FALSE)",
           "value": "300"
         },
         "E5": {
-          "input": "=VLOOKUP(B5,Rates!A1:B3,2,FALSE)",
+          "input": "=VLOOKUP(B5,Rates!$A$1:$B$3,2,FALSE)",
           "value": "750"
         },
         "E6": {
-          "input": "=VLOOKUP(B6,Rates!A1:B3,2,FALSE)",
+          "input": "=VLOOKUP(B6,Rates!$A$1:$B$3,2,FALSE)",
           "value": "120"
         },
         "F2": {
@@ -295,7 +295,15 @@
           },
           "fill_color": "#dbeae1"
         },
-        "A10": {
+        "A22": {
+          "borders": {
+            "bottom": false,
+            "left": true,
+            "right": false,
+            "top": true
+          }
+        },
+        "A23": {
           "borders": {
             "bottom": false,
             "left": true,
@@ -303,7 +311,7 @@
             "top": false
           }
         },
-        "A11": {
+        "A24": {
           "borders": {
             "bottom": false,
             "left": true,
@@ -311,7 +319,7 @@
             "top": false
           }
         },
-        "A12": {
+        "A25": {
           "borders": {
             "bottom": false,
             "left": true,
@@ -319,7 +327,7 @@
             "top": false
           }
         },
-        "A13": {
+        "A26": {
           "borders": {
             "bottom": false,
             "left": true,
@@ -327,7 +335,7 @@
             "top": false
           }
         },
-        "A14": {
+        "A27": {
           "borders": {
             "bottom": false,
             "left": true,
@@ -335,7 +343,7 @@
             "top": false
           }
         },
-        "A15": {
+        "A28": {
           "borders": {
             "bottom": false,
             "left": true,
@@ -343,7 +351,7 @@
             "top": false
           }
         },
-        "A16": {
+        "A29": {
           "borders": {
             "bottom": true,
             "left": true,
@@ -352,14 +360,6 @@
           },
           "font_color": "#b3261e",
           "italic": true
-        },
-        "A9": {
-          "borders": {
-            "bottom": false,
-            "left": true,
-            "right": false,
-            "top": true
-          }
         },
         "B1": {
           "align": "center",
@@ -372,7 +372,15 @@
           },
           "fill_color": "#dbeae1"
         },
-        "B10": {
+        "B22": {
+          "borders": {
+            "bottom": false,
+            "left": false,
+            "right": true,
+            "top": true
+          }
+        },
+        "B23": {
           "borders": {
             "bottom": false,
             "left": false,
@@ -380,7 +388,7 @@
             "top": false
           }
         },
-        "B11": {
+        "B24": {
           "borders": {
             "bottom": false,
             "left": false,
@@ -388,7 +396,7 @@
             "top": false
           }
         },
-        "B12": {
+        "B25": {
           "borders": {
             "bottom": false,
             "left": false,
@@ -396,7 +404,7 @@
             "top": false
           }
         },
-        "B13": {
+        "B26": {
           "borders": {
             "bottom": false,
             "left": false,
@@ -404,7 +412,7 @@
             "top": false
           }
         },
-        "B14": {
+        "B27": {
           "borders": {
             "bottom": false,
             "left": false,
@@ -412,7 +420,7 @@
             "top": false
           }
         },
-        "B15": {
+        "B28": {
           "borders": {
             "bottom": false,
             "left": false,
@@ -420,7 +428,7 @@
             "top": false
           }
         },
-        "B16": {
+        "B29": {
           "borders": {
             "bottom": true,
             "left": false,
@@ -429,14 +437,6 @@
           },
           "font_color": "#b3261e",
           "italic": true
-        },
-        "B9": {
-          "borders": {
-            "bottom": false,
-            "left": false,
-            "right": true,
-            "top": true
-          }
         },
         "C1": {
           "align": "center",

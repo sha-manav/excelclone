@@ -98,7 +98,10 @@ fn dues_ledger() -> Engine {
             &mut e,
             "Ledger",
             &format!("E{r}"),
-            &format!("=VLOOKUP(B{r},Rates!A1:B3,2,FALSE)"),
+            // The rate card does not move, so the reference to it is absolute:
+            // a relative one silently walks off the table when the row is
+            // filled down, which is a bug waiting in a real ledger.
+            &format!("=VLOOKUP(B{r},Rates!$A$1:$B$3,2,FALSE)"),
         );
         set(&mut e, "Ledger", &format!("F{r}"), &format!("=E{r}-D{r}"));
         set(
@@ -129,33 +132,35 @@ fn dues_ledger() -> Engine {
         );
     }
 
-    // Summary block.
-    set(&mut e, "Ledger", "A9", "total owed");
-    set(&mut e, "Ledger", "B9", "=SUM(E2:E6)");
-    set(&mut e, "Ledger", "A10", "total outstanding");
-    set(&mut e, "Ledger", "B10", "=SUM(F2:F6)");
-    set(&mut e, "Ledger", "A11", "unpaid count");
-    set(&mut e, "Ledger", "B11", "=COUNTIF(G2:G6,\"unpaid\")");
-    set(&mut e, "Ledger", "A12", "pro dues");
-    set(&mut e, "Ledger", "B12", "=SUMIF(B2:B6,\"pro\",E2:E6)");
-    set(&mut e, "Ledger", "A13", "average owed");
-    set(&mut e, "Ledger", "B13", "=AVERAGE(E2:E6)");
-    set(&mut e, "Ledger", "A14", "members joined before 2022");
-    set(&mut e, "Ledger", "B14", "=COUNTIF(I2:I6,\"<2022\")");
-    set(&mut e, "Ledger", "A15", "longest name");
+    // Summary block, well below the member table and reading a range with
+    // room in it: a ledger someone actually keeps grows, and a total that
+    // stops at the fifth row is a total that quietly goes wrong on the sixth.
+    set(&mut e, "Ledger", "A22", "total owed");
+    set(&mut e, "Ledger", "B22", "=SUM(E2:E20)");
+    set(&mut e, "Ledger", "A23", "total outstanding");
+    set(&mut e, "Ledger", "B23", "=SUM(F2:F20)");
+    set(&mut e, "Ledger", "A24", "unpaid count");
+    set(&mut e, "Ledger", "B24", "=COUNTIF(G2:G20,\"unpaid\")");
+    set(&mut e, "Ledger", "A25", "pro dues");
+    set(&mut e, "Ledger", "B25", "=SUMIF(B2:B20,\"pro\",E2:E20)");
+    set(&mut e, "Ledger", "A26", "average owed");
+    set(&mut e, "Ledger", "B26", "=AVERAGE(E2:E20)");
+    set(&mut e, "Ledger", "A27", "members joined before 2022");
+    set(&mut e, "Ledger", "B27", "=COUNTIF(I2:I20,\"<2022\")");
+    set(&mut e, "Ledger", "A28", "longest name");
     set(
         &mut e,
         "Ledger",
-        "B15",
+        "B28",
         "=MAX(LEN(A2),LEN(A3),LEN(A4),LEN(A5),LEN(A6))",
     );
     // A deliberate error, so the snapshot pins error rendering too.
-    set(&mut e, "Ledger", "A16", "missing tier");
+    set(&mut e, "Ledger", "A29", "missing tier");
     set(
         &mut e,
         "Ledger",
-        "B16",
-        "=VLOOKUP(\"gold\",Rates!A1:B3,2,FALSE)",
+        "B29",
+        "=VLOOKUP(\"gold\",Rates!$A$1:$B$3,2,FALSE)",
     );
 
     // Dress it the way someone actually would, so the round trip has real
@@ -181,13 +186,13 @@ fn dues_ledger() -> Engine {
     fmt(
         &mut e,
         "Ledger",
-        "A9:B16",
+        "A22:B29",
         vec![FormatPatch::Border(BorderPreset::Outline)],
     );
     fmt(
         &mut e,
         "Ledger",
-        "A16:B16",
+        "A29:B29",
         vec![
             FormatPatch::FontColor(Some("#b3261e".into())),
             FormatPatch::Italic(true),
@@ -346,15 +351,15 @@ fn formatting_survives_a_round_trip() {
         Some("$#,##0.00")
     );
 
-    let flag = format_at(&back, "Ledger", "A16");
+    let flag = format_at(&back, "Ledger", "A29");
     assert!(flag.italic);
     assert_eq!(flag.font_color.as_deref(), Some("#b3261e"));
 
     // The summary box: an outline puts edges only on the perimeter, and that
     // asymmetry has to survive too — a round trip that turned every cell into
     // a full box would still "have borders".
-    assert!(format_at(&back, "Ledger", "A9").borders.top);
-    assert!(!format_at(&back, "Ledger", "A10").borders.top);
+    assert!(format_at(&back, "Ledger", "A22").borders.top);
+    assert!(!format_at(&back, "Ledger", "A23").borders.top);
 
     // A formatted cell with nothing in it must come back formatted and still
     // empty.
@@ -400,7 +405,7 @@ fn reformatting_an_imported_workbook_leaves_the_rest_alone() {
     fmt(
         &mut engine,
         "Ledger",
-        "A9",
+        "A22",
         vec![FormatPatch::FillColor(Some("#ffff00".into()))],
     );
 
@@ -408,7 +413,7 @@ fn reformatting_an_imported_workbook_leaves_the_rest_alone() {
     let back = xlsx::import(&patched).expect("re-import").engine;
 
     // The edit landed, keeping the outline border it already had.
-    let edited = format_at(&back, "Ledger", "A9");
+    let edited = format_at(&back, "Ledger", "A22");
     assert_eq!(edited.fill_color.as_deref(), Some("#ffff00"));
     assert!(edited.borders.top, "the edit dropped the existing border");
 
@@ -419,7 +424,7 @@ fn reformatting_an_imported_workbook_leaves_the_rest_alone() {
         Some("$#,##0.00")
     );
     assert_eq!(
-        format_at(&back, "Ledger", "A16").font_color.as_deref(),
+        format_at(&back, "Ledger", "A29").font_color.as_deref(),
         Some("#b3261e")
     );
     assert_eq!(
