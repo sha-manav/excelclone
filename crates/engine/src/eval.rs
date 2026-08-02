@@ -174,6 +174,34 @@ impl<'a> EvalCtx<'a> {
         }
     }
 
+    /// Dense rows × cols view of a range, including empty cells. Used by
+    /// lookup and conditional-aggregation functions, which need positional
+    /// alignment rather than "populated cells only".
+    pub fn range_grid(&self, sheet: SheetId, range: RangeAddr) -> Vec<Vec<Value>> {
+        let Some(s) = self.wb.sheet(sheet) else {
+            return vec![vec![Value::Error(ErrorKind::Ref)]];
+        };
+        (range.start.row..=range.end.row)
+            .map(|r| {
+                (range.start.col..=range.end.col)
+                    .map(|c| s.value(crate::addr::CellAddr::new(r, c)))
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// Evaluate an argument as a dense grid: a range yields its cells, any
+    /// scalar yields a 1×1 grid. Also returns the range it came from, when
+    /// the argument was a reference (needed by INDEX/MATCH-style functions).
+    pub fn eval_grid(&self, e: &Expr) -> (Vec<Vec<Value>>, Option<(SheetId, RangeAddr)>) {
+        match self.eval_operand(e) {
+            Operand::Scalar(v) => (vec![vec![v]], None),
+            Operand::Range { sheet, range } => {
+                (self.range_grid(sheet, range), Some((sheet, range)))
+            }
+        }
+    }
+
     /// Iterate populated cells of a range in deterministic (row, col) order.
     pub fn range_values(&self, sheet: SheetId, range: RangeAddr) -> Vec<Value> {
         let Some(s) = self.wb.sheet(sheet) else {

@@ -3,7 +3,9 @@
 //! Function names are uppercase at parse time; unknown names evaluate to
 //! `#NAME?` (fail loudly, never silently).
 
+mod date;
 mod logic;
+mod lookup;
 mod math;
 
 use crate::ast::Expr;
@@ -40,6 +42,25 @@ pub fn call(ctx: &EvalCtx, name: &str, args: &[Expr]) -> Value {
         "ISNUMBER" => logic::isnumber(ctx, args),
         "ISTEXT" => logic::istext(ctx, args),
         "ISERROR" => logic::iserror(ctx, args),
+        // Lookup
+        "VLOOKUP" => lookup::vlookup(ctx, args),
+        "HLOOKUP" => lookup::hlookup(ctx, args),
+        "INDEX" => lookup::index(ctx, args),
+        "MATCH" => lookup::match_fn(ctx, args),
+        "XLOOKUP" => lookup::xlookup(ctx, args),
+        "CHOOSE" => lookup::choose(ctx, args),
+        // Date/time
+        "TODAY" => date::today(ctx, args),
+        "NOW" => date::now(ctx, args),
+        "DATE" => date::date(ctx, args),
+        "YEAR" => date::year(ctx, args),
+        "MONTH" => date::month(ctx, args),
+        "DAY" => date::day(ctx, args),
+        "EOMONTH" => date::eomonth(ctx, args),
+        "DATEDIF" => date::datedif(ctx, args),
+        "WEEKDAY" => date::weekday(ctx, args),
+        "RAND" => date::rand(ctx, args),
+        "RANDBETWEEN" => date::randbetween(ctx, args),
         _ => Value::Error(ErrorKind::Name),
     }
 }

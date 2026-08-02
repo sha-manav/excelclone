@@ -69,6 +69,12 @@ pub struct Sheet {
     pub cells: HashMap<CellAddr, Cell>,
     /// Merged regions; anchor (top-left) holds the value.
     pub merged: Vec<RangeAddr>,
+    /// Active value filter, if any.
+    #[serde(default)]
+    pub filter: Option<crate::engine::FilterSpec>,
+    /// Rows hidden by the active filter, ascending. View state only.
+    #[serde(default)]
+    pub hidden_rows: Vec<u32>,
 }
 
 impl Sheet {
@@ -78,6 +84,8 @@ impl Sheet {
             name: name.into(),
             cells: HashMap::new(),
             merged: Vec::new(),
+            filter: None,
+            hidden_rows: Vec::new(),
         }
     }
 
@@ -181,7 +189,14 @@ impl Workbook {
                     .collect();
                 let mut merged: Vec<String> = s.merged.iter().map(|r| r.to_a1()).collect();
                 merged.sort();
-                serde_json::json!({ "name": s.name, "cells": cells, "merged": merged })
+                let mut hidden = s.hidden_rows.clone();
+                hidden.sort_unstable();
+                serde_json::json!({
+                    "name": s.name,
+                    "cells": cells,
+                    "merged": merged,
+                    "hidden_rows": hidden,
+                })
             })
             .collect();
         serde_json::json!({ "sheets": sheets })

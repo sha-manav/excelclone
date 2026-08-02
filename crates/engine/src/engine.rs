@@ -1,15 +1,43 @@
 //! The Engine: the single mutation path `apply(Action) -> Vec<Event>` plus
 //! incremental recalculation.
 
-use crate::addr::CellAddr;
+use crate::addr::{CellAddr, RangeAddr};
 use crate::ast::{Expr, RefVisit};
 use crate::deps::DepGraph;
 use crate::eval::EvalCtx;
-use crate::model::{Cell, CellContent, CellKey, SheetId, Workbook};
+use crate::model::{Cell, CellContent, CellKey, Sheet, SheetId, Workbook};
 use crate::parser::parse_formula;
+use crate::refs::Axis;
 use crate::value::{ErrorKind, Value};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+
+/// What a paste carries over from the source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PasteMode {
+    /// Formulas (with references adjusted) and literals.
+    Formulas,
+    /// Computed results only.
+    Values,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SortKey {
+    /// Absolute column index of the key.
+    pub column: u32,
+    pub ascending: bool,
+}
+
+/// A checkbox-style value filter over one column of a range. The range's
+/// first row is treated as a header and never hidden.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FilterSpec {
+    pub range: RangeAddr,
+    pub column: u32,
+    /// Display strings that remain visible.
+    pub allowed: Vec<String>,
+}
 
 /// Semantic actions. Every state mutation flows through `Engine::apply`.
 /// The serialized action log is the source of truth: replaying it from an
@@ -27,6 +55,66 @@ pub enum Action {
         sheet: String,
         addr: CellAddr,
     },
+    RangeClear {
+        sheet: String,
+        range: RangeAddr,
+    },
+    /// Copy (or cut) a block and paste it elsewhere.
+    RangePaste {
+        source_sheet: String,
+        source: RangeAddr,
+        target_sheet: String,
+        target: RangeAddr,
+        mode: PasteMode,
+        cut: bool,
+    },
+    /// Extend `source` across `target` (fill handle / Ctrl+D / Ctrl+R).
+    FillApply {
+        sheet: String,
+        source: RangeAddr,
+        target: RangeAddr,
+    },
+    RowInsert {
+        sheet: String,
+        at: u32,
+        count: u32,
+    },
+    RowDelete {
+        sheet: String,
+        at: u32,
+        count: u32,
+    },
+    ColInsert {
+        sheet: String,
+        at: u32,
+        count: u32,
+    },
+    ColDelete {
+        sheet: String,
+        at: u32,
+        count: u32,
+    },
+    SortApply {
+        sheet: String,
+        range: RangeAddr,
+        keys: Vec<SortKey>,
+        has_header: bool,
+    },
+    FilterApply {
+        sheet: String,
+        spec: FilterSpec,
+    },
+    FilterClear {
+        sheet: String,
+    },
+    MergeApply {
+        sheet: String,
+        range: RangeAddr,
+    },
+    MergeClear {
+        sheet: String,
+        range: RangeAddr,
+    },
     SheetAdd {
         name: String,
     },
@@ -37,10 +125,12 @@ pub enum Action {
     SheetDelete {
         name: String,
     },
+    Undo,
+    Redo,
 }
 
-/// What happened as a result of an action. Carries enough context (previous
-/// state) for undo to be synthesized as an inverse action.
+/// What happened as a result of an action. Events are semantic and describe
+/// intent; `Recalced` is derived state for the UI.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum Event {
@@ -55,6 +145,64 @@ pub enum Event {
         addr: CellAddr,
         prev_input: Option<String>,
     },
+    RangeCleared {
+        sheet: String,
+        range: RangeAddr,
+        cleared: u32,
+    },
+    RangePasted {
+        source: String,
+        target: String,
+        mode: PasteMode,
+        cut: bool,
+    },
+    FillApplied {
+        sheet: String,
+        source: RangeAddr,
+        target: RangeAddr,
+        filled: u32,
+    },
+    RowsInserted {
+        sheet: String,
+        at: u32,
+        count: u32,
+    },
+    RowsDeleted {
+        sheet: String,
+        at: u32,
+        count: u32,
+    },
+    ColsInserted {
+        sheet: String,
+        at: u32,
+        count: u32,
+    },
+    ColsDeleted {
+        sheet: String,
+        at: u32,
+        count: u32,
+    },
+    SortApplied {
+        sheet: String,
+        range: RangeAddr,
+        keys: Vec<SortKey>,
+    },
+    FilterApplied {
+        sheet: String,
+        column: u32,
+        hidden: u32,
+    },
+    FilterCleared {
+        sheet: String,
+    },
+    MergeApplied {
+        sheet: String,
+        range: RangeAddr,
+    },
+    MergeCleared {
+        sheet: String,
+        range: RangeAddr,
+    },
     SheetAdded {
         name: String,
     },
@@ -64,6 +212,12 @@ pub enum Event {
     },
     SheetDeleted {
         name: String,
+    },
+    Undone {
+        label: String,
+    },
+    Redone {
+        label: String,
     },
     /// Cells whose computed value changed due to recalculation (derived
     /// state; informational for the UI, not required for replay).
@@ -84,6 +238,27 @@ pub enum ApplyError {
     DuplicateSheet(String),
     #[error("cannot delete the last sheet")]
     LastSheet,
+    #[error("nothing to undo")]
+    NothingToUndo,
+    #[error("nothing to redo")]
+    NothingToRedo,
+    #[error("{0}")]
+    Invalid(String),
+}
+
+/// The previous state an action must restore to be undone. Cell-level
+/// operations record only what they touched; operations that relocate cells
+/// wholesale record the affected sheets.
+#[derive(Debug, Clone)]
+pub enum UndoState {
+    Cells(Vec<(SheetId, CellAddr, Option<Cell>)>),
+    Sheets(Vec<Sheet>),
+}
+
+#[derive(Debug, Clone)]
+struct UndoEntry {
+    label: String,
+    state: UndoState,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -91,6 +266,8 @@ pub struct Engine {
     pub wb: Workbook,
     deps: DepGraph,
     volatile: HashSet<CellKey>,
+    undo_stack: Vec<UndoEntry>,
+    redo_stack: Vec<UndoEntry>,
     /// Injected clock for NOW/TODAY so evaluation is replayable; the shell
     /// updates this from event timestamps.
     pub now_ms: i64,
@@ -102,18 +279,297 @@ impl Engine {
             wb: Workbook::new(),
             deps: DepGraph::default(),
             volatile: HashSet::new(),
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
             now_ms: 0,
         }
     }
 
     pub fn apply(&mut self, action: &Action) -> Result<Vec<Event>, ApplyError> {
         match action {
+            Action::Undo => self.undo(),
+            Action::Redo => self.redo(),
+            other => {
+                let events = self.apply_forward(other)?;
+                // Any new action invalidates the redo history.
+                self.redo_stack.clear();
+                Ok(events)
+            }
+        }
+    }
+
+    fn apply_forward(&mut self, action: &Action) -> Result<Vec<Event>, ApplyError> {
+        match action {
             Action::CellEdit { sheet, addr, input } => self.cell_edit(sheet, *addr, input),
             Action::CellClear { sheet, addr } => self.cell_clear(sheet, *addr),
+            Action::RangeClear { sheet, range } => self.range_clear(sheet, *range),
+            Action::RangePaste {
+                source_sheet,
+                source,
+                target_sheet,
+                target,
+                mode,
+                cut,
+            } => self.range_paste(source_sheet, *source, target_sheet, *target, *mode, *cut),
+            Action::FillApply {
+                sheet,
+                source,
+                target,
+            } => self.fill_apply(sheet, *source, *target),
+            Action::RowInsert { sheet, at, count } => {
+                self.shift(sheet, Axis::Row, *at, *count, true)
+            }
+            Action::RowDelete { sheet, at, count } => {
+                self.shift(sheet, Axis::Row, *at, *count, false)
+            }
+            Action::ColInsert { sheet, at, count } => {
+                self.shift(sheet, Axis::Col, *at, *count, true)
+            }
+            Action::ColDelete { sheet, at, count } => {
+                self.shift(sheet, Axis::Col, *at, *count, false)
+            }
+            Action::SortApply {
+                sheet,
+                range,
+                keys,
+                has_header,
+            } => self.sort_apply(sheet, *range, keys, *has_header),
+            Action::FilterApply { sheet, spec } => self.filter_apply(sheet, Some(spec.clone())),
+            Action::FilterClear { sheet } => self.filter_apply(sheet, None),
+            Action::MergeApply { sheet, range } => self.merge(sheet, *range, true),
+            Action::MergeClear { sheet, range } => self.merge(sheet, *range, false),
             Action::SheetAdd { name } => self.sheet_add(name),
             Action::SheetRename { from, to } => self.sheet_rename(from, to),
             Action::SheetDelete { name } => self.sheet_delete(name),
+            Action::Undo | Action::Redo => unreachable!("handled in apply"),
         }
+    }
+
+    /// Restore a recorded previous state, returning the state that was
+    /// replaced (so undo and redo are the same operation in both directions).
+    fn restore(&mut self, state: UndoState) -> UndoState {
+        match state {
+            UndoState::Cells(patches) => {
+                let mut inverse = Vec::with_capacity(patches.len());
+                // Restore in reverse order so a cell touched twice by one
+                // action ends at its original value.
+                for (sid, addr, cell) in patches.into_iter().rev() {
+                    let Some(sheet) = self.wb.sheet_mut(sid) else {
+                        continue;
+                    };
+                    let replaced = match cell {
+                        Some(c) => sheet.cells.insert(addr, c),
+                        None => sheet.cells.remove(&addr),
+                    };
+                    inverse.push((sid, addr, replaced));
+                }
+                inverse.reverse();
+                UndoState::Cells(inverse)
+            }
+            UndoState::Sheets(sheets) => {
+                let replaced = std::mem::replace(&mut self.wb.sheets, sheets);
+                UndoState::Sheets(replaced)
+            }
+        }
+    }
+
+    fn undo(&mut self) -> Result<Vec<Event>, ApplyError> {
+        let entry = self.undo_stack.pop().ok_or(ApplyError::NothingToUndo)?;
+        let label = entry.label.clone();
+        let inverse = self.restore(entry.state);
+        self.redo_stack.push(UndoEntry {
+            label: label.clone(),
+            state: inverse,
+        });
+        self.rebuild_deps_and_recalc_all();
+        Ok(vec![Event::Undone { label }])
+    }
+
+    fn redo(&mut self) -> Result<Vec<Event>, ApplyError> {
+        let entry = self.redo_stack.pop().ok_or(ApplyError::NothingToRedo)?;
+        let label = entry.label.clone();
+        let inverse = self.restore(entry.state);
+        self.undo_stack.push(UndoEntry {
+            label: label.clone(),
+            state: inverse,
+        });
+        self.rebuild_deps_and_recalc_all();
+        Ok(vec![Event::Redone { label }])
+    }
+
+    fn push_undo(&mut self, label: &str, state: UndoState) {
+        self.undo_stack.push(UndoEntry {
+            label: label.to_string(),
+            state,
+        });
+    }
+
+    pub fn can_undo(&self) -> bool {
+        !self.undo_stack.is_empty()
+    }
+
+    pub fn can_redo(&self) -> bool {
+        !self.redo_stack.is_empty()
+    }
+
+    fn range_clear(&mut self, sheet: &str, range: RangeAddr) -> Result<Vec<Event>, ApplyError> {
+        let sid = self.sheet_id(sheet)?;
+        let undo = self.op_range_clear(sid, range)?;
+        let cleared = match &undo {
+            UndoState::Cells(c) => c.len() as u32,
+            _ => 0,
+        };
+        self.push_undo("clear", undo);
+        self.rebuild_deps_and_recalc_all();
+        Ok(vec![Event::RangeCleared {
+            sheet: sheet.to_string(),
+            range,
+            cleared,
+        }])
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn range_paste(
+        &mut self,
+        src_sheet: &str,
+        src: RangeAddr,
+        dst_sheet: &str,
+        dst: RangeAddr,
+        mode: PasteMode,
+        cut: bool,
+    ) -> Result<Vec<Event>, ApplyError> {
+        let ssid = self.sheet_id(src_sheet)?;
+        let dsid = self.sheet_id(dst_sheet)?;
+        let undo = self.op_paste(ssid, src, dsid, dst, mode, cut)?;
+        self.push_undo(if cut { "cut" } else { "paste" }, undo);
+        self.rebuild_deps_and_recalc_all();
+        Ok(vec![Event::RangePasted {
+            source: format!("{}!{}", src_sheet, src),
+            target: format!("{}!{}", dst_sheet, dst),
+            mode,
+            cut,
+        }])
+    }
+
+    fn fill_apply(
+        &mut self,
+        sheet: &str,
+        src: RangeAddr,
+        dst: RangeAddr,
+    ) -> Result<Vec<Event>, ApplyError> {
+        let sid = self.sheet_id(sheet)?;
+        if !(dst.start.row <= src.start.row
+            && dst.end.row >= src.end.row
+            && dst.start.col <= src.start.col
+            && dst.end.col >= src.end.col)
+        {
+            return Err(ApplyError::Invalid(
+                "fill target must contain the source range".into(),
+            ));
+        }
+        let undo = self.op_fill(sid, src, dst)?;
+        let filled = match &undo {
+            UndoState::Cells(c) => c.len() as u32,
+            _ => 0,
+        };
+        self.push_undo("fill", undo);
+        self.rebuild_deps_and_recalc_all();
+        Ok(vec![Event::FillApplied {
+            sheet: sheet.to_string(),
+            source: src,
+            target: dst,
+            filled,
+        }])
+    }
+
+    fn shift(
+        &mut self,
+        sheet: &str,
+        axis: Axis,
+        at: u32,
+        count: u32,
+        insert: bool,
+    ) -> Result<Vec<Event>, ApplyError> {
+        let sid = self.sheet_id(sheet)?;
+        let undo = self.op_shift(sid, axis, at, count, insert)?;
+        self.push_undo(
+            match (axis, insert) {
+                (Axis::Row, true) => "insert rows",
+                (Axis::Row, false) => "delete rows",
+                (Axis::Col, true) => "insert columns",
+                (Axis::Col, false) => "delete columns",
+            },
+            undo,
+        );
+        self.rebuild_deps_and_recalc_all();
+        let sheet = sheet.to_string();
+        Ok(vec![match (axis, insert) {
+            (Axis::Row, true) => Event::RowsInserted { sheet, at, count },
+            (Axis::Row, false) => Event::RowsDeleted { sheet, at, count },
+            (Axis::Col, true) => Event::ColsInserted { sheet, at, count },
+            (Axis::Col, false) => Event::ColsDeleted { sheet, at, count },
+        }])
+    }
+
+    fn sort_apply(
+        &mut self,
+        sheet: &str,
+        range: RangeAddr,
+        keys: &[SortKey],
+        has_header: bool,
+    ) -> Result<Vec<Event>, ApplyError> {
+        let sid = self.sheet_id(sheet)?;
+        if keys.is_empty() {
+            return Err(ApplyError::Invalid("sort needs at least one key".into()));
+        }
+        let undo = self.op_sort(sid, range, keys, has_header)?;
+        self.push_undo("sort", undo);
+        self.rebuild_deps_and_recalc_all();
+        Ok(vec![Event::SortApplied {
+            sheet: sheet.to_string(),
+            range,
+            keys: keys.to_vec(),
+        }])
+    }
+
+    fn filter_apply(
+        &mut self,
+        sheet: &str,
+        spec: Option<FilterSpec>,
+    ) -> Result<Vec<Event>, ApplyError> {
+        let sid = self.sheet_id(sheet)?;
+        let column = spec.as_ref().map(|s| s.column);
+        let undo = self.op_filter(sid, spec)?;
+        self.push_undo("filter", undo);
+        let hidden = self.wb.sheet(sid).unwrap().hidden_rows.len() as u32;
+        Ok(vec![match column {
+            Some(column) => Event::FilterApplied {
+                sheet: sheet.to_string(),
+                column,
+                hidden,
+            },
+            None => Event::FilterCleared {
+                sheet: sheet.to_string(),
+            },
+        }])
+    }
+
+    fn merge(
+        &mut self,
+        sheet: &str,
+        range: RangeAddr,
+        merge: bool,
+    ) -> Result<Vec<Event>, ApplyError> {
+        let sid = self.sheet_id(sheet)?;
+        let undo = self.op_merge(sid, range, merge)?;
+        self.push_undo(if merge { "merge" } else { "unmerge" }, undo);
+        self.rebuild_deps_and_recalc_all();
+        let sheet = sheet.to_string();
+        Ok(vec![if merge {
+            Event::MergeApplied { sheet, range }
+        } else {
+            Event::MergeCleared { sheet, range }
+        }])
     }
 
     fn sheet_id(&self, name: &str) -> Result<SheetId, ApplyError> {
@@ -135,6 +591,8 @@ impl Engine {
         let key = CellKey { sheet: sid, addr };
         let cell = build_cell(input)?;
         let prev_input = self.prev_input(key);
+        let prev_cell = self.wb.sheet(sid).and_then(|s| s.cells.get(&addr)).cloned();
+        self.push_undo("edit", UndoState::Cells(vec![(sid, addr, prev_cell)]));
 
         // Maintain the dependency graph for the new content.
         match &cell.content {
@@ -179,11 +637,13 @@ impl Engine {
         let prev_input = self.prev_input(key);
         self.deps.clear(key);
         self.volatile.remove(&key);
-        self.wb
+        let prev_cell = self
+            .wb
             .sheet_mut(sid)
             .expect("sheet exists")
             .cells
             .remove(&addr);
+        self.push_undo("clear", UndoState::Cells(vec![(sid, addr, prev_cell)]));
         let recalced = self.recalc(vec![key]);
         let mut events = vec![Event::CellCleared {
             sheet: self.wb.sheet(sid).unwrap().name.clone(),
@@ -202,6 +662,7 @@ impl Engine {
         if self.wb.sheet_by_name(name).is_some() {
             return Err(ApplyError::DuplicateSheet(name.to_string()));
         }
+        self.push_undo("add sheet", UndoState::Sheets(self.wb.sheets.clone()));
         self.wb.add_sheet(name);
         // A new sheet can satisfy previously-broken cross-sheet refs.
         self.rebuild_deps_and_recalc_all();
@@ -215,6 +676,7 @@ impl Engine {
         if !from.eq_ignore_ascii_case(to) && self.wb.sheet_by_name(to).is_some() {
             return Err(ApplyError::DuplicateSheet(to.to_string()));
         }
+        self.push_undo("rename sheet", UndoState::Sheets(self.wb.sheets.clone()));
         // Excel rewrites formulas on rename; we do the same so formula text
         // stays consistent with sheet names.
         self.rewrite_sheet_refs(from, Some(to));
@@ -231,6 +693,7 @@ impl Engine {
         if self.wb.sheets.len() == 1 {
             return Err(ApplyError::LastSheet);
         }
+        self.push_undo("delete sheet", UndoState::Sheets(self.wb.sheets.clone()));
         // Refs into the deleted sheet become #REF! (loud failure).
         self.rewrite_sheet_refs(name, None);
         self.wb.sheets.retain(|s| s.id != sid);
