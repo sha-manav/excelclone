@@ -95,7 +95,13 @@ Living checklist. Updated every session.
 - [x] End-to-end routine flow in the browser
 
 ## M7 — Dataset export + polish
-- [ ] miner export JSONL (consent-enforced)
+- [x] `gridline-miner export --consented-only --mode structural --out data/`
+      writing `{pre_state_digest, context, action, post_state_digest}`, one
+      JSONL file per session plus a manifest
+- [x] Consent enforced by the query that reads the events: no consent row, a
+      latest consent of `off`, or a revocation contributes nothing
+- [x] Subprocess tests driving the built binary against a real database
+- [ ] Sheet add/rename/delete on an imported workbook (blocks the demo)
 - [ ] Demo workbook + scripted data; docs complete; README
 
 ## Notes

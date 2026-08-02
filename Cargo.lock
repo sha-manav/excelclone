@@ -1170,8 +1170,10 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "engine",
+ "hex",
  "serde",
  "serde_json",
+ "sha2",
  "sqlx",
  "thiserror",
  "tokio",

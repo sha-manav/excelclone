@@ -25,3 +25,6 @@ thiserror = { workspace = true }
 # instead would mean an admin credential and a second copy of the schema.
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
 tokio = { version = "1", features = ["rt", "macros"] }
+# State digests for the demonstration dataset.
+sha2 = "0.10"
+hex = "0.4"

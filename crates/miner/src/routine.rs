@@ -54,14 +54,14 @@ pub fn synthesize(
         let Some(event) = events.get(step.source) else {
             continue;
         };
-        match reconstruct(event) {
-            Reconstructed::Action(a) => {
+        match rebuild(event) {
+            Rebuilt::Action(a) => {
                 if anchor.is_none() {
                     anchor = primary_addr(&a);
                 }
                 actions.push(a);
             }
-            Reconstructed::Missing { addr, kind } => {
+            Rebuilt::Missing { addr, kind } => {
                 let base = anchor.unwrap_or(addr);
                 if anchor.is_none() {
                     anchor = Some(addr);
@@ -72,7 +72,7 @@ pub fn synthesize(
                     kind,
                 });
             }
-            Reconstructed::Skip => {}
+            Rebuilt::Skip => {}
         }
     }
 
@@ -108,7 +108,12 @@ fn routine_id(p: &Pattern) -> String {
     format!("rt_{:016x}", h.finish())
 }
 
-enum Reconstructed {
+/// What an envelope turns back into.
+///
+/// Public because the dataset exporter needs the same reconstruction, and a
+/// second copy of "how do I read a payload back into an action" would be a
+/// second thing to get wrong.
+pub enum Rebuilt {
     Action(Action),
     /// A cell edit whose value the log does not contain.
     Missing {
@@ -125,7 +130,7 @@ enum Reconstructed {
 /// The sheet name is a placeholder: it is hashed under `structural` and, more
 /// to the point, a routine should run where the user is now rather than where
 /// it was recorded. [`Routine::actions_at`] fills in the real one.
-fn reconstruct(event: &serde_json::Value) -> Reconstructed {
+pub fn rebuild(event: &serde_json::Value) -> Rebuilt {
     let action = event["action"].as_str().unwrap_or_default();
     let p = &event["payload"];
     let sheet = || String::from("<routine>");
@@ -135,46 +140,46 @@ fn reconstruct(event: &serde_json::Value) -> Reconstructed {
     match action {
         "cell.edit" => {
             let Some(addr) = addr_of("addr") else {
-                return Reconstructed::Skip;
+                return Rebuilt::Skip;
             };
             // A formula is verbatim in every capture mode; a literal is only
             // verbatim under `full`, and arrives as an object otherwise.
             match p["input"].as_str() {
-                Some(input) => Reconstructed::Action(Action::CellEdit {
+                Some(input) => Rebuilt::Action(Action::CellEdit {
                     sheet: sheet(),
                     addr,
                     input: input.to_string(),
                 }),
-                None => Reconstructed::Missing {
+                None => Rebuilt::Missing {
                     addr,
                     kind: p["input"]["type"].as_str().unwrap_or("value").to_string(),
                 },
             }
         }
         "cell.clear" => match (addr_of("addr"), range_of("range")) {
-            (Some(addr), _) => Reconstructed::Action(Action::CellClear {
+            (Some(addr), _) => Rebuilt::Action(Action::CellClear {
                 sheet: sheet(),
                 addr,
             }),
-            (None, Some(range)) => Reconstructed::Action(Action::RangeClear {
+            (None, Some(range)) => Rebuilt::Action(Action::RangeClear {
                 sheet: sheet(),
                 range,
             }),
-            _ => Reconstructed::Skip,
+            _ => Rebuilt::Skip,
         },
         "fill.apply" => match (range_of("source"), range_of("target")) {
-            (Some(source), Some(target)) => Reconstructed::Action(Action::FillApply {
+            (Some(source), Some(target)) => Rebuilt::Action(Action::FillApply {
                 sheet: sheet(),
                 source,
                 target,
             }),
-            _ => Reconstructed::Skip,
+            _ => Rebuilt::Skip,
         },
         "row.insert" | "row.delete" | "col.insert" | "col.delete" => {
             let at = p["at"].as_u64().unwrap_or(0) as u32;
             let count = p["count"].as_u64().unwrap_or(1) as u32;
             let s = sheet();
-            Reconstructed::Action(match action {
+            Rebuilt::Action(match action {
                 "row.insert" => Action::RowInsert {
                     sheet: s,
                     at,
@@ -199,7 +204,7 @@ fn reconstruct(event: &serde_json::Value) -> Reconstructed {
         }
         "sort.apply" => {
             let Some(range) = range_of("range") else {
-                return Reconstructed::Skip;
+                return Rebuilt::Skip;
             };
             let keys: Vec<engine::SortKey> = p["keys"]
                 .as_array()
@@ -213,9 +218,9 @@ fn reconstruct(event: &serde_json::Value) -> Reconstructed {
                 })
                 .unwrap_or_default();
             if keys.is_empty() {
-                return Reconstructed::Skip;
+                return Rebuilt::Skip;
             }
-            Reconstructed::Action(Action::SortApply {
+            Rebuilt::Action(Action::SortApply {
                 sheet: sheet(),
                 range,
                 keys,
@@ -224,18 +229,18 @@ fn reconstruct(event: &serde_json::Value) -> Reconstructed {
         }
         "format.apply" => {
             let Some(range) = range_of("range") else {
-                return Reconstructed::Skip;
+                return Rebuilt::Skip;
             };
             match p["kind"].as_str() {
-                Some("merge") => Reconstructed::Action(Action::MergeApply {
+                Some("merge") => Rebuilt::Action(Action::MergeApply {
                     sheet: sheet(),
                     range,
                 }),
-                Some("unmerge") => Reconstructed::Action(Action::MergeClear {
+                Some("unmerge") => Rebuilt::Action(Action::MergeClear {
                     sheet: sheet(),
                     range,
                 }),
-                Some("clear") => Reconstructed::Action(Action::FormatClear {
+                Some("clear") => Rebuilt::Action(Action::FormatClear {
                     sheet: sheet(),
                     range,
                 }),
@@ -243,9 +248,9 @@ fn reconstruct(event: &serde_json::Value) -> Reconstructed {
                     let patches: Vec<engine::FormatPatch> =
                         serde_json::from_value(p["patches"].clone()).unwrap_or_default();
                     if patches.is_empty() {
-                        return Reconstructed::Skip;
+                        return Rebuilt::Skip;
                     }
-                    Reconstructed::Action(Action::FormatApply {
+                    Rebuilt::Action(Action::FormatApply {
                         sheet: sheet(),
                         range,
                         patches,
@@ -257,7 +262,7 @@ fn reconstruct(event: &serde_json::Value) -> Reconstructed {
         // its allowed values and a replacement its terms, both hashed. Each
         // is skipped rather than approximated — a routine that pasted the
         // wrong block would be worse than one that does not paste.
-        _ => Reconstructed::Skip,
+        _ => Rebuilt::Skip,
     }
 }
 

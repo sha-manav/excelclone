@@ -187,7 +187,11 @@ fn shift_formula(input: &str, dr: i64, dc: i64) -> String {
     }
 }
 
-fn retarget_sheet(a: Action, sheet: &str) -> Action {
+/// Point an action at a different sheet.
+///
+/// Public because the dataset exporter replays a log whose sheet names were
+/// hashed, and needs the same substitution a routine does.
+pub fn retarget_sheet(a: Action, sheet: &str) -> Action {
     let s = sheet.to_string();
     match a {
         Action::CellEdit { addr, input, .. } => Action::CellEdit {

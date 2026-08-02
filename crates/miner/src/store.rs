@@ -16,6 +16,7 @@
 //!   to `proposed` would ask them again every morning, which is how a good
 //!   feature becomes an annoying one.
 
+use engine::telemetry::EventEnvelope;
 use engine::Routine;
 use sqlx::{Row, SqlitePool};
 
@@ -156,27 +157,81 @@ pub async fn prune(
     Ok(stale.len())
 }
 
+/// Events for every actor whose consent still permits it, in replay order.
+///
+/// The consent test is a `WHERE` clause, not a filter applied to the results:
+/// the promise in `docs/PRIVACY.md` has to be enforced by the query, because
+/// a filter can be forgotten and a join cannot. This is deliberately the same
+/// predicate the server's own export uses.
+///
+/// `mode` narrows further — passing `structural` excludes actors who granted
+/// only `full`... which is nobody, since `full` is a superset. It exists so
+/// `--mode structural` means "only material I may treat as structural", and
+/// an operator who asks for that gets exactly it.
+pub async fn consented_events(
+    pool: &SqlitePool,
+    mode: Option<&str>,
+) -> Result<Vec<EventEnvelope>, StoreError> {
+    let rows = sqlx::query(
+        "SELECT e.event_id, e.actor_id, e.session_id, e.workbook_id, e.seq, e.ts_ms,
+                e.action, e.payload, e.context, e.client_version
+           FROM events e
+          WHERE EXISTS (
+                SELECT 1 FROM consents c
+                 WHERE c.actor_id = e.actor_id
+                   AND c.id = (SELECT MAX(id) FROM consents c2 WHERE c2.actor_id = e.actor_id)
+                   AND c.revoked_at IS NULL
+                   AND c.mode <> 'off'
+                   AND (?1 IS NULL OR c.mode = ?1)
+             )
+          ORDER BY e.actor_id, e.session_id, e.seq",
+    )
+    .bind(mode)
+    .fetch_all(pool)
+    .await?;
+
+    let mut out = Vec::with_capacity(rows.len());
+    for row in rows {
+        let payload: String = row.get("payload");
+        let context: String = row.get("context");
+        // A row we cannot parse is skipped rather than fatal: one malformed
+        // envelope must not cost an operator the whole dataset.
+        let (Ok(payload), Ok(context)) = (
+            serde_json::from_str(&payload),
+            serde_json::from_str(&context),
+        ) else {
+            continue;
+        };
+        out.push(EventEnvelope {
+            schema_version: engine::telemetry::SCHEMA_VERSION,
+            event_id: row.get("event_id"),
+            session_id: row.get("session_id"),
+            actor_id: row.get("actor_id"),
+            workbook_id: row.get("workbook_id"),
+            seq: row.get::<i64, _>("seq") as u64,
+            ts_ms: row.get("ts_ms"),
+            action: row.get("action"),
+            payload,
+            context,
+            client_version: row.get("client_version"),
+        });
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use engine::{Action, CellAddr};
     use sqlx::sqlite::SqlitePoolOptions;
 
-    /// The `routines` table exactly as `crates/server/migrations` declares it.
-    /// Duplicated here rather than imported because the miner does not depend
-    /// on the server; `the_test_schema_matches_the_migration` keeps the two
-    /// honest.
-    const SCHEMA: &str = "CREATE TABLE routines (
-        id                      TEXT PRIMARY KEY,
-        workbook_id             TEXT NOT NULL,
-        actor_id                TEXT NOT NULL,
-        summary                 TEXT NOT NULL,
-        body                    TEXT NOT NULL,
-        estimated_minutes_saved REAL NOT NULL,
-        support                 INTEGER NOT NULL,
-        status                  TEXT NOT NULL DEFAULT 'proposed',
-        created_at              TEXT NOT NULL
-    );";
+    /// The server's schema, verbatim.
+    ///
+    /// A hand-copied approximation would let these tests pass against tables
+    /// the server does not have — and the consent query below is only worth
+    /// anything if it runs against the real `consents` table, indexes,
+    /// defaults and all.
+    const MIGRATION: &str = include_str!("../../server/migrations/0001_init.sql");
 
     async fn pool() -> SqlitePool {
         let pool = SqlitePoolOptions::new()
@@ -184,7 +239,7 @@ mod tests {
             .connect("sqlite::memory:")
             .await
             .unwrap();
-        sqlx::query(SCHEMA).execute(&pool).await.unwrap();
+        sqlx::raw_sql(MIGRATION).execute(&pool).await.unwrap();
         pool
     }
 
@@ -370,27 +425,191 @@ mod tests {
         assert_eq!(serde_json::from_str::<Routine>(&body).unwrap(), r);
     }
 
-    /// The schema above is a copy. If the migration changes, this fails.
-    #[test]
-    fn the_test_schema_matches_the_migration() {
-        let migration = include_str!("../../server/migrations/0001_init.sql");
-        let start = migration
-            .find("CREATE TABLE routines")
-            .expect("routines table in the migration");
-        let end = migration[start..]
-            .find(");")
-            .map(|i| start + i + 2)
-            .expect("end of the routines table");
-        let normalize = |s: &str| {
-            s.split_whitespace()
-                .collect::<Vec<_>>()
-                .join(" ")
-                .replace(" ,", ",")
-        };
+    // --- consented_events -------------------------------------------------
+
+    async fn grant(pool: &SqlitePool, actor: &str, mode: &str) {
+        sqlx::query(
+            "INSERT INTO consents (actor_id, mode, consent_text_version, granted_at)
+             VALUES (?, ?, 'v1', 'now')",
+        )
+        .bind(actor)
+        .bind(mode)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    async fn revoke_latest(pool: &SqlitePool, actor: &str) {
+        sqlx::query(
+            "UPDATE consents SET revoked_at = 'later'
+              WHERE id = (SELECT MAX(id) FROM consents WHERE actor_id = ?)",
+        )
+        .bind(actor)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    async fn record_event(pool: &SqlitePool, actor: &str, session: &str, seq: i64) {
+        sqlx::query(
+            "INSERT INTO events (event_id, actor_id, session_id, workbook_id, seq, ts_ms,
+                                 action, payload, context, client_version, received_at)
+             VALUES (?, ?, ?, 'wb', ?, ?, 'cell.edit', ?, ?, 'test', 'now')",
+        )
+        .bind(format!("{actor}-{session}-{seq}"))
+        .bind(actor)
+        .bind(session)
+        .bind(seq)
+        .bind(1_700_000_000_000i64 + seq)
+        .bind(r#"{"addr":"A1","input":"1","is_formula":false}"#)
+        .bind(r#"{"sheet":"Sheet1","selection":"A1","privacy_mode":"structural"}"#)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    async fn actors_in(pool: &SqlitePool, mode: Option<&str>) -> Vec<String> {
+        let mut ids: Vec<String> = consented_events(pool, mode)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|e| e.actor_id)
+            .collect();
+        ids.dedup();
+        ids
+    }
+
+    #[tokio::test]
+    async fn an_actor_who_never_consented_contributes_nothing() {
+        // No consent row at all — the commonest case, and the one a filter
+        // written as an afterthought gets wrong.
+        let pool = pool().await;
+        record_event(&pool, "silent", "s1", 0).await;
+        assert!(consented_events(&pool, None).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_actor_who_turned_capture_off_contributes_nothing() {
+        let pool = pool().await;
+        grant(&pool, "declined", "off").await;
+        record_event(&pool, "declined", "s1", 0).await;
+        assert!(consented_events(&pool, None).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn revoking_consent_withdraws_events_already_recorded() {
+        // Revocation is retroactive by design: the events stay in the log for
+        // provenance, but nothing may leave the building with them.
+        let pool = pool().await;
+        grant(&pool, "u", "structural").await;
+        record_event(&pool, "u", "s1", 0).await;
+        assert_eq!(consented_events(&pool, None).await.unwrap().len(), 1);
+
+        revoke_latest(&pool, "u").await;
+        assert!(consented_events(&pool, None).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn only_the_latest_consent_counts() {
+        // `consents` is append-only, so an actor accumulates rows. An earlier
+        // grant must not resurrect an actor who has since turned capture off,
+        // and an earlier `off` must not silence one who has since agreed.
+        let pool = pool().await;
+        grant(&pool, "left", "structural").await;
+        grant(&pool, "left", "off").await;
+        record_event(&pool, "left", "s1", 0).await;
+
+        grant(&pool, "joined", "off").await;
+        grant(&pool, "joined", "structural").await;
+        record_event(&pool, "joined", "s1", 0).await;
+
+        assert_eq!(actors_in(&pool, None).await, vec!["joined".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn a_revoked_grant_followed_by_a_fresh_one_counts_again() {
+        // Someone who came back is not still gone.
+        let pool = pool().await;
+        grant(&pool, "u", "structural").await;
+        revoke_latest(&pool, "u").await;
+        grant(&pool, "u", "structural").await;
+        record_event(&pool, "u", "s1", 0).await;
+        assert_eq!(consented_events(&pool, None).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn the_mode_filter_narrows_to_exactly_that_consent() {
+        let pool = pool().await;
+        grant(&pool, "structural_user", "structural").await;
+        record_event(&pool, "structural_user", "s1", 0).await;
+        grant(&pool, "full_user", "full").await;
+        record_event(&pool, "full_user", "s1", 0).await;
+
         assert_eq!(
-            normalize(&migration[start..end]),
-            normalize(SCHEMA),
-            "the miner's copy of the routines schema has drifted from the migration"
+            actors_in(&pool, Some("structural")).await,
+            vec!["structural_user".to_string()]
         );
+        assert_eq!(
+            actors_in(&pool, Some("full")).await,
+            vec!["full_user".to_string()]
+        );
+        assert_eq!(actors_in(&pool, None).await.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn one_actors_consent_does_not_release_anothers_events() {
+        let pool = pool().await;
+        grant(&pool, "yes", "structural").await;
+        grant(&pool, "no", "off").await;
+        record_event(&pool, "yes", "s1", 0).await;
+        record_event(&pool, "no", "s1", 0).await;
+        assert_eq!(actors_in(&pool, None).await, vec!["yes".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn events_arrive_in_replay_order() {
+        // The dataset exporter replays these in the order it receives them,
+        // so an out-of-order read would silently produce wrong digests.
+        let pool = pool().await;
+        grant(&pool, "u", "structural").await;
+        for seq in [2i64, 0, 1] {
+            record_event(&pool, "u", "s1", seq).await;
+        }
+        record_event(&pool, "u", "s0", 5).await;
+
+        let got: Vec<(String, u64)> = consented_events(&pool, None)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|e| (e.session_id, e.seq))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("s0".to_string(), 5),
+                ("s1".to_string(), 0),
+                ("s1".to_string(), 1),
+                ("s1".to_string(), 2),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_row_is_skipped_rather_than_fatal() {
+        let pool = pool().await;
+        grant(&pool, "u", "structural").await;
+        sqlx::query(
+            "INSERT INTO events (event_id, actor_id, session_id, workbook_id, seq, ts_ms,
+                                 action, payload, context, client_version, received_at)
+             VALUES ('bad', 'u', 's1', 'wb', 0, 1, 'cell.edit', 'not json', '{}', 't', 'now')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        record_event(&pool, "u", "s1", 1).await;
+
+        let got = consented_events(&pool, None).await.unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].seq, 1);
     }
 }

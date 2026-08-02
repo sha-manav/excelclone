@@ -17,6 +17,7 @@
 //!
 //! Nothing here reads a file or a socket; the CLI in `main.rs` does the I/O.
 
+pub mod dataset;
 pub mod mine;
 pub mod normalize;
 pub mod routine;
