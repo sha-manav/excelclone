@@ -121,6 +121,43 @@ function fontFor(f: CellFormat): string {
 
 const EMPTY_CELL_FORMAT: CellFormat = {}
 
+/** How far down a column autofit looks before settling on a width. */
+const AUTOFIT_SCAN_ROWS = 1000
+/** How far a double-click fill will follow a neighbouring run. */
+const FILL_DOWN_SCAN_ROWS = 10_000
+
+/**
+ * How far a fill-handle double-click should reach: the end of the contiguous
+ * run of values in the column immediately left of the selection, falling back
+ * to the column on its right.
+ *
+ * Returns null when there is no neighbouring run, rather than filling to the
+ * bottom of the sheet — a gesture that silently wrote ten thousand rows would
+ * be much worse than one that does nothing.
+ */
+function fillDownTarget(L: Latest): Range | null {
+  const src = L.selection.range
+  const probe = (col: number): number => {
+    if (col < 0) return src.end.row
+    const rows = Math.min(
+      Math.max(L.usedRows - src.end.row - 1, 0),
+      FILL_DOWN_SCAN_ROWS,
+    )
+    if (rows <= 0) return src.end.row
+    const vp = L.engine.viewport(L.sheet, src.end.row + 1, col, rows, 1)
+    let last = src.end.row
+    for (let i = 0; i < rows; i++) {
+      if (!vp.values[i]) break
+      last = src.end.row + 1 + i
+    }
+    return last
+  }
+  if (!L.sheetExists) return null
+  const end = Math.max(probe(src.start.col - 1), probe(src.end.col + 1))
+  if (end <= src.end.row) return null
+  return { start: src.start, end: { row: end, col: src.end.col } }
+}
+
 type Drag =
   | { kind: 'select'; anchor: Addr; last: Addr }
   | { kind: 'fill'; source: Range; target: Range }
@@ -951,15 +988,63 @@ export function Grid(props: GridProps): JSX.Element {
     [pointOf],
   )
 
+  /**
+   * Width that fits the widest value in a column.
+   *
+   * Only the first `AUTOFIT_SCAN_ROWS` rows are measured. Excel scans the
+   * whole column; we cap it because measuring a million strings blocks the
+   * main thread, and a header plus the first thousand rows decides the width
+   * in practice. A value further down that no longer fits still renders as
+   * `#####` rather than being silently truncated, so the cap is visible.
+   */
+  const autofitColumn = useCallback((col: number) => {
+    const canvas = canvasRef.current
+    const ctx = canvas?.getContext('2d')
+    const L = latestRef.current
+    if (!ctx || !L.sheetExists) return
+    const rows = Math.min(L.metrics.rowCount, Math.max(L.usedRows, 1), AUTOFIT_SCAN_ROWS)
+    const vp = L.engine.viewport(L.sheet, 0, col, rows, 1)
+    let widest = 0
+    for (let i = 0; i < vp.values.length; i++) {
+      const text = vp.values[i]
+      if (!text) continue
+      ctx.font = fontFor(vp.palette[vp.styles[i]] ?? EMPTY_CELL_FORMAT)
+      widest = Math.max(widest, ctx.measureText(text).width)
+    }
+    ctx.font = CELL_FONT
+    const width = clampColWidth(widest + CELL_PAD * 2 + 2)
+    setColWidths((prev) => {
+      if (prev.get(col) === width) return prev
+      const next = new Map(prev)
+      next.set(col, width)
+      return next
+    })
+    L.onAutofitColumn(col)
+  }, [])
+
   const handleDoubleClick = useCallback(
     (e: ReactMouseEvent<HTMLDivElement>) => {
       const L = latestRef.current
+      const m = L.metrics
       const p = pointOf(e.clientX, e.clientY)
-      const hit = hitTest(p.x, p.y, p.scrollTop, p.scrollLeft, L.metrics)
-      if (hit.kind === 'col-border') L.onAutofitColumn(hit.col)
+
+      // Double-clicking the fill handle fills down to the length of the
+      // neighbouring run, the way it does in Excel — the gesture for "apply
+      // this formula to the whole table" without dragging past the fold.
+      if (p.x >= m.headerWidth && p.y >= m.headerHeight) {
+        const fh = fillHandleRect(m, L.selection.range, p.scrollTop, p.scrollLeft)
+        if (pointInRect(p.x, p.y, fh, 1)) {
+          const target = fillDownTarget(L)
+          if (target) L.onFill(L.selection.range, target)
+          return
+        }
+      }
+
+      const hit = hitTest(p.x, p.y, p.scrollTop, p.scrollLeft, m)
+      if (hit.kind === 'col-border') autofitColumn(hit.col)
       else if (hit.kind === 'cell') L.onStartEdit({ row: hit.row, col: hit.col })
     },
-    [pointOf],
+    [autofitColumn, pointOf],
   )
 
   const handleContextMenu = useCallback(

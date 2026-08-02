@@ -395,3 +395,42 @@ test('opening a file resets the undo history', async ({ page }) => {
     .toBe('before')
   await expect(page.getByRole('button', { name: 'Undo' })).toBeDisabled()
 })
+
+/* ------------------------------------------------------- fill handle polish */
+
+test('double-clicking the fill handle follows the neighbouring run', async ({
+  page,
+}) => {
+  // A column of values, and one formula beside the first of them.
+  await clickCell(page, 0, 0)
+  for (const v of ['10', '20', '30', '40']) await typeInCell(page, v)
+  await clickCell(page, 0, 1)
+  await typeInCell(page, '=A1*2')
+
+  await clickCell(page, 0, 1)
+  const p = await cellPoint(page, 0, 1, 1, 1)
+  await page.mouse.dblclick(p.x - 2, p.y - 2)
+
+  const state = await snapshot(page)
+  // Filled exactly as far as column A runs, and no further.
+  expect(state.sheets[0].cells.B4.value).toBe('80')
+  expect(state.sheets[0].cells.B5).toBeUndefined()
+})
+
+test('double-clicking a column border sizes it to its contents', async ({ page }) => {
+  await clickCell(page, 0, 0)
+  await typeInCell(page, 'a very long value indeed that overflows the column')
+
+  const box = (await page.locator('canvas').boundingBox())!
+  // 250px in is column C to start with; the assertion is that autofit moves
+  // that boundary, so it has to be checked before and after.
+  const at250 = async () => {
+    await page.mouse.click(box.x + HEADER_W + 250, box.y + HEADER_H + ROW_H / 2)
+    return page.locator('.formula-bar__address').textContent()
+  }
+  expect(await at250()).toBe('C1')
+
+  await page.mouse.dblclick(box.x + HEADER_W + COL_W, box.y + HEADER_H / 2)
+  // Column A now swallows the first 250px, so the same click lands in A.
+  await expect.poll(at250, { timeout: 5000 }).toBe('A1')
+})

@@ -37,10 +37,10 @@ Living checklist. Updated every session.
 - [x] Golden workbook tests: fixtures regenerate, import, recalc, and match
       stored snapshots; two-pass round trip is lossless
 
-## M3 — Wasm + Grid MVP
-- [ ] wasm-bindgen API over engine; npm package consumed by web app
-- [ ] Virtualized canvas grid: selection, editing, formula bar, sheet tabs
-- [ ] Live recalc; 60fps scroll on 50k-cell fixture
+## M3 — Wasm + Grid MVP (complete)
+- [x] wasm-bindgen API over engine; npm package consumed by web app
+- [x] Virtualized canvas grid: selection, editing, formula bar, sheet tabs
+- [x] Live recalc; 60fps scroll on 50k-cell fixture
 
 ## M4 — Event spine (complete)
 - [x] Event envelope and privacy redaction in the engine, so the client
@@ -55,10 +55,24 @@ Living checklist. Updated every session.
 - [x] Verified end to end against the running server: consent gating,
       dedupe, hashed values and sheet names, formulas preserved
 
-## M5 — Grid completeness
-- [ ] Fill handle, context menus, formatting toolbar, sort/filter UI
-- [ ] Find & replace, import-warnings drawer, transparency page
-- [ ] Playwright happy-path suite
+## M5 — Grid completeness (complete)
+- [x] Per-cell format model: bold, italic, font/fill colour, borders, number
+      format, alignment — interned beside the cells, not inside them, so a
+      format can exist without a value
+- [x] Formatting travels with contents through paste, cut, fill, sort and
+      insert/delete; Delete clears contents and leaves formatting standing
+- [x] xlsx round trip: styles parsed on import, original `s` indices written
+      back for untouched cells, new `<xf>` records appended for changed ones
+- [x] Find & replace as one engine action (one undo step, one mined gesture),
+      matching formula-bar text rather than computed results
+- [x] Formatting toolbar, right-click menu, multi-key sort dialog, checkbox
+      filter menu, find panel, import-notes drawer, Open / Save xlsx / Save csv
+- [x] Merged ranges painted as one block; clicking a covered cell selects the
+      block; drag-selection expands over merges
+- [x] Fill-handle double-click follows the neighbouring run; column autofit
+- [x] Drag autoscroll past the viewport edge
+- [x] Playwright happy-path suite (17 new tests, canvas pixels *and* engine
+      state)
 
 ## M6 — Miner + routines
 - [ ] Normalization, loop detection, PrefixSpan, scoring
@@ -71,9 +85,25 @@ Living checklist. Updated every session.
 
 ## Notes
 
-- 189 Rust tests, 120 web unit tests, 18 Playwright end-to-end tests; full
+- 257 Rust tests, 140 web unit tests, 35 Playwright end-to-end tests; full
   CI gate (fmt, clippy -D warnings, tests, wasm build, vite build, e2e)
   passes locally.
+- M5 found a bug that had been latent since M2: **xlsx export had never
+  worked in the browser**. `rust_xlsxwriter` stamps every workbook with the
+  current time, and `SystemTime::now()` traps on `wasm32-unknown-unknown`,
+  so each export panicked with `RuntimeError: unreachable`. Nothing had
+  called export from the UI until this milestone, and no native test can
+  reach the wasm target — the guard is now an end-to-end test that saves a
+  workbook in a real browser and opens it again.
+- Two more real-browser finds in the same session: revoking the blob URL
+  synchronously after clicking the download anchor cancelled the download
+  before a byte was read, and renaming a sheet left the grid painting one
+  frame against a name the engine no longer had, throwing inside a
+  `requestAnimationFrame` callback where nothing could catch it. All three
+  passed every unit test.
+- A fourth, quieter one: import replays a file through `apply()`, so a
+  freshly opened workbook arrived with one undo entry per imported cell and
+  the first Ctrl+Z un-typed a cell the user never typed.
 - The property suite caught a real determinism bug: cells that only
   *syntactically* referenced a cycle (an untaken `IF` branch) were marked
   `#CIRC!` by a full recalculation but evaluated correctly by an incremental
