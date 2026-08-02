@@ -75,9 +75,19 @@ Living checklist. Updated every session.
       state)
 
 ## M6 — Miner + routines
-- [ ] Normalization, loop detection, PrefixSpan, scoring
-- [ ] Routine synthesis + storage; panel with dry-run diff + run
-- [ ] Planted-pattern tests, E2E routine flow
+- [x] Normalization to abstract tokens (R1C1 formula shapes, no literals)
+- [x] Tandem-repeat loop detection, scoped to a single session
+- [x] PrefixSpan (min support 3, max length 12, gap tolerance 1)
+- [x] Scoring in estimated minutes saved, discarding under 2
+- [x] Routine synthesis into a macro of typed engine `Action`s, with
+      redacted values reported as requirements rather than guessed
+- [x] Dry-run sandbox: clone the engine, apply, diff — including downstream
+      recalculation
+- [x] `gridline-miner mine --in events.jsonl`
+- [x] Planted-pattern acceptance tests, positive and negative
+- [ ] Writing routines into the server's `routines` table
+- [ ] Routines panel in the app: preview diff, run, dismiss
+- [ ] End-to-end routine flow in the browser
 
 ## M7 — Dataset export + polish
 - [ ] miner export JSONL (consent-enforced)
@@ -85,7 +95,7 @@ Living checklist. Updated every session.
 
 ## Notes
 
-- 257 Rust tests, 140 web unit tests, 35 Playwright end-to-end tests; full
+- 325 Rust tests, 140 web unit tests, 35 Playwright end-to-end tests; full
   CI gate (fmt, clippy -D warnings, tests, wasm build, vite build, e2e)
   passes locally.
 - M5 found a bug that had been latent since M2: **xlsx export had never
@@ -104,6 +114,13 @@ Living checklist. Updated every session.
 - A fourth, quieter one: import replays a file through `apply()`, so a
   freshly opened workbook arrived with one undo entry per imported cell and
   the first Ctrl+Z un-typed a cell the user never typed.
+- M6's planted-pattern tests earned their keep the same way. Three bugs the
+  unit tests were happy with: the unparseable-formula fallback leaked sheet
+  names and string literals into tokens (and whole-column references, which
+  v1 does not parse, are the common case); tandem repeats ran across session
+  boundaries, so three sittings became one "loop repeated 3 times in a row";
+  and review cost was charged per repetition, which made a genuine twelve-row
+  habit score below the threshold and vanish.
 - The property suite caught a real determinism bug: cells that only
   *syntactically* referenced a cycle (an untaken `IF` branch) were marked
   `#CIRC!` by a full recalculation but evaluated correctly by an incremental
