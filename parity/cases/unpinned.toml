@@ -1,0 +1,170 @@
+# Cases for functions the rest of the corpus left unpinned.
+#
+# A function that is implemented and pinned by nothing is tested against our
+# own opinion of it, which is the opinion that wrote it. These are ordinary
+# uses rather than corner cases: the point is coverage, and a corner case for
+# a function with no ordinary case is a strange place to start.
+#
+# `TODAY`, `NOW`, `RAND` and `RANDBETWEEN` are deliberately absent: their
+# answers depend on the clock and the generator, and a case that pins one
+# would pin the harness's fixed clock rather than Excel's behaviour. They are
+# covered by the engine's own determinism tests instead.
+
+[[case]]
+id = "fn.product-multiplies-a-range"
+given = { A1 = "2", A2 = "3", A3 = "4" }
+formula = "=PRODUCT(A1:A3)"
+expect = "24"
+source = "known"
+functions = ["PRODUCT"]
+note = "The multiplicative twin of SUM, with the same range semantics."
+
+[[case]]
+id = "fn.product-of-an-empty-range-is-zero"
+formula = "=PRODUCT(A1:A3)"
+expect = "0"
+source = "known"
+functions = ["PRODUCT"]
+note = """
+Zero rather than the multiplicative identity 1 — Excel returns 0 when PRODUCT
+finds no numbers at all, the same choice it makes for MIN and MAX.
+"""
+
+[[case]]
+id = "fn.max-picks-the-largest"
+given = { A1 = "3", A2 = "-7", A3 = "5" }
+formula = "=MAX(A1:A3)"
+expect = "5"
+source = "known"
+functions = ["MAX"]
+note = "The ordinary case."
+
+[[case]]
+id = "fn.roundup-goes-away-from-zero"
+formula = "=ROUNDUP(-2.1,0)"
+expect = "-3"
+source = "known"
+functions = ["ROUNDUP"]
+note = """
+ROUNDUP means away from zero, not towards positive infinity: -2.1 rounds up
+to -3. CEILING is the one that goes towards positive infinity.
+"""
+
+[[case]]
+id = "fn.rounddown-goes-towards-zero"
+formula = "=ROUNDDOWN(-2.9,0)"
+expect = "-2"
+source = "known"
+functions = ["ROUNDDOWN"]
+note = "And ROUNDDOWN is towards zero, so -2.9 becomes -2."
+
+[[case]]
+id = "fn.abs"
+formula = "=ABS(-4.5)"
+expect = "4.5"
+source = "known"
+functions = ["ABS"]
+note = "Pinned so the obvious cannot break unnoticed."
+
+[[case]]
+id = "fn.power-matches-the-operator"
+formula = "=POWER(2,10)"
+expect = "1024"
+source = "known"
+functions = ["POWER"]
+note = "POWER(a,b) is a^b, including the #NUM! on 0^0."
+
+[[case]]
+id = "fn.power-of-zero-to-zero-is-a-num-error"
+formula = "=POWER(0,0)"
+expect = "#NUM!"
+source = "known"
+functions = ["POWER"]
+note = "The same special case the operator has; the two must not disagree."
+
+[[case]]
+id = "fn.or-is-true-when-any-argument-is"
+formula = "=OR(1=2,2=2)"
+expect = "TRUE"
+source = "known"
+functions = ["OR"]
+note = "Pinned alongside AND, which the error file already covers."
+
+[[case]]
+id = "fn.isnumber-is-false-for-numeric-text"
+given = { A1 = "'5" }
+formula = "=ISNUMBER(A1)"
+expect = "FALSE"
+source = "known"
+functions = ["ISNUMBER"]
+note = """
+The cell holds text that looks like a number. ISNUMBER asks what the cell
+holds, not what it could be coerced to — which is the whole reason it is
+useful for finding a column imported as text.
+"""
+
+[[case]]
+id = "fn.istext-is-true-for-the-same-cell"
+given = { A1 = "'5" }
+formula = "=ISTEXT(A1)"
+expect = "TRUE"
+source = "known"
+functions = ["ISTEXT"]
+note = "The other side of the same question."
+
+[[case]]
+id = "fn.concatenate-joins-arguments"
+formula = "=CONCATENATE(\"a\",1,\"b\")"
+expect = "a1b"
+source = "known"
+functions = ["CONCATENATE"]
+note = """
+CONCATENATE takes individual arguments and converts numbers with General
+formatting, exactly as & does. It is CONCAT that accepts ranges.
+"""
+
+[[case]]
+id = "fn.right-takes-from-the-end"
+formula = "=RIGHT(\"abcdef\",2)"
+expect = "ef"
+source = "known"
+functions = ["RIGHT"]
+note = "Mirror of LEFT, including clamping when asked for more than there is."
+
+[[case]]
+id = "fn.right-clamps"
+formula = "=RIGHT(\"ab\",10)"
+expect = "ab"
+source = "known"
+functions = ["RIGHT"]
+note = "Clamped, not an error."
+
+[[case]]
+id = "fn.upper-and-lower-are-inverses-on-ascii"
+formula = "=UPPER(\"aB\")&LOWER(\"Cd\")"
+expect = "ABcd"
+source = "known"
+functions = ["UPPER", "LOWER"]
+note = "Both pinned in one case, since neither has any interesting behaviour alone."
+
+[[case]]
+id = "fn.sumifs-ands-its-conditions"
+given = { A1 = "1", B1 = "'x", C1 = "10", A2 = "5", B2 = "'x", C2 = "20", A3 = "9", B3 = "'y", C3 = "30" }
+formula = "=SUMIFS(C1:C3,A1:A3,\">2\",B1:B3,\"x\")"
+expect = "20"
+source = "known"
+functions = ["SUMIFS"]
+note = """
+Note the argument order: SUMIFS takes the sum range *first*, where SUMIF takes
+it last. Getting that backwards is the most common mistake with the pair, and
+an implementation that copied SUMIF's order would pass its own tests.
+"""
+
+[[case]]
+id = "fn.averageifs-ands-its-conditions"
+given = { A1 = "1", B1 = "'x", C1 = "10", A2 = "5", B2 = "'x", C2 = "20", A3 = "9", B3 = "'x", C3 = "30" }
+formula = "=AVERAGEIFS(C1:C3,A1:A3,\">2\",B1:B3,\"x\")"
+expect = "25"
+source = "known"
+functions = ["AVERAGEIFS"]
+note = "Same argument order as SUMIFS: the averaged range comes first."

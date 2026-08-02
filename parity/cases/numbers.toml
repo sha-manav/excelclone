@@ -61,13 +61,22 @@ the residue. Same fix, same reason for not guessing at it now.
 id = "number.general-switches-to-scientific-when-large"
 formula = "=100000000000000000000"
 expect = "1E+20"
-source = "known"
-known_difference = true
+source = "open"
+candidates = [
+  "1E+20 (what a default-width column shows)",
+  "100000000000000000000 (what a wide enough column shows)",
+]
 note = """
-General formatting switches to scientific notation once a number no longer
-fits the column in ordinary digits — for a value of 1E+20 Excel shows
-`1E+20`. Gridline writes all twenty-one digits. A display difference rather
-than a computation one, but it is what a user sees.
+Written as a known difference and reclassified after checking it. Excel's
+General format switches to scientific notation when the number does not fit
+the column, so what it shows depends on the column width — widen the column
+and the digits come back. Gridline's `display()` has no width, so there is no
+width-independent answer for the case to assert, and asserting one anyway
+would have manufactured a difference out of a question the corpus cannot ask.
+
+The width-independent part of the rule — whether Excel switches unconditionally
+above some magnitude, and where — is what needs settling, and it needs Excel.
+Gridline currently prints the digits at every magnitude.
 """
 
 [[case]]
@@ -75,16 +84,79 @@ id = "number.text-of-a-negative-uses-the-second-format-section"
 formula = "=TEXT(-5,\"0;(0)\")"
 expect = "(5)"
 source = "known"
-known_difference = true
 functions = ["TEXT"]
 note = """
 A number format code has up to four sections separated by semicolons —
 positive; negative; zero; text — and the negative section is how accountants
-get parentheses instead of a minus sign. Gridline's format engine handles the
-common codes but not the section split, so it formats -5 with the positive
-section and returns "-5". Recorded; the fix belongs with the rest of the
-number-format work.
+get parentheses instead of a minus sign. The negative section formats the
+*absolute* value: the parentheses carry the sign, so a minus as well would
+say it twice.
 """
+
+[[case]]
+id = "number.a-positive-uses-the-first-section"
+formula = "=TEXT(5,\"0;(0)\")"
+expect = "5"
+source = "known"
+functions = ["TEXT"]
+note = "The other side of the same code."
+
+[[case]]
+id = "number.two-sections-put-zero-with-the-positives"
+formula = "=TEXT(0,\"0;(0)\")"
+expect = "0"
+source = "known"
+functions = ["TEXT"]
+note = """
+With two sections the first covers positives *and* zero; a separate zero
+section only exists once there are three.
+"""
+
+[[case]]
+id = "number.a-third-section-catches-zero"
+formula = '=TEXT(0,"0;(0);""zero""")'
+expect = "zero"
+source = "known"
+functions = ["TEXT"]
+note = """
+A section with no digit placeholder in it is a literal, which is how a sheet
+shows a word where a zero would be.
+"""
+
+[[case]]
+id = "number.an-empty-section-shows-nothing"
+formula = "=TEXT(0,\"0;(0);\")"
+expect = ""
+source = "known"
+functions = ["TEXT"]
+note = "An empty third section is the idiom for hiding zeros."
+
+[[case]]
+id = "number.a-fourth-section-formats-text"
+formula = '=TEXT("abc","0;(0);0;@ (text)")'
+expect = "abc (text)"
+source = "known"
+functions = ["TEXT"]
+note = "@ stands for the text, and the fourth section applies to nothing else."
+
+[[case]]
+id = "number.a-single-section-keeps-the-minus-sign"
+formula = "=TEXT(-5,\"0\")"
+expect = "-5"
+source = "known"
+functions = ["TEXT"]
+note = """
+Without a negative section the sign is printed as usual — the absolute-value
+rule belongs to the section, not to the formatter.
+"""
+
+[[case]]
+id = "number.sections-work-with-a-full-currency-code"
+formula = "=TEXT(-1234.5,\"$#,##0.00;($#,##0.00)\")"
+expect = "($1,234.50)"
+source = "known"
+functions = ["TEXT"]
+note = "The accounting code people actually write, end to end."
 
 [[case]]
 id = "number.percent-of-a-negative"

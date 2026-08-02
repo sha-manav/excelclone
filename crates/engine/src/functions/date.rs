@@ -76,30 +76,47 @@ pub fn date(ctx: &EvalCtx, args: &[Expr]) -> Value {
         let y = ctx.eval_number(&args[0])?;
         let m = ctx.eval_number(&args[1])?;
         let d = ctx.eval_number(&args[2])?;
-        let date = date_from_parts(y.trunc() as i64, m.trunc() as i64, d.trunc() as i64)
-            .ok_or(ErrorKind::Num)?;
+        let (y, m, d) = (y.trunc() as i64, m.trunc() as i64, d.trunc() as i64);
+        // Excel's February 1900 has 29 days. Asked for that date by name it
+        // answers serial 60, and a workbook that contains it would otherwise
+        // read as an error. Only the date named directly is handled: a
+        // rollover that *lands* on the phantom day (DATE(1900,1,60)) would
+        // need Excel's whole calendar rather than the real one, and is a
+        // recorded difference rather than a silent one.
+        let named = if y < 1900 { y + 1900 } else { y };
+        if (named, m, d) == (1900, 2, 29) {
+            return serial::ymd_to_serial(1900, 2, 29).ok_or(ErrorKind::Num);
+        }
+        let date = date_from_parts(y, m, d).ok_or(ErrorKind::Num)?;
         // Anything before serial 1 is outside Excel's date system.
         serial::date_to_serial(date).ok_or(ErrorKind::Num)
     })())
 }
 
-fn date_part(ctx: &EvalCtx, args: &[Expr], f: impl Fn(NaiveDate) -> f64) -> Value {
+/// YEAR/MONTH/DAY answer from the serial's *components* rather than from a
+/// calendar date, so serial 60 reports Excel's 1900-02-29 instead of erroring.
+/// Month arithmetic still refuses it — see `serial::serial_to_parts`.
+fn serial_part(ctx: &EvalCtx, args: &[Expr], f: impl Fn((i32, u32, u32)) -> f64) -> Value {
     if let Err(k) = expect_args(args, 1, 1) {
         return Value::Error(k);
     }
-    num_result(arg_date(ctx, &args[0]).map(f))
+    num_result(
+        arg_serial(ctx, &args[0])
+            .and_then(|s| serial::serial_to_parts(s).ok_or(ErrorKind::Num))
+            .map(f),
+    )
 }
 
 pub fn year(ctx: &EvalCtx, args: &[Expr]) -> Value {
-    date_part(ctx, args, |d| d.year() as f64)
+    serial_part(ctx, args, |(y, _, _)| y as f64)
 }
 
 pub fn month(ctx: &EvalCtx, args: &[Expr]) -> Value {
-    date_part(ctx, args, |d| d.month() as f64)
+    serial_part(ctx, args, |(_, m, _)| m as f64)
 }
 
 pub fn day(ctx: &EvalCtx, args: &[Expr]) -> Value {
-    date_part(ctx, args, |d| d.day() as f64)
+    serial_part(ctx, args, |(_, _, d)| d as f64)
 }
 
 /// EOMONTH(start_date, months): last day of the month `months` away.

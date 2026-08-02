@@ -72,11 +72,19 @@ fn go() -> Result<(), String> {
         "run" => {
             let c = summary.counts();
             for o in &outcomes {
-                if let Verdict::Differs { got } = &o.verdict {
-                    println!(
+                match &o.verdict {
+                    Verdict::Differs { got } => println!(
                         "differs  {}\n  {}\n  expected {:?}, got {:?}",
                         o.case.id, o.case.formula, o.case.expect, got
-                    );
+                    ),
+                    // Without this the run exits 1 and says nothing, which is
+                    // exactly the failure mode the flag exists to prevent.
+                    Verdict::Fixed => println!(
+                        "fixed    {}\n  {}\n  now matches {:?}; remove `known_difference` \
+                         from the case",
+                        o.case.id, o.case.formula, o.case.expect
+                    ),
+                    _ => {}
                 }
             }
             for t in &trips {

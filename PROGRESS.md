@@ -131,9 +131,22 @@ Living checklist. Updated every session.
       returning IEEE infinity instead of `#NUM!` — fixed on the spot, because
       `inf` is not a spreadsheet value and would have reached the dataset
 
+## P1 — Closing the measured differences (in progress)
+- [x] Number-format sections (`0;(0)`, literal and empty sections, the text
+      section), with the stale test that pinned their absence corrected
+- [x] Serial 60 reports Excel's 1900-02-29 through YEAR/MONTH/DAY, and
+      `DATE(1900,2,29)` returns it; month arithmetic still refuses a date the
+      calendar does not have
+- [x] The scientific-notation case withdrawn as not well-founded — Excel's
+      choice is column-width dependent and `display()` has no width
+- [x] 17 cases for the functions no case pinned; 93.9% of implemented
+      functions are now pinned, up from 71.2%
+- [ ] Excel's 15-significant-digit final rounding (2 recorded differences)
+- [ ] Excel's calendar for rollovers landing on the phantom day
+
 ## Notes
 
-- 406 Rust tests, 140 web unit tests, 44 Playwright end-to-end tests; full
+- 412 Rust tests, 140 web unit tests, 44 Playwright end-to-end tests; full
   CI gate (fmt, clippy -D warnings, tests, wasm build, vite build, e2e)
   passes locally.
 - M5 found a bug that had been latent since M2: **xlsx export had never

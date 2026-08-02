@@ -51,8 +51,14 @@ pub fn format_value(v: &Value, code: &str) -> Result<String, ErrorKind> {
     if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("general") {
         return Ok(v.display());
     }
-    if has_sections(code) {
+    // Bracketed colours and conditions ([Red], [<100]) are still out of
+    // scope; anything containing one falls through to General.
+    if code.contains('[') {
         return Ok(v.display());
+    }
+    let sections = split_sections(code);
+    if sections.len() > 1 {
+        return format_sectioned(v, &sections);
     }
     if has_date_tokens(code) {
         let serial = value_to_serial(v)?;
@@ -84,26 +90,114 @@ fn value_to_serial(v: &Value) -> Result<f64, ErrorKind> {
     }
 }
 
-/// Multi-section codes ("pos;neg;zero") and bracketed colors/conditions are
-/// out of scope for v1.
-fn has_sections(code: &str) -> bool {
+/// Split a code on its unquoted, unescaped semicolons.
+///
+/// A `;` inside `"..."` or after a backslash is a literal character, not a
+/// section break — which is how `0;"; not a section"` stays one section.
+fn split_sections(code: &str) -> Vec<String> {
     let cs: Vec<char> = code.chars().collect();
+    let mut out = vec![String::new()];
+    let mut i = 0;
+    while i < cs.len() {
+        match cs[i] {
+            '"' => {
+                let start = i;
+                i += 1;
+                while i < cs.len() && cs[i] != '"' {
+                    i += 1;
+                }
+                i = (i + 1).min(cs.len());
+                out.last_mut().expect("a section").extend(&cs[start..i]);
+            }
+            '\\' => {
+                let end = (i + 2).min(cs.len());
+                out.last_mut().expect("a section").extend(&cs[i..end]);
+                i = end;
+            }
+            ';' => {
+                out.push(String::new());
+                i += 1;
+            }
+            c => {
+                out.last_mut().expect("a section").push(c);
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
+/// Apply a multi-section code.
+///
+/// Excel reads the sections as positive; negative; zero; text, and a code with
+/// fewer than four says less: two sections mean [positive and zero] and
+/// [negative], three add a separate zero. The negative section formats the
+/// *absolute* value, which is the whole point of `0;(0)` — the parentheses
+/// carry the sign, so a minus as well would say it twice.
+fn format_sectioned(v: &Value, sections: &[String]) -> Result<String, ErrorKind> {
+    // The text section, when there is one, applies to text and nothing else.
+    if let Value::Text(t) = v {
+        return Ok(match sections.get(3) {
+            Some(code) => code.replace('@', t),
+            None => t.clone(),
+        });
+    }
+    let n = match v {
+        Value::Number(n) => *n,
+        Value::Empty => 0.0,
+        other => return Ok(other.display()),
+    };
+
+    let (code, magnitude) = if n < 0.0 && sections.len() >= 2 {
+        // Two or more sections: the negative one takes the magnitude.
+        (&sections[1], n.abs())
+    } else if n == 0.0 && sections.len() >= 3 {
+        (&sections[2], n)
+    } else {
+        (&sections[0], n)
+    };
+
+    // An empty section means "show nothing", which is how `0;;` hides zeros.
+    if code.trim().is_empty() {
+        return Ok(String::new());
+    }
+    // A section with no digit placeholder is a literal: `0;(0);"zero"` shows
+    // the word rather than the number. Without this it would fall through to
+    // General and print `0`, which is the value the section exists to hide.
+    if !code.chars().any(|c| matches!(c, '0' | '#' | '?')) && !has_date_tokens(code) {
+        return Ok(unquote_literal(code));
+    }
+    format_value(&Value::Number(magnitude), code)
+}
+
+/// A format section's literal text, with its quoting removed.
+fn unquote_literal(code: &str) -> String {
+    let cs: Vec<char> = code.chars().collect();
+    let mut out = String::new();
     let mut i = 0;
     while i < cs.len() {
         match cs[i] {
             '"' => {
                 i += 1;
                 while i < cs.len() && cs[i] != '"' {
+                    out.push(cs[i]);
                     i += 1;
                 }
                 i += 1;
             }
-            '\\' => i += 2,
-            ';' | '[' => return true,
-            _ => i += 1,
+            '\\' => {
+                if let Some(c) = cs.get(i + 1) {
+                    out.push(*c);
+                }
+                i += 2;
+            }
+            c => {
+                out.push(c);
+                i += 1;
+            }
         }
     }
-    false
+    out
 }
 
 fn has_date_tokens(code: &str) -> bool {
@@ -490,9 +584,11 @@ mod tests {
         assert_eq!(fmt(5.0, "General"), "5");
         assert_eq!(fmt(5.0, "general"), "5");
         assert_eq!(fmt(1.5, ""), "1.5");
-        // Multi-section and colored codes are not implemented yet.
+        // Colours and conditions are still out of scope; a half-understood
+        // `[Red]0.00` would be worse than falling back to General. Sections
+        // *are* implemented now — see `section_tests`.
         assert_eq!(fmt(5.0, "[Red]0.00"), "5");
-        assert_eq!(fmt(5.0, "0.00;(0.00)"), "5");
+        assert_eq!(fmt(5.0, "0.00;(0.00)"), "5.00");
     }
 
     #[test]
@@ -615,5 +711,63 @@ mod tests {
         assert_eq!(group_thousands("123"), "123");
         assert_eq!(group_thousands("1234"), "1,234");
         assert_eq!(group_thousands("1234567"), "1,234,567");
+    }
+}
+
+#[cfg(test)]
+mod section_tests {
+    use super::*;
+
+    fn text(n: f64, code: &str) -> String {
+        format_value(&Value::Number(n), code).expect("formats")
+    }
+
+    #[test]
+    fn a_semicolon_inside_quotes_is_not_a_section_break() {
+        // Otherwise `0" items; each"` would split into two sections and the
+        // negative branch would take a piece of the positive one's text.
+        assert_eq!(split_sections(r#"0" items; each""#).len(), 1);
+        assert_eq!(split_sections(r"0\;0").len(), 1);
+        assert_eq!(split_sections("0;(0)").len(), 2);
+        assert_eq!(split_sections("0;(0);-;@").len(), 4);
+    }
+
+    #[test]
+    fn the_negative_section_formats_the_magnitude() {
+        // The parentheses carry the sign; printing a minus as well would say
+        // it twice, which is exactly what the code exists to avoid.
+        assert_eq!(text(-5.0, "0;(0)"), "(5)");
+        assert_eq!(text(5.0, "0;(0)"), "5");
+        assert_eq!(text(-1234.5, "$#,##0.00;($#,##0.00)"), "($1,234.50)");
+    }
+
+    #[test]
+    fn a_single_section_still_prints_the_sign() {
+        assert_eq!(text(-5.0, "0"), "-5");
+        assert_eq!(text(-0.5, "0%"), "-50%");
+    }
+
+    #[test]
+    fn zero_goes_with_the_positives_until_there_are_three_sections() {
+        assert_eq!(text(0.0, "0;(0)"), "0");
+        assert_eq!(text(0.0, r#"0;(0);"zero""#), "zero");
+        assert_eq!(text(0.0, "0;(0);"), "", "an empty section hides the value");
+    }
+
+    #[test]
+    fn the_fourth_section_belongs_to_text_and_nothing_else() {
+        let t = Value::Text("abc".into());
+        assert_eq!(format_value(&t, "0;(0);0;@ (text)").unwrap(), "abc (text)");
+        // With no text section the text passes through untouched.
+        assert_eq!(format_value(&t, "0;(0)").unwrap(), "abc");
+        // ...and a number never reaches the text section.
+        assert_eq!(text(-5.0, "0;(0);0;@"), "(5)");
+    }
+
+    #[test]
+    fn a_bracketed_code_is_still_left_alone() {
+        // Colours and conditions are out of scope, and a half-understood
+        // `[Red]-0` would be worse than General.
+        assert_eq!(text(-5.0, "[Red]0;[Blue]0"), "-5");
     }
 }
