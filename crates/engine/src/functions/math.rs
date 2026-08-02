@@ -204,3 +204,265 @@ pub fn sqrt(ctx: &EvalCtx, args: &[Expr]) -> Value {
         r => num_result(r.map(f64::sqrt)),
     }
 }
+
+// ---------------------------------------------------------------------------
+// Rounding to a multiple, and the elementary functions
+// ---------------------------------------------------------------------------
+
+/// One numeric argument, evaluated and handed to `f`.
+fn unary(ctx: &EvalCtx, args: &[Expr], f: impl Fn(f64) -> Result<f64, ErrorKind>) -> Value {
+    if let Err(k) = expect_args(args, 1, 1) {
+        return Value::Error(k);
+    }
+    num_result(ctx.eval_number(&args[0]).and_then(f))
+}
+
+/// CEILING(number, significance): away from zero to a multiple.
+///
+/// Excel's rule has three parts and every one of them catches somebody: a
+/// significance of 0 gives 0 rather than dividing by zero; a positive number
+/// with a negative significance is #NUM!; and a negative number rounds away
+/// from zero, so CEILING(-4.2, -1) is -5.
+pub fn ceiling(ctx: &EvalCtx, args: &[Expr]) -> Value {
+    to_multiple(ctx, args, f64::ceil)
+}
+
+/// FLOOR(number, significance): towards zero to a multiple, same rules.
+pub fn floor(ctx: &EvalCtx, args: &[Expr]) -> Value {
+    to_multiple(ctx, args, f64::floor)
+}
+
+fn to_multiple(ctx: &EvalCtx, args: &[Expr], round: impl Fn(f64) -> f64) -> Value {
+    if let Err(k) = expect_args(args, 2, 2) {
+        return Value::Error(k);
+    }
+    num_result((|| {
+        let n = ctx.eval_number(&args[0])?;
+        let sig = ctx.eval_number(&args[1])?;
+        if sig == 0.0 {
+            return Ok(0.0);
+        }
+        if n > 0.0 && sig < 0.0 {
+            return Err(ErrorKind::Num);
+        }
+        Ok(round(n / sig) * sig)
+    })())
+}
+
+/// MROUND(number, multiple): to the *nearest* multiple, halves away from zero.
+///
+/// Excel refuses a number and a multiple with different signs rather than
+/// guessing which one the user meant.
+pub fn mround(ctx: &EvalCtx, args: &[Expr]) -> Value {
+    if let Err(k) = expect_args(args, 2, 2) {
+        return Value::Error(k);
+    }
+    num_result((|| {
+        let n = ctx.eval_number(&args[0])?;
+        let m = ctx.eval_number(&args[1])?;
+        if m == 0.0 {
+            return Ok(0.0);
+        }
+        if n.signum() != m.signum() {
+            return Err(ErrorKind::Num);
+        }
+        Ok(round_away(n / m) * m)
+    })())
+}
+
+/// TRUNC(number, [digits]): cut, never round. INT is the one that floors.
+pub fn trunc(ctx: &EvalCtx, args: &[Expr]) -> Value {
+    if let Err(k) = expect_args(args, 1, 2) {
+        return Value::Error(k);
+    }
+    num_result((|| {
+        let n = ctx.eval_number(&args[0])?;
+        let digits = match args.get(1) {
+            Some(a) => ctx.eval_number(a)?.trunc(),
+            None => 0.0,
+        };
+        let scale = 10f64.powf(digits);
+        Ok((n * scale).trunc() / scale)
+    })())
+}
+
+pub fn sign(ctx: &EvalCtx, args: &[Expr]) -> Value {
+    // `f64::signum` gives 1.0 for +0.0, and Excel gives 0.
+    unary(ctx, args, |n| Ok(if n == 0.0 { 0.0 } else { n.signum() }))
+}
+
+pub fn exp(ctx: &EvalCtx, args: &[Expr]) -> Value {
+    unary(ctx, args, |n| Ok(n.exp()))
+}
+
+/// LN(number): natural log. Zero and negatives are #NUM!, never -inf or NaN.
+pub fn ln(ctx: &EvalCtx, args: &[Expr]) -> Value {
+    unary(ctx, args, |n| {
+        if n > 0.0 {
+            Ok(n.ln())
+        } else {
+            Err(ErrorKind::Num)
+        }
+    })
+}
+
+pub fn log10(ctx: &EvalCtx, args: &[Expr]) -> Value {
+    unary(ctx, args, |n| {
+        if n > 0.0 {
+            Ok(n.log10())
+        } else {
+            Err(ErrorKind::Num)
+        }
+    })
+}
+
+/// LOG(number, [base]): base 10 by default, which is why LOG and LN differ.
+pub fn log(ctx: &EvalCtx, args: &[Expr]) -> Value {
+    if let Err(k) = expect_args(args, 1, 2) {
+        return Value::Error(k);
+    }
+    num_result((|| {
+        let n = ctx.eval_number(&args[0])?;
+        let base = match args.get(1) {
+            Some(a) => ctx.eval_number(a)?,
+            None => 10.0,
+        };
+        if n <= 0.0 || base <= 0.0 || base == 1.0 {
+            return Err(ErrorKind::Num);
+        }
+        Ok(n.log(base))
+    })())
+}
+
+/// GCD/LCM: whole numbers only, fractions truncated, negatives refused.
+pub fn gcd(ctx: &EvalCtx, args: &[Expr]) -> Value {
+    whole_number_fold(ctx, args, 0, |a, b| {
+        let (mut a, mut b) = (a, b);
+        while b != 0 {
+            let t = b;
+            b = a % b;
+            a = t;
+        }
+        a
+    })
+}
+
+pub fn lcm(ctx: &EvalCtx, args: &[Expr]) -> Value {
+    whole_number_fold(ctx, args, 1, |a, b| {
+        if a == 0 || b == 0 {
+            return 0;
+        }
+        let (mut x, mut y) = (a, b);
+        while y != 0 {
+            let t = y;
+            y = x % y;
+            x = t;
+        }
+        a / x * b
+    })
+}
+
+fn whole_number_fold(
+    ctx: &EvalCtx,
+    args: &[Expr],
+    identity: i64,
+    f: impl Fn(i64, i64) -> i64,
+) -> Value {
+    if args.is_empty() {
+        return Value::Error(ErrorKind::Value);
+    }
+    num_result((|| {
+        let mut acc = identity;
+        for n in gather_numbers(ctx, args)? {
+            if n < 0.0 {
+                return Err(ErrorKind::Num);
+            }
+            acc = f(acc, n.trunc() as i64);
+        }
+        Ok(acc as f64)
+    })())
+}
+
+// ---------------------------------------------------------------------------
+// Order statistics
+// ---------------------------------------------------------------------------
+
+/// Numbers from the arguments, sorted ascending. Errors propagate.
+fn sorted_numbers(ctx: &EvalCtx, args: &[Expr]) -> Result<Vec<f64>, ErrorKind> {
+    let mut ns = gather_numbers(ctx, args)?;
+    ns.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    Ok(ns)
+}
+
+/// MEDIAN: the middle value, or the mean of the two middle ones.
+pub fn median(ctx: &EvalCtx, args: &[Expr]) -> Value {
+    num_result((|| {
+        let ns = sorted_numbers(ctx, args)?;
+        if ns.is_empty() {
+            return Err(ErrorKind::Num);
+        }
+        let mid = ns.len() / 2;
+        Ok(if ns.len() % 2 == 1 {
+            ns[mid]
+        } else {
+            (ns[mid - 1] + ns[mid]) / 2.0
+        })
+    })())
+}
+
+/// LARGE(range, k) / SMALL(range, k): the kth from one end, 1-based.
+pub fn large(ctx: &EvalCtx, args: &[Expr]) -> Value {
+    nth_from_end(ctx, args, true)
+}
+
+pub fn small(ctx: &EvalCtx, args: &[Expr]) -> Value {
+    nth_from_end(ctx, args, false)
+}
+
+fn nth_from_end(ctx: &EvalCtx, args: &[Expr], from_top: bool) -> Value {
+    if let Err(k) = expect_args(args, 2, 2) {
+        return Value::Error(k);
+    }
+    num_result((|| {
+        let ns = sorted_numbers(ctx, &args[..1])?;
+        let k = ctx.eval_number(&args[1])?.trunc();
+        // Excel is 1-based and refuses k outside the data with #NUM!, not an
+        // empty answer — a silent clamp would hide a broken formula.
+        if k < 1.0 || k > ns.len() as f64 {
+            return Err(ErrorKind::Num);
+        }
+        let i = k as usize - 1;
+        Ok(if from_top {
+            ns[ns.len() - 1 - i]
+        } else {
+            ns[i]
+        })
+    })())
+}
+
+/// RANK(number, range, [order]): position in the sorted range, 1-based.
+///
+/// Ties share the best rank and the next one is skipped, which is what makes
+/// it a competition ranking rather than a dense one.
+pub fn rank(ctx: &EvalCtx, args: &[Expr]) -> Value {
+    if let Err(k) = expect_args(args, 2, 3) {
+        return Value::Error(k);
+    }
+    num_result((|| {
+        let target = ctx.eval_number(&args[0])?;
+        let ns = sorted_numbers(ctx, &args[1..2])?;
+        let ascending = match args.get(2) {
+            Some(a) => ctx.eval_number(a)? != 0.0,
+            None => false,
+        };
+        if !ns.contains(&target) {
+            return Err(ErrorKind::NA);
+        }
+        let better = if ascending {
+            ns.iter().filter(|n| **n < target).count()
+        } else {
+            ns.iter().filter(|n| **n > target).count()
+        };
+        Ok(better as f64 + 1.0)
+    })())
+}

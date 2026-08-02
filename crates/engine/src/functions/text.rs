@@ -433,6 +433,82 @@ fn search_index(pattern: &str, hay: &str, start: usize) -> Option<usize> {
         .map(|p| p + 1)
 }
 
+// ---------------------------------------------------------------------------
+// Repetition, exact comparison, and the character/code pair
+// ---------------------------------------------------------------------------
+
+/// REPT(text, count): the text repeated. Excel caps a cell at 32767
+/// characters and answers #VALUE! past it rather than building the string.
+pub fn rept(ctx: &EvalCtx, args: &[Expr]) -> Value {
+    const MAX_CELL_CHARS: f64 = 32_767.0;
+    if let Err(k) = expect_args(args, 2, 2) {
+        return Value::Error(k);
+    }
+    text_result((|| {
+        let s = ctx.eval_text(&args[0])?;
+        let n = ctx.eval_number(&args[1])?.trunc();
+        if n < 0.0 {
+            return Err(ErrorKind::Value);
+        }
+        if s.chars().count() as f64 * n > MAX_CELL_CHARS {
+            return Err(ErrorKind::Value);
+        }
+        Ok(s.repeat(n as usize))
+    })())
+}
+
+/// EXACT(a, b): the case-sensitive comparison, which `=` is not.
+pub fn exact(ctx: &EvalCtx, args: &[Expr]) -> Value {
+    if let Err(k) = expect_args(args, 2, 2) {
+        return Value::Error(k);
+    }
+    match (ctx.eval_text(&args[0]), ctx.eval_text(&args[1])) {
+        (Ok(a), Ok(b)) => Value::Bool(a == b),
+        (Err(k), _) | (_, Err(k)) => Value::Error(k),
+    }
+}
+
+/// CHAR(code): the character for a code point, 1..=255.
+///
+/// Excel's range is a byte because the function predates Unicode; UNICHAR is
+/// the one that goes further, and we do not have it yet.
+pub fn char_fn(ctx: &EvalCtx, args: &[Expr]) -> Value {
+    if let Err(k) = expect_args(args, 1, 1) {
+        return Value::Error(k);
+    }
+    text_result((|| {
+        let n = ctx.eval_number(&args[0])?.trunc();
+        if !(1.0..=255.0).contains(&n) {
+            return Err(ErrorKind::Value);
+        }
+        char::from_u32(n as u32)
+            .map(String::from)
+            .ok_or(ErrorKind::Value)
+    })())
+}
+
+/// CODE(text): the code point of the first character. Empty text is #VALUE!.
+pub fn code(ctx: &EvalCtx, args: &[Expr]) -> Value {
+    if let Err(k) = expect_args(args, 1, 1) {
+        return Value::Error(k);
+    }
+    num_result((|| {
+        let s = ctx.eval_text(&args[0])?;
+        s.chars()
+            .next()
+            .map(|c| c as u32 as f64)
+            .ok_or(ErrorKind::Value)
+    })())
+}
+
+/// CLEAN(text): strip the non-printing characters a mainframe export leaves
+/// behind. Excel removes the first 32 ASCII control codes and nothing else.
+pub fn clean(ctx: &EvalCtx, args: &[Expr]) -> Value {
+    map_text(ctx, args, |s| {
+        s.chars().filter(|c| (*c as u32) >= 32).collect()
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

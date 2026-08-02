@@ -15,9 +15,9 @@ this file and fails if the result differs from what is committed.
 
 | Measure | Score | |
 | --- | --- | --- |
-| Cell match (settled cases) | **98.0%** | 147 of 150 |
-| Function coverage | **48.5%** | 66 of 136 target functions implemented |
-| Functions pinned by a case | **93.9%** | 62 of 66 implemented |
+| Cell match (settled cases) | **98.5%** | 199 of 202 |
+| Function coverage | **67.6%** | 92 of 136 target functions implemented |
+| Functions pinned by a case | **95.7%** | 88 of 92 implemented |
 | Round-trip fidelity | **100.0%** | 2 of 2 workbooks |
 | Recorded differences | 3 | counted as misses above |
 | Open questions | 3 | excluded above |
@@ -101,27 +101,27 @@ against anything but our own opinion.
 | `RAND` | yes | — |
 | `RANDBETWEEN` | yes | — |
 
-### Tier 2 — 0 of 70 implemented
+### Tier 2 — 26 of 70 implemented
 
 | Function | Implemented | Pinned |
 | --- | --- | --- |
 | `SUMPRODUCT` | — | — |
-| `MEDIAN` | — | — |
+| `MEDIAN` | yes | yes |
 | `MODE` | — | — |
 | `STDEV` | — | — |
-| `LARGE` | — | — |
-| `SMALL` | — | — |
-| `RANK` | — | — |
+| `LARGE` | yes | yes |
+| `SMALL` | yes | yes |
+| `RANK` | yes | yes |
 | `COUNTUNIQUE` | — | — |
 | `SUBTOTAL` | — | — |
 | `AGGREGATE` | — | — |
-| `IFNA` | — | — |
-| `ISNA` | — | — |
-| `ISERR` | — | — |
-| `ISLOGICAL` | — | — |
+| `IFNA` | yes | yes |
+| `ISNA` | yes | yes |
+| `ISERR` | yes | yes |
+| `ISLOGICAL` | yes | yes |
 | `ISREF` | — | — |
-| `NA` | — | — |
-| `TYPE` | — | — |
+| `NA` | yes | yes |
+| `TYPE` | yes | yes |
 | `XMATCH` | — | — |
 | `LOOKUP` | — | — |
 | `OFFSET` | — | — |
@@ -139,11 +139,11 @@ against anything but our own opinion.
 | `TEXTSPLIT` | — | — |
 | `TEXTBEFORE` | — | — |
 | `TEXTAFTER` | — | — |
-| `REPT` | — | — |
-| `EXACT` | — | — |
-| `CHAR` | — | — |
-| `CODE` | — | — |
-| `CLEAN` | — | — |
+| `REPT` | yes | yes |
+| `EXACT` | yes | yes |
+| `CHAR` | yes | yes |
+| `CODE` | yes | yes |
+| `CLEAN` | yes | yes |
 | `NUMBERVALUE` | — | — |
 | `LET` | — | — |
 | `TIME` | — | — |
@@ -164,17 +164,17 @@ against anything but our own opinion.
 | `IRR` | — | — |
 | `RATE` | — | — |
 | `NPER` | — | — |
-| `CEILING` | — | — |
-| `FLOOR` | — | — |
-| `MROUND` | — | — |
-| `TRUNC` | — | — |
-| `SIGN` | — | — |
-| `GCD` | — | — |
-| `LCM` | — | — |
-| `EXP` | — | — |
-| `LN` | — | — |
-| `LOG` | — | — |
-| `LOG10` | — | — |
+| `CEILING` | yes | yes |
+| `FLOOR` | yes | yes |
+| `MROUND` | yes | yes |
+| `TRUNC` | yes | yes |
+| `SIGN` | yes | yes |
+| `GCD` | yes | yes |
+| `LCM` | yes | yes |
+| `EXP` | yes | yes |
+| `LN` | yes | yes |
+| `LOG` | yes | yes |
+| `LOG10` | yes | yes |
 
 ## Known differences
 

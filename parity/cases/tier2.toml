@@ -1,0 +1,482 @@
+# The tier-2 functions, as they were implemented.
+#
+# Written before the code in most cases, and every one of them ran against the
+# engine before this file was committed — a case added after the fact to match
+# what the code already did would measure nothing.
+
+# --- rounding to a multiple -------------------------------------------------
+
+[[case]]
+id = "t2.ceiling-goes-away-from-zero"
+formula = "=CEILING(4.2,1)"
+expect = "5"
+source = "known"
+functions = ["CEILING"]
+note = "Up to the next multiple of the significance."
+
+[[case]]
+id = "t2.ceiling-of-a-negative-with-a-negative-significance"
+formula = "=CEILING(-4.2,-1)"
+expect = "-5"
+source = "known"
+functions = ["CEILING"]
+note = """
+Away from zero, so a negative number with a negative significance goes further
+negative. This is the sign rule people get wrong when reimplementing it.
+"""
+
+[[case]]
+id = "t2.ceiling-of-a-positive-with-a-negative-significance-is-num"
+formula = "=CEILING(4.2,-1)"
+expect = "#NUM!"
+source = "known"
+functions = ["CEILING"]
+note = "Mixed signs are refused rather than guessed at."
+
+[[case]]
+id = "t2.ceiling-with-zero-significance-is-zero"
+formula = "=CEILING(4.2,0)"
+expect = "0"
+source = "known"
+functions = ["CEILING"]
+note = "Not #DIV/0!, which is what a naive implementation would give."
+
+[[case]]
+id = "t2.floor-goes-towards-zero"
+formula = "=FLOOR(4.9,1)"
+expect = "4"
+source = "known"
+functions = ["FLOOR"]
+note = "The other direction, same rules."
+
+[[case]]
+id = "t2.mround-takes-the-nearest"
+formula = "=MROUND(10,3)"
+expect = "9"
+source = "known"
+functions = ["MROUND"]
+note = "10 is nearer 9 than 12."
+
+[[case]]
+id = "t2.mround-rounds-halves-away-from-zero"
+formula = "=MROUND(4.5,1)"
+expect = "5"
+source = "known"
+functions = ["MROUND"]
+note = "The same half-away rule ROUND uses, not banker's rounding."
+
+[[case]]
+id = "t2.mround-refuses-mixed-signs"
+formula = "=MROUND(-10,3)"
+expect = "#NUM!"
+source = "known"
+functions = ["MROUND"]
+note = "MROUND is stricter than CEILING here: any sign mismatch is #NUM!."
+
+[[case]]
+id = "t2.trunc-cuts-rather-than-rounding"
+formula = "=TRUNC(-2.9)"
+expect = "-2"
+source = "known"
+functions = ["TRUNC"]
+note = """
+TRUNC(-2.9) is -2 where INT(-2.9) is -3: one cuts towards zero, the other
+floors. Having both is the only reason to distinguish them.
+"""
+
+[[case]]
+id = "t2.trunc-keeps-digits"
+formula = "=TRUNC(3.14159,2)"
+expect = "3.14"
+source = "known"
+functions = ["TRUNC"]
+note = "The optional second argument, cut not rounded — 3.14159 is not 3.15."
+
+[[case]]
+id = "t2.sign-of-zero-is-zero"
+formula = "=SIGN(0)"
+expect = "0"
+source = "known"
+functions = ["SIGN"]
+note = """
+Zero has no sign in Excel. IEEE `signum` returns 1.0 for +0.0, so an
+implementation that forwards it is wrong on exactly this input.
+"""
+
+[[case]]
+id = "t2.sign-of-a-negative"
+formula = "=SIGN(-0.5)"
+expect = "-1"
+source = "known"
+functions = ["SIGN"]
+note = "And -1 for anything below zero."
+
+# --- logs and exponentials --------------------------------------------------
+
+[[case]]
+id = "t2.exp-and-ln-are-inverses"
+formula = "=LN(EXP(3))"
+expect = "3"
+source = "known"
+functions = ["EXP", "LN"]
+note = "Pinned together; separately neither says much."
+
+[[case]]
+id = "t2.ln-of-zero-is-num"
+formula = "=LN(0)"
+expect = "#NUM!"
+source = "known"
+functions = ["LN"]
+note = "Not negative infinity. A spreadsheet has no infinity to return."
+
+[[case]]
+id = "t2.log-defaults-to-base-ten"
+formula = "=LOG(1000)"
+expect = "3"
+source = "known"
+functions = ["LOG"]
+note = "Which is why LOG and LN are different functions."
+
+[[case]]
+id = "t2.log-takes-a-base"
+formula = "=LOG(8,2)"
+expect = "3"
+source = "known"
+functions = ["LOG"]
+note = "The optional second argument."
+
+[[case]]
+id = "t2.log10"
+formula = "=LOG10(100)"
+expect = "2"
+source = "known"
+functions = ["LOG10"]
+note = "The same as LOG with no base, kept for compatibility."
+
+# --- whole-number arithmetic ------------------------------------------------
+
+[[case]]
+id = "t2.gcd"
+formula = "=GCD(24,36)"
+expect = "12"
+source = "known"
+functions = ["GCD"]
+note = "Fractions are truncated first; negatives are #NUM!."
+
+[[case]]
+id = "t2.gcd-of-a-negative-is-num"
+formula = "=GCD(24,-36)"
+expect = "#NUM!"
+source = "known"
+functions = ["GCD"]
+note = "Excel refuses rather than taking the magnitude."
+
+[[case]]
+id = "t2.lcm"
+formula = "=LCM(4,6)"
+expect = "12"
+source = "known"
+functions = ["LCM"]
+note = "The companion of GCD, with the same argument rules."
+
+# --- order statistics -------------------------------------------------------
+
+[[case]]
+id = "t2.median-of-an-odd-count"
+given = { A1 = "3", A2 = "1", A3 = "2" }
+formula = "=MEDIAN(A1:A3)"
+expect = "2"
+source = "known"
+functions = ["MEDIAN"]
+note = "The middle value once sorted; the range order does not matter."
+
+[[case]]
+id = "t2.median-of-an-even-count-averages-the-middle-two"
+given = { A1 = "1", A2 = "2", A3 = "3", A4 = "10" }
+formula = "=MEDIAN(A1:A4)"
+expect = "2.5"
+source = "known"
+functions = ["MEDIAN"]
+note = "Not the lower of the two, which is what a naive index gives."
+
+[[case]]
+id = "t2.large-counts-from-the-top"
+given = { A1 = "5", A2 = "9", A3 = "1" }
+formula = "=LARGE(A1:A3,2)"
+expect = "5"
+source = "known"
+functions = ["LARGE"]
+note = "1-based from the largest, so 2 is the second largest."
+
+[[case]]
+id = "t2.small-counts-from-the-bottom"
+given = { A1 = "5", A2 = "9", A3 = "1" }
+formula = "=SMALL(A1:A3,2)"
+expect = "5"
+source = "known"
+functions = ["SMALL"]
+note = "The mirror of LARGE."
+
+[[case]]
+id = "t2.large-past-the-end-is-num"
+given = { A1 = "5" }
+formula = "=LARGE(A1:A3,4)"
+expect = "#NUM!"
+source = "known"
+functions = ["LARGE"]
+note = """
+Asking for the fourth largest of one number is #NUM!, not the smallest one
+clamped. A silent clamp would hide a formula pointing at the wrong range.
+"""
+
+[[case]]
+id = "t2.rank-is-a-competition-ranking"
+given = { A1 = "10", A2 = "20", A3 = "20", A4 = "30" }
+formula = "=RANK(20,A1:A4)"
+expect = "2"
+source = "known"
+functions = ["RANK"]
+note = """
+Descending by default, ties share the best rank, and the next rank is skipped
+— two values tied at 2 means the next is 4, not 3.
+"""
+
+[[case]]
+id = "t2.rank-can-count-upwards"
+given = { A1 = "10", A2 = "20", A3 = "30" }
+formula = "=RANK(20,A1:A3,1)"
+expect = "2"
+source = "known"
+functions = ["RANK"]
+note = "A non-zero third argument ranks ascending."
+
+[[case]]
+id = "t2.rank-of-a-value-not-present-is-na"
+given = { A1 = "10" }
+formula = "=RANK(99,A1:A3)"
+expect = "#N/A"
+source = "known"
+functions = ["RANK"]
+note = "Not found, so #N/A — the same answer MATCH gives."
+
+# --- the rest of the IS-family ----------------------------------------------
+
+[[case]]
+id = "t2.isna-is-true-only-for-not-available"
+formula = "=ISNA(NA())"
+expect = "TRUE"
+source = "known"
+functions = ["ISNA", "NA"]
+note = "NA() is the error you write on purpose."
+
+[[case]]
+id = "t2.isna-is-false-for-other-errors"
+formula = "=ISNA(1/0)"
+expect = "FALSE"
+source = "known"
+functions = ["ISNA"]
+note = "A #DIV/0! is broken, not missing, and the two are worth telling apart."
+
+[[case]]
+id = "t2.iserr-excludes-not-available"
+formula = "=ISERR(NA())"
+expect = "FALSE"
+source = "known"
+functions = ["ISERR"]
+note = """
+ISERR is every error *except* #N/A, which is the complement of ISNA and the
+reason all three predicates exist.
+"""
+
+[[case]]
+id = "t2.iserr-is-true-for-a-real-error"
+formula = "=ISERR(1/0)"
+expect = "TRUE"
+source = "known"
+functions = ["ISERR"]
+note = "The other half."
+
+[[case]]
+id = "t2.islogical"
+formula = "=ISLOGICAL(TRUE)"
+expect = "TRUE"
+source = "known"
+functions = ["ISLOGICAL"]
+note = "Booleans only; 1 is a number even though it coerces."
+
+[[case]]
+id = "t2.islogical-is-false-for-one"
+formula = "=ISLOGICAL(1)"
+expect = "FALSE"
+source = "known"
+functions = ["ISLOGICAL"]
+note = "Coercion is not identity."
+
+[[case]]
+id = "t2.ifna-catches-only-not-available"
+given = { A1 = "'a" }
+formula = "=IFNA(VLOOKUP(\"q\",A1:A3,1,FALSE),\"missing\")"
+expect = "missing"
+source = "known"
+functions = ["IFNA", "VLOOKUP"]
+note = """
+The reason to prefer it over IFERROR around a lookup: a failed lookup is
+expected and a #VALUE! is a bug, and IFERROR would hide both.
+"""
+
+[[case]]
+id = "t2.ifna-passes-other-errors-through"
+formula = "=IFNA(1/0,\"missing\")"
+expect = "#DIV/0!"
+source = "known"
+functions = ["IFNA"]
+note = "Exactly what IFERROR would have swallowed."
+
+[[case]]
+id = "t2.type-of-a-number"
+formula = "=TYPE(1)"
+expect = "1"
+source = "known"
+functions = ["TYPE"]
+note = "1 number, 2 text, 4 logical, 16 error, 64 array — a bit field from 1985."
+
+[[case]]
+id = "t2.type-of-text"
+formula = "=TYPE(\"a\")"
+expect = "2"
+source = "known"
+functions = ["TYPE"]
+note = "The numbering is not sequential, and sheets compare against the values."
+
+[[case]]
+id = "t2.type-of-an-error"
+formula = "=TYPE(1/0)"
+expect = "16"
+source = "known"
+functions = ["TYPE"]
+note = "TYPE inspects rather than propagating, which is the point of it."
+
+[[case]]
+id = "t2.type-of-a-range"
+given = { A1 = "1", A2 = "2" }
+formula = "=TYPE(A1:A2)"
+expect = "64"
+source = "known"
+functions = ["TYPE"]
+note = "An array, even though we have no dynamic arrays to return one."
+
+# --- text -------------------------------------------------------------------
+
+[[case]]
+id = "t2.rept"
+formula = "=REPT(\"ab\",3)"
+expect = "ababab"
+source = "known"
+functions = ["REPT"]
+note = "Used for bar charts in a cell more often than anything else."
+
+[[case]]
+id = "t2.rept-zero-is-empty"
+formula = "=REPT(\"ab\",0)"
+expect = ""
+source = "known"
+functions = ["REPT"]
+note = "Zero is legal; negative is #VALUE!."
+
+[[case]]
+id = "t2.exact-is-case-sensitive"
+formula = "=EXACT(\"abc\",\"ABC\")"
+expect = "FALSE"
+source = "known"
+functions = ["EXACT"]
+note = """
+Where `=` says TRUE. EXACT exists precisely because the equality operator
+ignores case.
+"""
+
+[[case]]
+id = "t2.exact-on-identical-text"
+formula = "=EXACT(\"abc\",\"abc\")"
+expect = "TRUE"
+source = "known"
+functions = ["EXACT"]
+note = "The positive case."
+
+[[case]]
+id = "t2.char-and-code-are-inverses"
+formula = "=CODE(CHAR(65))"
+expect = "65"
+source = "known"
+functions = ["CHAR", "CODE"]
+note = "65 is A. Both are byte-range functions; UNICHAR is the wider one."
+
+[[case]]
+id = "t2.char-out-of-range-is-value"
+formula = "=CHAR(0)"
+expect = "#VALUE!"
+source = "known"
+functions = ["CHAR"]
+note = "The range is 1 to 255."
+
+[[case]]
+id = "t2.code-of-empty-text-is-value"
+formula = "=CODE(\"\")"
+expect = "#VALUE!"
+source = "known"
+functions = ["CODE"]
+note = "There is no first character to report."
+
+[[case]]
+id = "t2.clean-removes-control-characters"
+formula = "=LEN(CLEAN(CHAR(7)&\"ab\"))"
+expect = "2"
+source = "known"
+functions = ["CLEAN", "CHAR", "LEN"]
+note = """
+CLEAN strips the first 32 ASCII control codes and nothing else — it is for
+mainframe exports, not for trimming spaces, which is TRIM's job.
+"""
+
+# --- the sign rules the documentation spends a paragraph on -----------------
+
+[[case]]
+id = "t2.ceiling-of-a-negative-with-a-positive-significance"
+formula = "=CEILING(-4.2,1)"
+expect = "-4"
+source = "known"
+functions = ["CEILING"]
+note = """
+"Up" means towards zero here. Microsoft's page spends a paragraph on this:
+a negative number with a *positive* significance rounds towards zero, and with
+a negative significance away from it. The pair of cases is the only way to
+tell a correct implementation from one that got the sign of the quotient right
+by accident.
+"""
+
+[[case]]
+id = "t2.floor-of-a-negative-with-a-positive-significance"
+formula = "=FLOOR(-4.2,1)"
+expect = "-5"
+source = "known"
+functions = ["FLOOR"]
+note = "And FLOOR is the mirror: away from zero with a positive significance."
+
+[[case]]
+id = "t2.floor-of-a-negative-with-a-negative-significance"
+formula = "=FLOOR(-4.2,-1)"
+expect = "-4"
+source = "known"
+functions = ["FLOOR"]
+note = "Towards zero with a negative one."
+
+[[case]]
+id = "t2.rank-skips-after-a-tie"
+given = { A1 = "10", A2 = "20", A3 = "20", A4 = "30" }
+formula = "=RANK(10,A1:A4)"
+expect = "4"
+source = "known"
+functions = ["RANK"]
+note = """
+Two values tied at rank 2 means the next rank is 4, not 3. A dense ranking
+would answer 3, and this case is the difference between the two.
+"""

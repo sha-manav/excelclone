@@ -144,6 +144,20 @@ Living checklist. Updated every session.
 - [ ] Excel's 15-significant-digit final rounding (2 recorded differences)
 - [ ] Excel's calendar for rollovers landing on the phantom day
 
+## P2 — Function coverage (in progress)
+- [x] 26 tier-2 functions: CEILING, FLOOR, MROUND, TRUNC, SIGN, EXP, LN, LOG,
+      LOG10, GCD, LCM, MEDIAN, LARGE, SMALL, RANK, ISNA, ISERR, ISLOGICAL,
+      IFNA, NA, TYPE, REPT, EXACT, CHAR, CODE, CLEAN
+- [x] 52 cases pinning them, including the sign rules Microsoft's own page
+      spends a paragraph on and the difference between competition and dense
+      ranking
+- [x] Coverage 48.5% → 67.6%; cell match 98.5%; 95.7% of implemented
+      functions pinned
+- [ ] The reference family (ROW, COLUMN, ROWS, COLUMNS) and SUMPRODUCT
+- [ ] The date and financial blocks
+- [ ] Dynamic arrays (UNIQUE, SORT, FILTER, SEQUENCE, TEXTSPLIT) need spilling
+      first, which is a model change rather than a function
+
 ## Notes
 
 - 412 Rust tests, 140 web unit tests, 44 Playwright end-to-end tests; full
