@@ -4,6 +4,14 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[lib]
+name = "miner"
+path = "src/lib.rs"
+
+[[bin]]
+name = "gridline-miner"
+path = "src/main.rs"
+
 [dependencies]
 engine = { path = "../engine" }
 serde = { workspace = true }
