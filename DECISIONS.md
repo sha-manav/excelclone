@@ -50,3 +50,13 @@ One-line rationale for every non-obvious choice.
 - **`RAND`/`RANDBETWEEN` derive from the injected clock via a pure SplitMix64 mixer, not system entropy** — the engine must stay replayable and I/O-free. Consequence: two `RAND()` calls with identical arguments in one recalc return the same value.
 - **`COUNTIF` and friends propagate errors found anywhere in a scanned range**, where Excel ignores them. Pinned as an open oracle question for P0 rather than guessed at.
 - **`numfmt` fails soft**: an unrecognised format code renders as General instead of erroring, because it only affects display.
+
+## M2 — xlsx / csv I/O
+
+- **Preservation is implemented by patching the original zip, not by regenerating it** — on import every part is retained verbatim; on export only each modelled sheet's `<sheetData>` (and `<mergeCells>`) is replaced, leaving `<cols>`, `<conditionalFormatting>`, `<dataValidations>`, `<pageMargins>`, tab colours, charts, pivot caches and VBA byte-identical. Per-cell style indices (`s=`) captured at import are written back, so formatting we do not model still survives.
+- **Inline strings (`t="inlineStr"`) are used when rewriting sheet data** — writing shared strings would mean rewriting `sharedStrings.xml`, which is exactly the kind of shared part the preservation rule exists to protect.
+- **New workbooks export via `rust_xlsxwriter`; imported ones via the zip-patch path** — the fixed choice in §4 covers the from-scratch case, and the preservation rule cannot be expressed through it.
+- **Adding a sheet to an imported workbook fails loudly on export** rather than silently dropping it, because writing a new sheet part also means rewriting `workbook.xml` and its relationships. Known gap; the error names the sheet.
+- **`_xlfn.` / `_xlws.` function prefixes are stripped at parse time** — xlsx stores every post-2007 function that way (`_xlfn.TEXTJOIN`, `_xlfn.XLOOKUP`, `_xlfn.IFS`, `_xlfn.CONCAT`) and Excel hides it. Without this, importing any modern real-world workbook produced `#NAME?`. Caught by the golden-workbook round trip, not by a unit test.
+- **A formula whose source contains `_xlfn.` is re-rendered from its AST for display**, so the formula bar shows `=TEXTJOIN(...)` like Excel; all other formula text is stored exactly as written.
+- **A formula our parser rejects imports as literal text plus a warning** — never silently dropped, and the original text survives the round trip.

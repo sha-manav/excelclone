@@ -1066,9 +1066,18 @@ impl Engine {
 fn build_cell(input: &str) -> Result<Cell, ApplyError> {
     if let Some(body) = input.strip_prefix('=') {
         let ast = parse_formula(body)?;
+        // Formula text is stored as the user wrote it, with one exception:
+        // xlsx stores post-2007 functions as `_xlfn.NAME`, which Excel hides.
+        // Re-render from the AST in that case so the formula bar shows what
+        // Excel would show rather than the storage form.
+        let src = if body.to_uppercase().contains("_XLFN.") {
+            ast.to_formula()
+        } else {
+            body.to_string()
+        };
         return Ok(Cell {
             content: CellContent::Formula {
-                src: body.to_string(),
+                src,
                 ast,
                 cached: Value::Empty,
             },

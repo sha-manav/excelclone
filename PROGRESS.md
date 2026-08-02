@@ -18,7 +18,7 @@ Living checklist. Updated every session.
 - [x] Dependency graph, incremental recalc, cycle detection (#CIRC!)
 - [x] ~25 math + logic functions with Excel-verified tests
 
-## M2 — Engine complete
+## M2 — Engine complete (complete)
 - [x] Full v1 function list — math, logic, lookup, conditional aggregation,
       text (+ a common-codes number-format engine), date/time
 - [x] Reference rewriting: offset (copy/fill), structural (insert/delete),
@@ -29,7 +29,13 @@ Living checklist. Updated every session.
 - [x] Undo/redo through the same apply() path, recorded state not inverse actions
 - [x] Property tests: undo identity, insert/delete inverses, replay determinism,
       incremental vs full recalc agreement (500 cases each)
-- [ ] xlsx/csv import/export + preservation rule; golden workbook tests
+- [x] xlsx import (calamine) and export, CSV import/export
+- [x] Preservation rule: original zip parts retained verbatim, only
+      `<sheetData>`/`<mergeCells>` patched, per-cell style indices kept
+- [x] Import warnings for charts, pivots, VBA, conditional formatting,
+      data validation, tables, comments, external links
+- [x] Golden workbook tests: fixtures regenerate, import, recalc, and match
+      stored snapshots; two-pass round trip is lossless
 
 ## M3 — Wasm + Grid MVP
 - [ ] wasm-bindgen API over engine; npm package consumed by web app
@@ -58,13 +64,26 @@ Living checklist. Updated every session.
 
 ## Notes
 
-- 132 engine tests green; `cargo clippy -D warnings` clean.
+- 149 engine tests green; full CI gate (fmt, clippy -D warnings, tests,
+  wasm build, vite build) passes locally.
 - The property suite caught a real determinism bug: cells that only
   *syntactically* referenced a cycle (an untaken `IF` branch) were marked
   `#CIRC!` by a full recalculation but evaluated correctly by an incremental
   one. Cycle membership is now decided by strongly connected component
   (iterative Tarjan), so both recalculation paths agree.
+- The golden workbook round trip caught a second real bug: xlsx stores
+  post-2007 functions as `_xlfn.TEXTJOIN` etc., so every modern real-world
+  workbook would have imported as `#NAME?`. Prefixes are now stripped at
+  parse time.
+
+## Known gaps carried forward
+
+- Adding a sheet to an imported workbook fails loudly on export (writing a new
+  sheet part means rewriting `workbook.xml` and its relationships). Fix before
+  the M7 demo, which imports a fixture and may add sheets.
+- Every structural operation triggers a full dependency rebuild and
+  recalculation. Correct but O(all formulas); revisit under P5 performance.
 
 ## Resume point
-M2 nearly complete: only xlsx/csv I/O and golden workbook tests outstanding.
-Next after that: M3 (wasm bindings + canvas grid).
+M0-M2 complete and green. Next: M3 — wasm-bindgen API over the engine, then
+the virtualized canvas grid in `apps/web`.

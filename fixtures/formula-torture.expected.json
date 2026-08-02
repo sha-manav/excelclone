@@ -1,0 +1,123 @@
+{
+  "sheets": [
+    {
+      "cells": {
+        "A1": {
+          "input": "=1+2*3",
+          "value": "7"
+        },
+        "A10": {
+          "input": "=TRUE+1",
+          "value": "2"
+        },
+        "A11": {
+          "input": "=\"3\"+4",
+          "value": "7"
+        },
+        "A12": {
+          "input": "=Z99+5",
+          "value": "5"
+        },
+        "A13": {
+          "input": "=\"x\"&Z99",
+          "value": "x"
+        },
+        "A14": {
+          "input": "=0^0",
+          "value": "#NUM!"
+        },
+        "A15": {
+          "input": "=MOD(-3,2)",
+          "value": "1"
+        },
+        "A16": {
+          "input": "=ROUND(2.675,2)",
+          "value": "2.68"
+        },
+        "A17": {
+          "input": "=INT(-1.5)",
+          "value": "-2"
+        },
+        "A18": {
+          "input": "=SQRT(-1)",
+          "value": "#NUM!"
+        },
+        "A19": {
+          "input": "=NOSUCHFUNC(1)",
+          "value": "#NAME?"
+        },
+        "A2": {
+          "input": "=(1+2)*3",
+          "value": "9"
+        },
+        "A20": {
+          "input": "=99999<\"a\"",
+          "value": "TRUE"
+        },
+        "A3": {
+          "input": "=2^3^2",
+          "value": "64"
+        },
+        "A4": {
+          "input": "=-2^2",
+          "value": "4"
+        },
+        "A5": {
+          "input": "=50%*10",
+          "value": "5"
+        },
+        "A6": {
+          "input": "=\"a\"&1.5",
+          "value": "a1.5"
+        },
+        "A7": {
+          "input": "=1/0",
+          "value": "#DIV/0!"
+        },
+        "A8": {
+          "input": "=A7+1",
+          "value": "#DIV/0!"
+        },
+        "A9": {
+          "input": "=IFERROR(A7,\"caught\")",
+          "value": "caught"
+        },
+        "B1": {
+          "input": "=SUM(A1:A6)",
+          "value": "89"
+        },
+        "B2": {
+          "input": "=COUNT(A1:A20)",
+          "value": "11"
+        },
+        "B3": {
+          "input": "=COUNTA(A1:A20)",
+          "value": "20"
+        },
+        "B4": {
+          "input": "=TEXTJOIN(\"|\",TRUE,A1:A5)",
+          "value": "7|9|64|4|5"
+        },
+        "B5": {
+          "input": "=DATE(2024,2,29)",
+          "value": "45351"
+        },
+        "B6": {
+          "input": "=WEEKDAY(DATE(2024,1,1),2)",
+          "value": "1"
+        },
+        "B7": {
+          "input": "=EOMONTH(DATE(2024,1,31),1)",
+          "value": "45351"
+        },
+        "B8": {
+          "input": "=DATEDIF(DATE(2020,1,1),DATE(2024,3,1),\"M\")",
+          "value": "50"
+        }
+      },
+      "hidden_rows": [],
+      "merged": [],
+      "name": "Sheet1"
+    }
+  ]
+}

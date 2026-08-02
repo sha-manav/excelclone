@@ -109,7 +109,13 @@ pub(crate) fn apply_cell(
         Err(ApplyError::Formula(e)) => {
             warnings.push(ImportWarning::new(
                 ImportWarningKind::UnparseableFormula,
-                format!("{}!{}: {} ({}); kept as text", sheet, addr.to_a1(), input, e),
+                format!(
+                    "{}!{}: {} ({}); kept as text",
+                    sheet,
+                    addr.to_a1(),
+                    input,
+                    e
+                ),
             ));
             engine
                 .apply(&edit(format!("'{}", input)))
@@ -146,12 +152,7 @@ pub(crate) fn install_sheets(engine: &mut Engine, names: &[String]) -> Result<()
         },
     )?;
     for name in names {
-        apply(
-            engine,
-            Action::SheetAdd {
-                name: name.clone(),
-            },
-        )?;
+        apply(engine, Action::SheetAdd { name: name.clone() })?;
     }
     if names.is_empty() {
         // Nothing to import into: keep a usable single sheet.

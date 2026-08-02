@@ -287,6 +287,21 @@ pub struct Parser {
     pos: usize,
 }
 
+/// Uppercase a function name and strip the xlsx storage prefixes.
+///
+/// The file format stores functions introduced after Excel 2007 with an
+/// `_xlfn.` prefix (and worksheet-scoped ones with a further `_xlws.`), which
+/// Excel hides from the user. Without stripping them, every real workbook
+/// using TEXTJOIN, XLOOKUP, IFS or CONCAT would import as `#NAME?`.
+pub fn normalize_func_name(raw: &str) -> String {
+    let upper = raw.to_uppercase();
+    let stripped = upper.strip_prefix("_XLFN.").unwrap_or(&upper);
+    stripped
+        .strip_prefix("_XLWS.")
+        .unwrap_or(stripped)
+        .to_string()
+}
+
 /// Parse formula body text (without the leading '=').
 pub fn parse_formula(src: &str) -> Result<Expr, ParseError> {
     let toks = Lexer::new(src).tokenize()?;
@@ -417,7 +432,7 @@ impl Parser {
                         }
                     }
                     self.expect(Tok::RParen)?;
-                    return Ok(Expr::Func(id.to_uppercase(), args));
+                    return Ok(Expr::Func(normalize_func_name(&id), args));
                 }
                 let upper = id.to_uppercase();
                 if upper == "TRUE" {
@@ -572,6 +587,22 @@ mod tests {
         assert_eq!(p("#N/A"), Error(crate::value::ErrorKind::NA));
         assert_eq!(p("1.5e2"), Number(150.0));
         assert_eq!(p(".5"), Number(0.5));
+    }
+
+    #[test]
+    fn xlsx_future_function_prefixes_are_stripped() {
+        // xlsx stores post-2007 functions prefixed; Excel hides that.
+        for (src, want) in [
+            ("_xlfn.TEXTJOIN(\",\",TRUE,A1:A2)", "TEXTJOIN"),
+            ("_xlfn.XLOOKUP(1,A1:A2,B1:B2)", "XLOOKUP"),
+            ("_xlfn.IFS(A1,1)", "IFS"),
+            ("_xlfn._xlws.FILTER(A1:A2,B1:B2)", "FILTER"),
+        ] {
+            match p(src) {
+                Func(name, _) => assert_eq!(name, want, "for {src}"),
+                other => panic!("{src} parsed as {other:?}"),
+            }
+        }
     }
 
     #[test]
