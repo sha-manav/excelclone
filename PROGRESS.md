@@ -11,17 +11,24 @@ Living checklist. Updated every session.
 - [x] PROGRESS.md, DECISIONS.md, docs/ARCHITECTURE.md
 - [x] First commit
 
-## M1 — Engine core
-- [ ] Cell/sheet/workbook data model (sparse store, merged-range map)
-- [ ] Formula parser (Pratt, Excel precedence, A1 refs, ranges, cross-sheet)
-- [ ] Evaluator with error semantics + empty-cell coercion
-- [ ] Dependency graph, incremental recalc, cycle detection (#CIRC!)
-- [ ] ~25 math + logic functions with Excel-verified tests
+## M1 — Engine core (complete)
+- [x] Cell/sheet/workbook data model (sparse store, merged-range map)
+- [x] Formula parser (Pratt, Excel precedence, A1 refs, ranges, cross-sheet)
+- [x] Evaluator with error semantics + empty-cell coercion
+- [x] Dependency graph, incremental recalc, cycle detection (#CIRC!)
+- [x] ~25 math + logic functions with Excel-verified tests
 
 ## M2 — Engine complete
-- [ ] Full v1 function list (lookup, conditional agg, text, date/time)
-- [ ] Copy/cut/paste/fill with ref rewriting; insert/delete rows/cols
-- [ ] Sort/filter; undo/redo as inverse actions
+- [x] Full v1 function list — math, logic, lookup, conditional aggregation,
+      text (+ a common-codes number-format engine), date/time
+- [x] Reference rewriting: offset (copy/fill), structural (insert/delete),
+      moved (cut/paste), each with Excel semantics and unit tests
+- [x] Copy/cut/paste (formulas, values, tiling), fill with series detection
+- [x] Insert/delete rows and columns with workbook-wide ref remapping
+- [x] Sort (multi-key, blanks last), value filters, merge/unmerge
+- [x] Undo/redo through the same apply() path, recorded state not inverse actions
+- [x] Property tests: undo identity, insert/delete inverses, replay determinism,
+      incremental vs full recalc agreement (500 cases each)
 - [ ] xlsx/csv import/export + preservation rule; golden workbook tests
 
 ## M3 — Wasm + Grid MVP
@@ -49,5 +56,15 @@ Living checklist. Updated every session.
 - [ ] miner export JSONL (consent-enforced)
 - [ ] Demo workbook + scripted data; docs complete; README
 
+## Notes
+
+- 132 engine tests green; `cargo clippy -D warnings` clean.
+- The property suite caught a real determinism bug: cells that only
+  *syntactically* referenced a cycle (an untaken `IF` branch) were marked
+  `#CIRC!` by a full recalculation but evaluated correctly by an incremental
+  one. Cycle membership is now decided by strongly connected component
+  (iterative Tarjan), so both recalculation paths agree.
+
 ## Resume point
-M0 complete. Next: M1 engine core (start with `crates/engine/src/model.rs`).
+M2 nearly complete: only xlsx/csv I/O and golden workbook tests outstanding.
+Next after that: M3 (wasm bindings + canvas grid).
