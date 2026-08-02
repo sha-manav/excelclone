@@ -10,6 +10,7 @@ pub mod deps;
 pub mod engine;
 pub mod eval;
 pub mod functions;
+pub mod io;
 pub mod model;
 pub mod ops;
 pub mod parser;

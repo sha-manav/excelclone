@@ -115,6 +115,11 @@ impl Sheet {
 pub struct Workbook {
     pub sheets: Vec<Sheet>,
     next_sheet_id: u32,
+    /// The original xlsx package this workbook was imported from, kept so
+    /// export can patch only the parts we model and write everything else
+    /// back unchanged. Bulk binary: never serialized.
+    #[serde(default, skip)]
+    pub preserved: Option<crate::io::xlsx::PreservedPackage>,
 }
 
 impl Default for Workbook {
@@ -129,6 +134,7 @@ impl Workbook {
         let mut wb = Workbook {
             sheets: Vec::new(),
             next_sheet_id: 0,
+            preserved: None,
         };
         wb.add_sheet("Sheet1");
         wb
