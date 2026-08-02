@@ -1,8 +1,18 @@
 :root {
+  --accent: #1e7e45;
+  --accent-wash: rgba(30, 126, 69, 0.1);
+  --border: #d8d8d8;
+  --grid-line: #e0e0e0;
+  --text: #1a1a1a;
+  --muted: #6b6b6b;
+  --surface: #fafafa;
+  --error: #b3261e;
+
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica,
     Arial, sans-serif;
-  color: #1a1a1a;
-  background: #ffffff;
+  font-size: 13px;
+  color: var(--text);
+  background: #fff;
 }
 
 * {
@@ -11,29 +21,261 @@
   padding: 0;
 }
 
+button {
+  font: inherit;
+  color: inherit;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 3px 9px;
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  background: var(--surface);
+  border-color: #bdbdbd;
+}
+
+button:disabled {
+  color: #b0b0b0;
+  cursor: default;
+}
+
 .app {
   display: flex;
   flex-direction: column;
   height: 100vh;
+  overflow: hidden;
 }
+
+.loading {
+  margin: auto;
+  color: var(--muted);
+}
+
+/* Toolbar */
 
 .toolbar {
   display: flex;
   align-items: center;
+  gap: 14px;
   padding: 6px 12px;
-  border-bottom: 2px solid #1e7e45;
-  background: #fafafa;
+  border-bottom: 2px solid var(--accent);
+  background: var(--surface);
+  flex: none;
 }
 
 .logo {
   font-weight: 600;
-  color: #1e7e45;
+  color: var(--accent);
+  letter-spacing: 0.2px;
 }
 
-.grid-host {
+.toolbar__group {
+  display: flex;
+  gap: 6px;
+}
+
+.toolbar__spacer {
   flex: 1;
+}
+
+.toolbar__status {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Formula bar */
+
+.formula-bar {
+  display: flex;
+  align-items: stretch;
+  border-bottom: 1px solid var(--border);
+  background: #fff;
+  flex: none;
+  height: 28px;
+}
+
+.formula-bar__address {
+  width: 90px;
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #666;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.formula-bar__divider {
+  width: 1px;
+  background: var(--border);
+}
+
+.formula-bar__field {
+  position: relative;
+  flex: 1;
+  display: flex;
+}
+
+.formula-bar__highlight,
+.formula-bar__input {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 28px;
+  padding: 0 10px;
+  white-space: pre;
+  overflow: hidden;
+}
+
+.formula-bar__highlight {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.formula-bar__input {
+  position: relative;
+  flex: 1;
+  border: 0;
+  outline: none;
+  background: transparent;
+  /* The highlight layer behind supplies the colour. */
+  color: transparent;
+  caret-color: var(--text);
+}
+
+.formula-bar__input::selection {
+  background: rgba(30, 126, 69, 0.25);
+}
+
+.tok--plain {
+  color: var(--text);
+}
+
+.tok--ref {
+  color: #1a56a8;
+}
+
+.tok--string {
+  color: #9a3412;
+}
+
+/* Grid */
+
+.grid-host {
+  flex: 1;
+  position: relative;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Sheet tabs */
+
+.sheet-tabs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 8px;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+  flex: none;
+}
+
+.sheet-tabs__add {
+  border-radius: 4px;
+  padding: 2px 8px;
+  line-height: 1.2;
+}
+
+.sheet-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.sheet-tab:hover {
+  background: #f0f0f0;
+}
+
+.sheet-tab--active {
+  background: #fff;
+  border-color: var(--border);
+  border-bottom-color: var(--accent);
+  box-shadow: inset 0 -2px 0 var(--accent);
+  font-weight: 600;
+}
+
+.sheet-tab__close {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  padding: 0 2px;
+  line-height: 1;
+}
+
+.sheet-tab__close:hover {
+  color: var(--error);
+  background: transparent;
+}
+
+.sheet-tab__rename {
+  font: inherit;
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  padding: 1px 4px;
+  width: 100px;
+  outline: none;
+}
+
+/* Context menu */
+
+.context-menu {
+  position: fixed;
+  z-index: 50;
+  min-width: 160px;
+  list-style: none;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.12);
+  padding: 4px 0;
+}
+
+.context-menu li {
+  padding: 5px 14px;
+  cursor: pointer;
+}
+
+.context-menu li:hover {
+  background: var(--accent-wash);
+}
+
+/* Error toast */
+
+.error-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 48px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: 70vw;
+  padding: 8px 12px;
+  background: #fff;
+  border: 1px solid var(--error);
+  border-left-width: 3px;
+  border-radius: 6px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.12);
+  color: var(--error);
+  z-index: 60;
+}
+
+.error-toast button {
+  border-color: var(--error);
+  color: var(--error);
 }

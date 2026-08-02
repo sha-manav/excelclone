@@ -8,3 +8,5 @@ crates/wasm/pkg/
 *.db-wal
 .DS_Store
 data/
+apps/web/test-results/
+apps/web/playwright-report/

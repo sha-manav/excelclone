@@ -45,9 +45,12 @@ jobs:
       - name: Install
         working-directory: apps/web
         run: npm install --no-audit --no-fund
+      - name: Unit tests
+        working-directory: apps/web
+        run: npx vitest run
+      # `npm run build` is `tsc -b && vite build`, so this typechecks too.
+      # A bare `tsc --noEmit` would check nothing: the root tsconfig is
+      # solution-style and only holds project references.
       - name: Build
         working-directory: apps/web
         run: npm run build
-      - name: Typecheck
-        working-directory: apps/web
-        run: npx tsc --noEmit
