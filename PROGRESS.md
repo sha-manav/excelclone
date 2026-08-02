@@ -101,12 +101,15 @@ Living checklist. Updated every session.
 - [x] Consent enforced by the query that reads the events: no consent row, a
       latest consent of `off`, or a revocation contributes nothing
 - [x] Subprocess tests driving the built binary against a real database
-- [ ] Sheet add/rename/delete on an imported workbook (blocks the demo)
+- [x] Sheet add/rename/delete on an imported workbook: `xl/workbook.xml`, its
+      relationships and `[Content_Types].xml` are spliced, never regenerated,
+      and a package with no `xl/styles.xml` is given the default one at import
+      so formatting always has somewhere to go
 - [ ] Demo workbook + scripted data; docs complete; README
 
 ## Notes
 
-- 341 Rust tests, 140 web unit tests, 44 Playwright end-to-end tests; full
+- 382 Rust tests, 140 web unit tests, 44 Playwright end-to-end tests; full
   CI gate (fmt, clippy -D warnings, tests, wasm build, vite build, e2e)
   passes locally.
 - M5 found a bug that had been latent since M2: **xlsx export had never
@@ -165,9 +168,11 @@ Living checklist. Updated every session.
 
 ## Known gaps carried forward
 
-- Adding a sheet to an imported workbook fails loudly on export (writing a new
-  sheet part means rewriting `workbook.xml` and its relationships). Fix before
-  the M7 demo, which imports a fixture and may add sheets.
+- `docProps/app.xml` still lists the sheet names the file arrived with. Excel
+  rewrites it on save and no reader validates it against `workbook.xml`, so a
+  stale copy is cosmetic — but it is stale.
+- A `<definedName>` pointing at a deleted sheet is left in `xl/workbook.xml`
+  rather than rewritten to `#REF!`.
 - Every structural operation triggers a full dependency rebuild and
   recalculation. Correct but O(all formulas); revisit under P5 performance.
 - The grid ignores merged ranges when painting (the engine models them and

@@ -23,6 +23,7 @@ use quick_xml::Reader as XmlReader;
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
+use super::package;
 use super::styles::{StyleAdditions, StyleSheet};
 use super::{apply_cell, install_sheets};
 // Re-exported so callers can spell them `xlsx::ImportResult` too.
@@ -30,7 +31,7 @@ pub use super::{ImportResult, ImportWarning, ImportWarningKind, IoError};
 use crate::addr::{CellAddr, RangeAddr};
 use crate::engine::{Action, Engine};
 use crate::format::CellFormat;
-use crate::model::{Cell, CellContent, Sheet, Workbook};
+use crate::model::{Cell, CellContent, Sheet, SheetId, Workbook};
 use crate::value::Value;
 
 /// The part every xlsx keeps its formatting in.
@@ -83,8 +84,13 @@ struct PreservedSheet {
 #[derive(Clone)]
 pub struct PreservedPackage {
     entries: Vec<PreservedEntry>,
-    /// Modeled worksheet name -> zip part name, in workbook order.
-    sheet_parts: Vec<(String, String)>,
+    /// Modeled sheet -> zip part name, in workbook order.
+    ///
+    /// Keyed by `SheetId` rather than by name, because a rename must stay a
+    /// rename: matching on the name would make it indistinguishable from
+    /// deleting one sheet and adding another, and the renamed sheet would lose
+    /// everything its original part held that we do not model.
+    sheet_parts: Vec<(SheetId, String)>,
     /// Part name -> detail captured from the original sheet XML.
     sheets: HashMap<String, PreservedSheet>,
     /// `xl/styles.xml`, parsed down to the formatting we model, so export can
@@ -265,17 +271,25 @@ pub fn import(bytes: &[u8]) -> Result<ImportResult, IoError> {
     }
 
     // Map worksheet names to zip parts and capture what lives inside
-    // <sheetData> before we regenerate it on export.
-    package.sheet_parts = resolve_sheet_parts(&package.entries)?
+    // <sheetData> before we regenerate it on export. The mapping is rekeyed to
+    // `SheetId` once the sheets exist; until then a name is all we have.
+    let named_parts: Vec<(String, String)> = resolve_sheet_parts(&package.entries)?
         .into_iter()
         .filter(|(name, _)| names.iter().any(|n| n == name))
         .collect();
-    for (_, part) in package.sheet_parts.clone() {
-        let Some(xml) = package.part(&part).map(|b| b.to_vec()) else {
+    for (_, part) in &named_parts {
+        let Some(xml) = package.part(part).map(|b| b.to_vec()) else {
             continue;
         };
         let sheet = scan_worksheet(&xml, &mut features)?;
-        package.sheets.insert(part, sheet);
+        package.sheets.insert(part.clone(), sheet);
+    }
+    // A package with no style sheet gets the default one, declared properly,
+    // before anything reads it. Doing this at import rather than at export
+    // means the rest of the code has exactly one case to handle: there is
+    // always somewhere to record a format.
+    if package.part(STYLES_PART).is_none() {
+        install_default_styles(&mut package)?;
     }
     // A style sheet we cannot parse is reported rather than fatal: the cells
     // still import, they just arrive unformatted, and the original indices are
@@ -293,6 +307,10 @@ pub fn import(bytes: &[u8]) -> Result<ImportResult, IoError> {
 
     let mut engine = Engine::new();
     install_sheets(&mut engine, &names)?;
+    package.sheet_parts = named_parts
+        .into_iter()
+        .filter_map(|(name, part)| Some((engine.wb.sheet_id_by_name(&name)?, part)))
+        .collect();
 
     for name in &names {
         // Merges first: merging clears every cell but the anchor, so applying
@@ -331,6 +349,62 @@ pub fn import(bytes: &[u8]) -> Result<ImportResult, IoError> {
     Ok(ImportResult { engine, warnings })
 }
 
+/// Give a package with no `xl/styles.xml` the default one, plus the
+/// relationship and content-type override that make it a real part.
+///
+/// The records it contains are the ones every xlsx has and index 0 of each
+/// collection must be the default, because a cell with no `s` attribute means
+/// `s="0"`. Appending to empty collections instead would make the first format
+/// anyone applies the default for the whole workbook.
+fn install_default_styles(package: &mut PreservedPackage) -> Result<(), IoError> {
+    const DEFAULT_STYLES: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\r\n\
+<styleSheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">\
+<fonts count=\"1\"><font><sz val=\"11\"/><name val=\"Calibri\"/></font></fonts>\
+<fills count=\"2\"><fill><patternFill patternType=\"none\"/></fill>\
+<fill><patternFill patternType=\"gray125\"/></fill></fills>\
+<borders count=\"1\"><border><left/><right/><top/><bottom/><diagonal/></border></borders>\
+<cellStyleXfs count=\"1\"><xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\"/></cellStyleXfs>\
+<cellXfs count=\"1\"><xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\" xfId=\"0\"/></cellXfs>\
+</styleSheet>";
+    const STYLES_REL_TYPE: &str =
+        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles";
+    const STYLES_CONTENT_TYPE: &str =
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml";
+
+    let Some(rels_at) = package
+        .entries
+        .iter()
+        .position(|e| e.name == package::WORKBOOK_RELS_PART)
+    else {
+        // No workbook relationships at all: a part we added could not be
+        // referenced, so leave the package alone and let export refuse to
+        // record formatting rather than write a file nothing can open.
+        return Ok(());
+    };
+    let (rels, _) = package::add_relationship(
+        &package.entries[rels_at].data,
+        STYLES_REL_TYPE,
+        "styles.xml",
+    )?;
+    package.entries[rels_at].data = rels;
+
+    if let Some(at) = package
+        .entries
+        .iter()
+        .position(|e| e.name == package::CONTENT_TYPES_PART)
+    {
+        package.entries[at].data =
+            package::add_override(&package.entries[at].data, STYLES_PART, STYLES_CONTENT_TYPE)?;
+    }
+    package.entries.push(PreservedEntry {
+        name: STYLES_PART.to_string(),
+        data: DEFAULT_STYLES.as_bytes().to_vec(),
+        compressed: true,
+        is_dir: false,
+    });
+    Ok(())
+}
+
 /// Populate `Sheet::formats` from the original `s` indices.
 ///
 /// This is written straight into the model rather than replayed as
@@ -338,13 +412,11 @@ pub fn import(bytes: &[u8]) -> Result<ImportResult, IoError> {
 /// session, and pushing thousands of format actions onto the undo stack would
 /// make the first Ctrl+Z after opening a file unformat part of it.
 fn install_formats(engine: &mut Engine, package: &PreservedPackage) {
-    for (name, part) in &package.sheet_parts {
+    for (sid, part) in &package.sheet_parts {
         let Some(detail) = package.sheets.get(part) else {
             continue;
         };
-        let Some(sid) = engine.wb.sheet_id_by_name(name) else {
-            continue;
-        };
+        let sid = *sid;
         for (addr, s) in &detail.styles {
             let format = package.styles.format_for(Some(s));
             if format.is_default() {
@@ -512,7 +584,7 @@ fn resolve_sheet_parts(entries: &[PreservedEntry]) -> Result<Vec<(String, String
 }
 
 /// Resolve a relationship target against the `xl/` base, collapsing `..`.
-fn resolve_target(target: &str) -> String {
+pub(crate) fn resolve_target(target: &str) -> String {
     let raw = target.replace('\\', "/");
     let joined = match raw.strip_prefix('/') {
         Some(abs) => abs.to_string(),
@@ -744,42 +816,39 @@ pub fn export(wb: &Workbook) -> Result<Vec<u8>, IoError> {
 }
 
 fn export_preserved(wb: &Workbook, package: &PreservedPackage) -> Result<Vec<u8>, IoError> {
-    // Sheets we cannot map back to a part would be silently dropped, and parts
-    // we cannot map to a sheet would silently resurrect stale data. Both are
-    // worse than refusing to save.
-    for sheet in &wb.sheets {
-        if !package
-            .sheet_parts
-            .iter()
-            .any(|(n, _)| n.eq_ignore_ascii_case(&sheet.name))
-        {
-            return Err(IoError::Unrepresentable(format!(
-                "sheet '{}' was added or renamed after import; adding or renaming sheets in an imported workbook is not supported yet",
-                sheet.name
-            )));
-        }
-    }
-    for (name, _) in &package.sheet_parts {
-        if wb.sheet_by_name(name).is_none() {
-            return Err(IoError::Unrepresentable(format!(
-                "sheet '{}' was deleted or renamed after import; deleting or renaming sheets in an imported workbook is not supported yet",
-                name
-            )));
-        }
-    }
+    // Work out where every sheet's XML goes before touching any of it. A sheet
+    // added since import needs a part invented for it, one deleted needs its
+    // part and every reference to it removed, and one renamed keeps the part it
+    // has. The plan answers all three, and rewrites nothing when the sheet list
+    // is unchanged.
+    let model: Vec<(SheetId, String)> = wb.sheets.iter().map(|s| (s.id, s.name.clone())).collect();
+    let Some(workbook_xml) = package.part(package::WORKBOOK_PART) else {
+        return Err(IoError::Malformed(format!(
+            "missing {}",
+            package::WORKBOOK_PART
+        )));
+    };
+    let parts = package::Parts {
+        workbook: workbook_xml,
+        rels: package.part(package::WORKBOOK_RELS_PART).unwrap_or(&[]),
+        content_types: package.part(package::CONTENT_TYPES_PART),
+    };
+    let part_names: Vec<String> = package.entries.iter().map(|e| e.name.clone()).collect();
+    let plan = package::plan(&model, &package.sheet_parts, &parts, &part_names)?;
 
-    // Resolve every cell's style index first, because doing so is what
+    // Resolve every cell's style index next, because doing so is what
     // discovers which new `<xf>` records `xl/styles.xml` needs; the sheets and
     // the style sheet then get patched from the same answer.
     let mut additions = StyleAdditions::new(&package.styles);
-    let mut style_attrs: HashMap<&str, BTreeMap<CellAddr, String>> = HashMap::new();
-    for (name, part) in &package.sheet_parts {
-        let (Some(sheet), Some(detail)) = (wb.sheet_by_name(name), package.sheets.get(part)) else {
+    let mut style_attrs: HashMap<String, BTreeMap<CellAddr, String>> = HashMap::new();
+    for slot in &plan.slots {
+        let Some(sheet) = wb.sheet(slot.sheet_id) else {
             continue;
         };
+        let detail = package.sheets.get(&slot.part).cloned().unwrap_or_default();
         style_attrs.insert(
-            part.as_str(),
-            resolve_style_indices(wb, sheet, detail, package, &mut additions),
+            slot.part.clone(),
+            resolve_style_indices(wb, sheet, &detail, package, &mut additions),
         );
     }
 
@@ -790,24 +859,29 @@ fn export_preserved(wb: &Workbook, package: &PreservedPackage) -> Result<Vec<u8>
         )));
     }
 
-    let mut patched: HashMap<&str, Vec<u8>> = HashMap::new();
-    for (name, part) in &package.sheet_parts {
-        let (Some(sheet), Some(entry)) = (
-            wb.sheet_by_name(name),
-            package.entries.iter().find(|e| e.name == *part),
-        ) else {
+    let mut patched: HashMap<String, Vec<u8>> = plan.patches.iter().cloned().collect();
+    for slot in &plan.slots {
+        let Some(sheet) = wb.sheet(slot.sheet_id) else {
             continue;
         };
-        let detail = package.sheets.get(part).cloned().unwrap_or_default();
-        let attrs = style_attrs.remove(part.as_str()).unwrap_or_default();
+        // A sheet added since import has no part to patch, so it is patched
+        // into an empty one — which keeps every worksheet on the same code
+        // path and means a generated sheet is written by the same writer as
+        // an imported one.
+        let original: Vec<u8> = match package.entries.iter().find(|e| e.name == slot.part) {
+            Some(entry) => entry.data.clone(),
+            None => package::empty_worksheet(),
+        };
+        let detail = package.sheets.get(&slot.part).cloned().unwrap_or_default();
+        let attrs = style_attrs.remove(&slot.part).unwrap_or_default();
         patched.insert(
-            part.as_str(),
-            patch_sheet_xml(&entry.data, sheet, &detail, &attrs)?,
+            slot.part.clone(),
+            patch_sheet_xml(&original, sheet, &detail, &attrs)?,
         );
     }
     if !additions.is_empty() {
         if let Some(original) = package.part(STYLES_PART) {
-            patched.insert(STYLES_PART, additions.patch(original)?);
+            patched.insert(STYLES_PART.to_string(), additions.patch(original)?);
         }
     }
 
@@ -815,6 +889,9 @@ fn export_preserved(wb: &Workbook, package: &PreservedPackage) -> Result<Vec<u8>
     {
         let mut zw = ZipWriter::new(Cursor::new(&mut out));
         for entry in &package.entries {
+            if plan.dropped.contains(&entry.name) {
+                continue;
+            }
             let options = SimpleFileOptions::default().compression_method(if entry.compressed {
                 CompressionMethod::Deflated
             } else {
@@ -829,6 +906,15 @@ fn export_preserved(wb: &Workbook, package: &PreservedPackage) -> Result<Vec<u8>
                 Some(bytes) => zw.write_all(bytes)?,
                 None => zw.write_all(&entry.data)?,
             }
+        }
+        // Parts this export invented go last; a zip has no required order and
+        // appending keeps every original entry at its original offset.
+        for slot in plan.slots.iter().filter(|s| s.fresh) {
+            let options =
+                SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+            zw.start_file(slot.part.as_str(), options)?;
+            let bytes = patched.get(slot.part.as_str()).cloned().unwrap_or_default();
+            zw.write_all(&bytes)?;
         }
         zw.finish()?;
     }

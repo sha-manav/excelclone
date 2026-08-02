@@ -277,16 +277,163 @@ fn merge_changes_are_written_into_the_preserved_package() {
 }
 
 #[test]
-fn adding_a_sheet_to_a_preserved_workbook_fails_loudly() {
+fn a_sheet_added_after_import_survives_the_round_trip() {
     let mut e = xlsx::import(&handmade_xlsx(SHEET_XML)).unwrap().engine;
     e.apply(&Action::SheetAdd {
         name: "Extra".into(),
     })
     .unwrap();
-    let err = xlsx::export(&e.wb).unwrap_err();
+    set(&mut e, "Extra", "B2", "7");
+    set(&mut e, "Extra", "B3", "=B2*6");
+    // A cross-sheet reference proves the new sheet is a first-class one and
+    // not a decoration bolted onto the package.
+    set(&mut e, "Books", "D1", "=Extra!B3");
+    assert_eq!(e.value_at("Books", "D1"), Value::Number(42.0));
+
+    let saved = xlsx::export(&e.wb).expect("export");
+    let back = xlsx::import(&saved).expect("reimport");
+    assert_eq!(
+        back.engine
+            .wb
+            .sheets
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["Books", "Extra"]
+    );
+    assert_eq!(back.engine.value_at("Extra", "B3"), Value::Number(42.0));
+    assert_eq!(back.engine.value_at("Books", "D1"), Value::Number(42.0));
+
+    // The generated part is declared everywhere a reader will look for it.
+    let part = String::from_utf8(part_of(&saved, "xl/worksheets/sheet2.xml")).unwrap();
+    assert!(part.contains("<v>7</v>"), "{part}");
+    let types = String::from_utf8(part_of(&saved, "[Content_Types].xml")).unwrap();
+    assert!(types.contains("/xl/worksheets/sheet2.xml"), "{types}");
+    let rels = String::from_utf8(part_of(&saved, "xl/_rels/workbook.xml.rels")).unwrap();
+    assert!(rels.contains("worksheets/sheet2.xml"), "{rels}");
+    // The vbaProject relationship rId2 was already taken, so the new one must
+    // not have reused it.
+    assert!(rels.contains("Target=\"vbaProject.bin\""), "{rels}");
+
+    // And the sheet the file arrived with keeps everything it had.
+    let original = String::from_utf8(part_of(&saved, "xl/worksheets/sheet1.xml")).unwrap();
     assert!(
-        err.to_string().contains("Extra"),
-        "expected a loud failure, got {err}"
+        original.contains("<tabColor rgb=\"FFFF0000\"/>"),
+        "{original}"
+    );
+}
+
+#[test]
+fn renaming_a_sheet_keeps_its_part_and_everything_in_it() {
+    // The whole reason parts are tracked by id: a rename must not throw away
+    // the columns, conditional formatting and tab colour the sheet arrived
+    // with, which is exactly what treating it as delete-then-add would do.
+    let mut e = xlsx::import(&handmade_xlsx(SHEET_XML)).unwrap().engine;
+    e.apply(&Action::SheetRename {
+        from: "Books".into(),
+        to: "Ledger".into(),
+    })
+    .unwrap();
+    let saved = xlsx::export(&e.wb).expect("export");
+
+    let sheet = String::from_utf8(part_of(&saved, "xl/worksheets/sheet1.xml")).unwrap();
+    assert!(sheet.contains("<tabColor rgb=\"FFFF0000\"/>"), "{sheet}");
+    assert!(
+        sheet.contains("<conditionalFormatting sqref=\"B1:B2\">"),
+        "{sheet}"
+    );
+    assert!(
+        sheet.contains("<col min=\"1\" max=\"1\" width=\"24.5\""),
+        "{sheet}"
+    );
+
+    let workbook = String::from_utf8(part_of(&saved, "xl/workbook.xml")).unwrap();
+    assert!(workbook.contains("name=\"Ledger\""), "{workbook}");
+    assert!(!workbook.contains("name=\"Books\""), "{workbook}");
+    // A rename adds no part, so these two are untouched.
+    assert_eq!(
+        part_of(&saved, "[Content_Types].xml"),
+        part_of(&handmade_xlsx(SHEET_XML), "[Content_Types].xml")
+    );
+
+    let back = xlsx::import(&saved).expect("reimport");
+    assert_eq!(back.engine.value_at("Ledger", "B2"), Value::Number(20.0));
+    assert!(back.engine.wb.sheet_by_name("Books").is_none());
+}
+
+#[test]
+fn deleting_a_sheet_removes_its_part_and_every_reference_to_it() {
+    // A part left behind with no `<sheet>` pointing at it is dead weight; a
+    // `<sheet>` left behind with no part makes Excel offer to repair the file.
+    let mut e = xlsx::import(&handmade_xlsx(SHEET_XML)).unwrap().engine;
+    e.apply(&Action::SheetAdd {
+        name: "Scratch".into(),
+    })
+    .unwrap();
+    set(&mut e, "Scratch", "A1", "1");
+    let saved = xlsx::export(&e.wb).expect("export");
+
+    let mut e = xlsx::import(&saved).expect("reimport").engine;
+    e.apply(&Action::SheetDelete {
+        name: "Scratch".into(),
+    })
+    .unwrap();
+    let saved = xlsx::export(&e.wb).expect("export after delete");
+
+    let names: Vec<String> = zip::ZipArchive::new(Cursor::new(&saved))
+        .unwrap()
+        .file_names()
+        .map(|s| s.to_string())
+        .collect();
+    assert!(
+        !names.iter().any(|n| n == "xl/worksheets/sheet2.xml"),
+        "the deleted sheet's part is still in the package: {names:?}"
+    );
+    let workbook = String::from_utf8(part_of(&saved, "xl/workbook.xml")).unwrap();
+    assert!(!workbook.contains("Scratch"), "{workbook}");
+    let types = String::from_utf8(part_of(&saved, "[Content_Types].xml")).unwrap();
+    assert!(!types.contains("sheet2.xml"), "{types}");
+    assert!(
+        types.contains("sheet1.xml"),
+        "the survivor lost its override"
+    );
+
+    let back = xlsx::import(&saved).expect("reimport after delete");
+    assert_eq!(
+        back.engine
+            .wb
+            .sheets
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["Books"]
+    );
+    assert_eq!(back.engine.value_at("Books", "B2"), Value::Number(20.0));
+}
+
+#[test]
+fn deleting_the_sheet_a_formula_points_at_leaves_a_ref_error_not_a_stale_value() {
+    // Excel's own behaviour, and the loud one: a formula that silently kept
+    // its last answer would be worse than one that says the sheet is gone.
+    let mut e = xlsx::import(&handmade_xlsx(SHEET_XML)).unwrap().engine;
+    e.apply(&Action::SheetAdd {
+        name: "Scratch".into(),
+    })
+    .unwrap();
+    set(&mut e, "Scratch", "A1", "9");
+    set(&mut e, "Books", "D1", "=Scratch!A1");
+    assert_eq!(e.value_at("Books", "D1"), Value::Number(9.0));
+
+    e.apply(&Action::SheetDelete {
+        name: "Scratch".into(),
+    })
+    .unwrap();
+    let saved = xlsx::export(&e.wb).expect("export");
+    let back = xlsx::import(&saved).expect("reimport");
+    assert!(
+        matches!(back.engine.value_at("Books", "D1"), Value::Error(_)),
+        "got {:?}",
+        back.engine.value_at("Books", "D1")
     );
 }
 
@@ -331,4 +478,156 @@ fn corrupt_input_errors_instead_of_panicking() {
     // A worksheet whose XML is malformed.
     let broken = handmade_xlsx("<worksheet><sheetData><row r=\"1\"><c r=\"A1\">");
     assert!(xlsx::import(&broken).is_err());
+}
+
+/// The demo fixture: a real two-sheet package with shared strings, a theme and
+/// a style sheet, none of which the hand-built one above has.
+fn demo_fixture() -> Vec<u8> {
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("fixtures/demo-dues-ledger.xlsx");
+    std::fs::read(path).expect("the demo fixture")
+}
+
+#[test]
+fn the_demo_fixture_survives_a_sheet_being_added_renamed_and_deleted() {
+    // The hand-built package above is a convenient minimum; this is the file
+    // the demo actually opens, and the one whose extra parts — sharedStrings,
+    // theme, docProps — a package rewrite could break.
+    let mut e = xlsx::import(&demo_fixture()).expect("import").engine;
+    let before = e.value_at("Ledger", "A1");
+
+    e.apply(&Action::SheetRename {
+        from: "Rates".into(),
+        to: "Fees".into(),
+    })
+    .unwrap();
+    e.apply(&Action::SheetAdd {
+        name: "Summary".into(),
+    })
+    .unwrap();
+    set(&mut e, "Summary", "A1", "=SUM(Ledger!D2:D9)");
+    let expected = e.value_at("Summary", "A1");
+    assert!(
+        matches!(expected, Value::Number(n) if n > 0.0),
+        "the fixture's ledger totals to {expected:?}, so this proves nothing"
+    );
+
+    let saved = xlsx::export(&e.wb).expect("export");
+    let back = xlsx::import(&saved).expect("reimport");
+    assert_eq!(
+        back.engine
+            .wb
+            .sheets
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["Ledger", "Fees", "Summary"]
+    );
+    assert_eq!(back.engine.value_at("Summary", "A1"), expected);
+    assert_eq!(back.engine.value_at("Ledger", "A1"), before);
+
+    // Now delete one and save again, from the reimported copy — the second
+    // trip is where a half-updated package shows up.
+    let mut e = back.engine;
+    e.apply(&Action::SheetDelete {
+        name: "Fees".into(),
+    })
+    .unwrap();
+    let saved = xlsx::export(&e.wb).expect("export after delete");
+    let back = xlsx::import(&saved).expect("reimport after delete");
+    assert_eq!(
+        back.engine
+            .wb
+            .sheets
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["Ledger", "Summary"]
+    );
+    assert_eq!(back.engine.value_at("Summary", "A1"), expected);
+    // The parts nobody modelled are still there.
+    for part in ["xl/theme/theme1.xml", "docProps/core.xml"] {
+        assert_eq!(
+            part_of(&saved, part),
+            part_of(&demo_fixture(), part),
+            "{part} changed"
+        );
+    }
+}
+
+/// The same minimum package, with no `xl/styles.xml` at all — which some
+/// generators really do produce, and which used to make any formatting a hard
+/// export failure.
+fn handmade_without_styles() -> Vec<u8> {
+    let content_types = br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>"#;
+    let root_rels = br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>"#;
+    let workbook = br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Plain" sheetId="1" r:id="rId1"/></sheets></workbook>"#;
+    let workbook_rels = br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>"#;
+    let sheet = br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1"><v>4</v></c><c r="B1"><v>6</v></c></row></sheetData></worksheet>"#;
+    zip_parts(&[
+        ("[Content_Types].xml", content_types),
+        ("_rels/.rels", root_rels),
+        ("xl/workbook.xml", workbook),
+        ("xl/_rels/workbook.xml.rels", workbook_rels),
+        ("xl/worksheets/sheet1.xml", sheet),
+    ])
+}
+
+#[test]
+fn a_package_with_no_style_sheet_can_still_be_formatted() {
+    use engine::{BorderPreset, FormatPatch};
+
+    let mut e = xlsx::import(&handmade_without_styles())
+        .expect("import")
+        .engine;
+    e.apply(&Action::FormatApply {
+        sheet: "Plain".into(),
+        range: RangeAddr::parse_a1("A1:B1").unwrap(),
+        patches: vec![
+            FormatPatch::Bold(true),
+            FormatPatch::FillColor(Some("#ffcc00".into())),
+            FormatPatch::Border(BorderPreset::All),
+        ],
+    })
+    .unwrap();
+    let saved = xlsx::export(&e.wb).expect("export");
+
+    // The style sheet exists, is declared, and is reachable.
+    let styles = String::from_utf8(part_of(&saved, "xl/styles.xml")).unwrap();
+    assert!(
+        styles.contains("<b/>"),
+        "the bold font was not recorded: {styles}"
+    );
+    let types = String::from_utf8(part_of(&saved, "[Content_Types].xml")).unwrap();
+    assert!(types.contains("/xl/styles.xml"), "{types}");
+    let rels = String::from_utf8(part_of(&saved, "xl/_rels/workbook.xml.rels")).unwrap();
+    assert!(rels.contains("Target=\"styles.xml\""), "{rels}");
+
+    // A cell nobody formatted must not inherit the new format: the default
+    // record has to stay at index 0.
+    let sheet = String::from_utf8(part_of(&saved, "xl/worksheets/sheet1.xml")).unwrap();
+    assert!(!sheet.contains("<c r=\"C9\" s=\"0\""), "{sheet}");
+
+    let back = xlsx::import(&saved).expect("reimport");
+    let formats = &back.engine.wb;
+    let sheet_model = formats.sheet_by_name("Plain").unwrap();
+    let id = sheet_model
+        .format_id(CellAddr::parse_a1("A1").unwrap())
+        .expect("A1 has a format");
+    let format = formats.formats.get(id).expect("the format resolves");
+    assert!(format.bold, "{format:?}");
+    assert_eq!(format.fill_color.as_deref(), Some("#ffcc00"), "{format:?}");
+    // ...and an untouched cell has none at all.
+    assert!(sheet_model
+        .format_id(CellAddr::parse_a1("A5").unwrap())
+        .is_none());
 }
