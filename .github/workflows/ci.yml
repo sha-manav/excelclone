@@ -54,3 +54,15 @@ jobs:
       - name: Build
         working-directory: apps/web
         run: npm run build
+      - name: Install browser
+        working-directory: apps/web
+        run: npx playwright install --with-deps chromium
+      - name: End-to-end tests
+        working-directory: apps/web
+        run: npm run test:e2e
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: apps/web/playwright-report/
+          retention-days: 7

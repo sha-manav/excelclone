@@ -73,6 +73,11 @@ export function useWorkbook(): WorkbookApi {
     range: singleRange(mkAddr(0, 0)),
   })
   const [editing, setEditing] = useState<EditState | null>(null)
+  // Mirrors `editing` so commit can read it without doing work inside a
+  // state updater — React may invoke updaters more than once, which would
+  // apply the edit (and emit its events) twice.
+  const editingRef = useRef<EditState | null>(null)
+  editingRef.current = editing
   const [version, setVersion] = useState(0)
   const [error, setError] = useState<string | null>(null)
   const [warnings, setWarnings] = useState<ImportWarning[]>([])
@@ -200,15 +205,15 @@ export function useWorkbook(): WorkbookApi {
 
   const commitEdit = useCallback(
     (move: MoveDirection) => {
-      setEditing((prev) => {
-        if (!prev) return null
-        apply({
-          action: 'cell_edit',
-          sheet: activeSheet,
-          addr: prev.addr,
-          input: prev.value,
-        })
-        return null
+      const current = editingRef.current
+      if (!current) return
+      editingRef.current = null
+      setEditing(null)
+      apply({
+        action: 'cell_edit',
+        sheet: activeSheet,
+        addr: current.addr,
+        input: current.value,
       })
       if (move !== 'none') moveSelection(move, false)
     },

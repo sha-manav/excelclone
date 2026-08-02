@@ -506,6 +506,11 @@ export function Grid(props: GridProps): JSX.Element {
   useEffect(
     () => () => {
       if (rafRef.current) cancelAnimationFrame(rafRef.current)
+      // Clearing the handle matters as much as cancelling it: StrictMode
+      // mounts, cleans up, then mounts again, and a stale non-zero handle
+      // would make every later invalidate() early-return and the grid would
+      // never paint at all.
+      rafRef.current = 0
     },
     [],
   )

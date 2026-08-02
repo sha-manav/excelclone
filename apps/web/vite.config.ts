@@ -1,7 +1,14 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
-// https://vite.dev/config/
 export default defineConfig({
   plugins: [react()],
+  // The engine is a local wasm-pack package linked from crates/wasm/pkg.
+  // Pre-bundling it breaks the `?url` asset import the loader relies on, and
+  // the dev server needs permission to read outside apps/web to serve the
+  // .wasm itself.
+  optimizeDeps: { exclude: ['gridline-wasm'] },
+  server: {
+    fs: { allow: ['..', '../../crates/wasm/pkg'] },
+  },
 })

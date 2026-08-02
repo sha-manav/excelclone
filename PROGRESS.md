@@ -75,6 +75,12 @@ Living checklist. Updated every session.
   post-2007 functions as `_xlfn.TEXTJOIN` etc., so every modern real-world
   workbook would have imported as `#NAME?`. Prefixes are now stripped at
   parse time.
+- Driving the real browser caught two more bugs that no unit test would have:
+  a stale `requestAnimationFrame` handle left by StrictMode's mount/unmount
+  cycle meant the grid never painted at all in dev, and `commitEdit` called
+  `apply()` inside a `setState` updater, so React's double-invocation applied
+  every cell edit twice. The second would have duplicated every captured
+  event in M4.
 
 ## Known gaps carried forward
 
@@ -83,7 +89,12 @@ Living checklist. Updated every session.
   the M7 demo, which imports a fixture and may add sheets.
 - Every structural operation triggers a full dependency rebuild and
   recalculation. Correct but O(all formulas); revisit under P5 performance.
+- The grid ignores merged ranges when painting (the engine models them and
+  they survive round trips). Wire into the renderer in M5.
+- Auto-scroll while drag-selecting past the viewport edge is not implemented.
 
 ## Resume point
-M0-M2 complete and green. Next: M3 — wasm-bindgen API over the engine, then
-the virtualized canvas grid in `apps/web`.
+M0-M3 complete and green. Next: M4 — the event spine (client capture with
+batching and an offline queue, consent modal and capture chip, axum server
+ingest with idempotency and consent gating, and the determinism/replay
+suite over recorded fixture logs).

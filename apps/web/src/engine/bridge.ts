@@ -8,6 +8,10 @@
  */
 
 import init, { Gridline } from 'gridline-wasm'
+// Vite resolves this to a real asset URL in both dev and build. Without it
+// the default loader guesses a path relative to the package inside
+// node_modules, which the dev server does not serve.
+import wasmUrl from 'gridline-wasm/gridline_wasm_bg.wasm?url'
 import type { Action, EngineEvent } from './actions'
 
 export const KIND_EMPTY = 0
@@ -50,7 +54,9 @@ export type EventSink = (events: EngineEvent[], action: Action) => void
 let initialized: Promise<void> | null = null
 
 async function ensureInit(): Promise<void> {
-  if (!initialized) initialized = init().then(() => undefined)
+  if (!initialized) {
+    initialized = init({ module_or_path: wasmUrl }).then(() => undefined)
+  }
   return initialized
 }
 
