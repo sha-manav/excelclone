@@ -274,6 +274,47 @@ pub fn describe(action: &Action, mode: PrivacyMode, salt: &str) -> (String, Json
         Action::MergeApply { sheet, range } | Action::MergeClear { sheet, range } => json!({
             "sheet": redact_label(sheet, mode, salt),
             "range": range.to_a1(),
+            "kind": if matches!(action, Action::MergeApply { .. }) { "merge" } else { "unmerge" },
+        }),
+        // Formatting carries no user text: the attribute names are a closed
+        // vocabulary and a colour or a format code describes presentation,
+        // not content. Values are recorded because the miner needs to tell
+        // "made it currency" apart from "made it a percentage".
+        Action::FormatApply {
+            sheet,
+            range,
+            patches,
+        } => json!({
+            "sheet": redact_label(sheet, mode, salt),
+            "range": range.to_a1(),
+            "cells": range.cell_count(),
+            "kind": "style",
+            "attributes": patches.iter().map(|p| p.attribute()).collect::<Vec<_>>(),
+            "patches": patches,
+        }),
+        Action::FormatClear { sheet, range } => json!({
+            "sheet": redact_label(sheet, mode, salt),
+            "range": range.to_a1(),
+            "cells": range.cell_count(),
+            "kind": "clear",
+        }),
+        // Search terms are user content, so they are hashed like any other
+        // literal. The shape — scope, options, how much was replaced — is not.
+        Action::FindReplace {
+            sheet,
+            range,
+            find,
+            replace,
+            match_case,
+            whole_cell,
+        } => json!({
+            "sheet": redact_label(sheet, mode, salt),
+            "range": range.map(|r| r.to_a1()),
+            "scope": if range.is_some() { "range" } else { "sheet" },
+            "find": redact_label(find, mode, salt),
+            "replace": redact_label(replace, mode, salt),
+            "match_case": match_case,
+            "whole_cell": whole_cell,
         }),
         Action::SheetAdd { name } => json!({ "name": redact_label(name, mode, salt) }),
         Action::SheetRename { from, to } => json!({
@@ -307,7 +348,11 @@ pub fn action_name(action: &Action) -> &'static str {
         Action::SortApply { .. } => "sort.apply",
         Action::FilterApply { .. } => "filter.apply",
         Action::FilterClear { .. } => "filter.clear",
-        Action::MergeApply { .. } | Action::MergeClear { .. } => "format.apply",
+        Action::MergeApply { .. }
+        | Action::MergeClear { .. }
+        | Action::FormatApply { .. }
+        | Action::FormatClear { .. } => "format.apply",
+        Action::FindReplace { .. } => "find.replace",
         Action::SheetAdd { .. } => "sheet.add",
         Action::SheetRename { .. } => "sheet.rename",
         Action::SheetDelete { .. } => "sheet.delete",

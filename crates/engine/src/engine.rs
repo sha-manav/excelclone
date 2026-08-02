@@ -5,12 +5,22 @@ use crate::addr::{CellAddr, RangeAddr};
 use crate::ast::{Expr, RefVisit};
 use crate::deps::DepGraph;
 use crate::eval::EvalCtx;
+use crate::format::{FormatId, FormatPatch};
 use crate::model::{Cell, CellContent, CellKey, Sheet, SheetId, Workbook};
 use crate::parser::parse_formula;
 use crate::refs::Axis;
 use crate::value::{ErrorKind, Value};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+
+/// The most cells one formatting action may touch.
+///
+/// We model formatting per cell, not per row or column as xlsx does, so
+/// "bold this whole column" would otherwise materialise a million map
+/// entries. The limit fails loudly instead of quietly eating memory; raising
+/// it properly means adding row and column format defaults, which v1 does not
+/// have.
+pub const MAX_FORMAT_CELLS: u64 = 200_000;
 
 /// What a paste carries over from the source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -115,6 +125,29 @@ pub enum Action {
         sheet: String,
         range: RangeAddr,
     },
+    /// Change presentation over a range. Each patch names one attribute, so
+    /// bolding a range leaves its fill colour alone.
+    FormatApply {
+        sheet: String,
+        range: RangeAddr,
+        patches: Vec<FormatPatch>,
+    },
+    /// Strip all formatting from a range, leaving contents untouched.
+    FormatClear {
+        sheet: String,
+        range: RangeAddr,
+    },
+    /// Replace text across a range (the whole sheet when `range` is None),
+    /// matching against what the formula bar would show — so a formula is
+    /// matched and rewritten by its source, never by its result.
+    FindReplace {
+        sheet: String,
+        range: Option<RangeAddr>,
+        find: String,
+        replace: String,
+        match_case: bool,
+        whole_cell: bool,
+    },
     SheetAdd {
         name: String,
     },
@@ -203,6 +236,21 @@ pub enum Event {
         sheet: String,
         range: RangeAddr,
     },
+    FormatApplied {
+        sheet: String,
+        range: RangeAddr,
+        attributes: Vec<String>,
+        cells: u32,
+    },
+    FormatCleared {
+        sheet: String,
+        range: RangeAddr,
+        cells: u32,
+    },
+    Replaced {
+        sheet: String,
+        cells: u32,
+    },
     SheetAdded {
         name: String,
     },
@@ -252,7 +300,25 @@ pub enum ApplyError {
 #[derive(Debug, Clone)]
 pub enum UndoState {
     Cells(Vec<(SheetId, CellAddr, Option<Cell>)>),
+    /// Format ids, not formats: the palette is append-only, so an id recorded
+    /// here still resolves after any number of intervening changes.
+    Formats(Vec<(SheetId, CellAddr, Option<FormatId>)>),
+    /// Restored in order, so an operation that moves contents *and* their
+    /// formatting undoes as one step.
+    Compound(Vec<UndoState>),
     Sheets(Vec<Sheet>),
+}
+
+impl UndoState {
+    /// How many cells' contents this records, for the "n cells changed"
+    /// counts events carry. Formats are counted separately or not at all.
+    pub fn cell_count(&self) -> u32 {
+        match self {
+            UndoState::Cells(c) => c.len() as u32,
+            UndoState::Compound(parts) => parts.iter().map(|p| p.cell_count()).sum(),
+            UndoState::Formats(_) | UndoState::Sheets(_) => 0,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -338,6 +404,20 @@ impl Engine {
             Action::FilterClear { sheet } => self.filter_apply(sheet, None),
             Action::MergeApply { sheet, range } => self.merge(sheet, *range, true),
             Action::MergeClear { sheet, range } => self.merge(sheet, *range, false),
+            Action::FormatApply {
+                sheet,
+                range,
+                patches,
+            } => self.format_apply(sheet, *range, patches),
+            Action::FormatClear { sheet, range } => self.format_clear(sheet, *range),
+            Action::FindReplace {
+                sheet,
+                range,
+                find,
+                replace,
+                match_case,
+                whole_cell,
+            } => self.find_replace(sheet, *range, find, replace, *match_case, *whole_cell),
             Action::SheetAdd { name } => self.sheet_add(name),
             Action::SheetRename { from, to } => self.sheet_rename(from, to),
             Action::SheetDelete { name } => self.sheet_delete(name),
@@ -365,6 +445,29 @@ impl Engine {
                 }
                 inverse.reverse();
                 UndoState::Cells(inverse)
+            }
+            UndoState::Formats(patches) => {
+                let mut inverse = Vec::with_capacity(patches.len());
+                for (sid, addr, id) in patches.into_iter().rev() {
+                    let Some(sheet) = self.wb.sheet_mut(sid) else {
+                        continue;
+                    };
+                    let replaced = match id {
+                        Some(i) => sheet.formats.insert(addr, i),
+                        None => sheet.formats.remove(&addr),
+                    };
+                    inverse.push((sid, addr, replaced));
+                }
+                inverse.reverse();
+                UndoState::Formats(inverse)
+            }
+            UndoState::Compound(parts) => {
+                // Reverse order, so restoring undoes the parts in the
+                // opposite sequence to the one that applied them.
+                let mut inverse: Vec<UndoState> =
+                    parts.into_iter().rev().map(|p| self.restore(p)).collect();
+                inverse.reverse();
+                UndoState::Compound(inverse)
             }
             UndoState::Sheets(sheets) => {
                 let replaced = std::mem::replace(&mut self.wb.sheets, sheets);
@@ -422,10 +525,7 @@ impl Engine {
     fn range_clear(&mut self, sheet: &str, range: RangeAddr) -> Result<Vec<Event>, ApplyError> {
         let sid = self.sheet_id(sheet)?;
         let undo = self.op_range_clear(sid, range)?;
-        let cleared = match &undo {
-            UndoState::Cells(c) => c.len() as u32,
-            _ => 0,
-        };
+        let cleared = undo.cell_count();
         self.push_undo("clear", undo);
         self.rebuild_deps_and_recalc_all();
         Ok(vec![Event::RangeCleared {
@@ -475,10 +575,7 @@ impl Engine {
             ));
         }
         let undo = self.op_fill(sid, src, dst)?;
-        let filled = match &undo {
-            UndoState::Cells(c) => c.len() as u32,
-            _ => 0,
-        };
+        let filled = undo.cell_count();
         self.push_undo("fill", undo);
         self.rebuild_deps_and_recalc_all();
         Ok(vec![Event::FillApplied {
@@ -577,6 +674,175 @@ impl Engine {
         } else {
             Event::MergeCleared { sheet, range }
         }])
+    }
+
+    /// Apply presentation patches over a range.
+    ///
+    /// Formatting never touches contents and never triggers a recalculation:
+    /// a number format changes how a value reads, not what it is. That is
+    /// also why `=A1&""` does not see the format — Excel behaves the same way.
+    fn format_apply(
+        &mut self,
+        sheet: &str,
+        range: RangeAddr,
+        patches: &[FormatPatch],
+    ) -> Result<Vec<Event>, ApplyError> {
+        let sid = self.sheet_id(sheet)?;
+        if patches.is_empty() {
+            return Err(ApplyError::Invalid(
+                "format needs at least one patch".into(),
+            ));
+        }
+        if range.cell_count() > MAX_FORMAT_CELLS {
+            return Err(ApplyError::Invalid(format!(
+                "formatting {} cells exceeds the {} cell limit",
+                range.cell_count(),
+                MAX_FORMAT_CELLS
+            )));
+        }
+        let undo = self.op_format(sid, range, patches);
+        let cells = undo.len() as u32;
+        self.push_undo("format", UndoState::Formats(undo));
+        Ok(vec![Event::FormatApplied {
+            sheet: sheet.to_string(),
+            range,
+            attributes: patches.iter().map(|p| p.attribute().to_string()).collect(),
+            cells,
+        }])
+    }
+
+    fn format_clear(&mut self, sheet: &str, range: RangeAddr) -> Result<Vec<Event>, ApplyError> {
+        let sid = self.sheet_id(sheet)?;
+        let s = self.wb.sheet(sid).expect("sheet exists");
+        let addrs: Vec<CellAddr> = s
+            .formats
+            .keys()
+            .copied()
+            .filter(|a| range.contains(*a))
+            .collect();
+        let mut undo = Vec::with_capacity(addrs.len());
+        for a in addrs {
+            let old = self.wb.sheet_mut(sid).unwrap().formats.remove(&a);
+            undo.push((sid, a, old));
+        }
+        let cells = undo.len() as u32;
+        self.push_undo("clear formatting", UndoState::Formats(undo));
+        Ok(vec![Event::FormatCleared {
+            sheet: sheet.to_string(),
+            range,
+            cells,
+        }])
+    }
+
+    /// Replace text across a range, matching on what the formula bar shows.
+    ///
+    /// Matching the *input* rather than the computed value is the only
+    /// coherent choice: there is no way to write a replacement back into a
+    /// formula's result, so a search that matched results would either refuse
+    /// to replace or destroy the formula that produced them. Excel's default
+    /// "Look in: Formulas" does the same thing.
+    fn find_replace(
+        &mut self,
+        sheet: &str,
+        range: Option<RangeAddr>,
+        find: &str,
+        replace: &str,
+        match_case: bool,
+        whole_cell: bool,
+    ) -> Result<Vec<Event>, ApplyError> {
+        if find.is_empty() {
+            return Err(ApplyError::Invalid("nothing to find".into()));
+        }
+        let sid = self.sheet_id(sheet)?;
+        let hits = self.matches_in(sid, range, find, match_case, whole_cell);
+
+        let mut undo = Vec::new();
+        let mut seeds = Vec::new();
+        for (addr, input) in hits {
+            let next = replace_text(&input, find, replace, match_case, whole_cell);
+            if next == input {
+                continue;
+            }
+            let key = CellKey { sheet: sid, addr };
+            let prev = self.wb.sheet(sid).unwrap().cells.get(&addr).cloned();
+            if next.is_empty() {
+                self.deps.clear(key);
+                self.volatile.remove(&key);
+                self.wb.sheet_mut(sid).unwrap().cells.remove(&addr);
+            } else {
+                // A replacement can turn a literal into a formula or the
+                // reverse, so the cell is rebuilt from its text exactly as a
+                // typed edit would be. A replacement that produces an
+                // unparseable formula leaves that cell alone rather than
+                // failing the whole operation part-way through.
+                let Ok(cell) = build_cell(&next) else {
+                    continue;
+                };
+                self.wb.sheet_mut(sid).unwrap().cells.insert(addr, cell);
+            }
+            undo.push((sid, addr, prev));
+            seeds.push(key);
+        }
+
+        let cells = undo.len() as u32;
+        self.push_undo("replace", UndoState::Cells(undo));
+        // One rebuild for the whole operation rather than one per cell.
+        self.rebuild_deps_and_recalc_all();
+        let mut events = vec![Event::Replaced {
+            sheet: sheet.to_string(),
+            cells,
+        }];
+        if !seeds.is_empty() {
+            events.push(Event::Recalced {
+                cells: self.keys_to_names(&seeds),
+            });
+        }
+        Ok(events)
+    }
+
+    /// Addresses whose formula-bar text matches, with that text. Read-only,
+    /// so the UI can drive find-next through the same matching rules that
+    /// replace uses rather than a second implementation of them.
+    pub fn matches_in(
+        &self,
+        sheet: SheetId,
+        range: Option<RangeAddr>,
+        find: &str,
+        match_case: bool,
+        whole_cell: bool,
+    ) -> Vec<(CellAddr, String)> {
+        let Some(s) = self.wb.sheet(sheet) else {
+            return Vec::new();
+        };
+        let mut hits: Vec<(CellAddr, String)> = s
+            .cells
+            .iter()
+            .filter(|(a, _)| range.map(|r| r.contains(**a)).unwrap_or(true))
+            .map(|(a, c)| (*a, c.input()))
+            .filter(|(_, input)| text_matches(input, find, match_case, whole_cell))
+            .collect();
+        // Reading order, so "find next" walks the sheet the way a user reads
+        // it rather than in hash order.
+        hits.sort_by_key(|(a, _)| *a);
+        hits
+    }
+
+    /// Find matches by sheet name, for callers outside the engine.
+    pub fn find_matches(
+        &self,
+        sheet: &str,
+        range: Option<RangeAddr>,
+        find: &str,
+        match_case: bool,
+        whole_cell: bool,
+    ) -> Vec<CellAddr> {
+        let Some(sid) = self.wb.sheet_id_by_name(sheet) else {
+            return Vec::new();
+        };
+        self.matches_in(sid, range, find, match_case, whole_cell)
+            .into_iter()
+            .map(|(a, _)| a)
+            .collect()
     }
 
     fn sheet_id(&self, name: &str) -> Result<SheetId, ApplyError> {
@@ -1060,6 +1326,62 @@ impl Engine {
         };
         s.value(addr)
     }
+}
+
+/// Case-insensitive matching is ASCII-only, deliberately.
+///
+/// Full Unicode case folding changes byte lengths — `İ` lowercases to two
+/// chars — so an offset found in a folded haystack does not point at the same
+/// place in the original, and splicing a replacement at it corrupts the text.
+/// `to_ascii_lowercase` maps only `A-Z`, so offsets stay valid for any input.
+/// Users who need case-insensitive matching outside ASCII get exact matching
+/// with "Match case" on rather than silently mangled cells.
+fn ascii_fold(s: &str) -> String {
+    s.to_ascii_lowercase()
+}
+
+/// Whether a cell's formula-bar text matches a search term.
+fn text_matches(input: &str, find: &str, match_case: bool, whole_cell: bool) -> bool {
+    match (whole_cell, match_case) {
+        (true, true) => input == find,
+        (true, false) => ascii_fold(input) == ascii_fold(find),
+        (false, true) => input.contains(find),
+        (false, false) => ascii_fold(input).contains(&ascii_fold(find)),
+    }
+}
+
+/// The text a cell holds after a replacement. Substring mode replaces every
+/// occurrence, as Excel's Replace All does within a cell.
+fn replace_text(
+    input: &str,
+    find: &str,
+    replace: &str,
+    match_case: bool,
+    whole_cell: bool,
+) -> String {
+    if whole_cell {
+        return replace.to_string();
+    }
+    if match_case {
+        return input.replace(find, replace);
+    }
+    let hay = ascii_fold(input);
+    let needle = ascii_fold(find);
+    debug_assert_eq!(
+        hay.len(),
+        input.len(),
+        "ascii folding must preserve offsets"
+    );
+    let mut out = String::with_capacity(input.len());
+    let mut i = 0;
+    while let Some(rel) = hay[i..].find(&needle) {
+        let at = i + rel;
+        out.push_str(&input[i..at]);
+        out.push_str(replace);
+        i = at + needle.len();
+    }
+    out.push_str(&input[i..]);
+    out
 }
 
 /// Parse raw user input into a cell (formula, number, bool, error, or text).

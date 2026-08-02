@@ -63,8 +63,8 @@
           "value": "0"
         },
         "D1": {
-          "input": "owed",
-          "value": "owed"
+          "input": "balance",
+          "value": "balance"
         },
         "D3": {
           "input": "=VLOOKUP(B3,Rates!A1:B2,2,FALSE)-C3",
@@ -107,6 +107,190 @@
           "value": "#N/A"
         }
       },
+      "formats": {
+        "A1": {
+          "align": "center",
+          "bold": true,
+          "borders": {
+            "bottom": false,
+            "left": true,
+            "right": false,
+            "top": true
+          },
+          "fill_color": "#eeeeee"
+        },
+        "A3": {
+          "borders": {
+            "bottom": false,
+            "left": true,
+            "right": false,
+            "top": false
+          }
+        },
+        "A4": {
+          "borders": {
+            "bottom": false,
+            "left": true,
+            "right": false,
+            "top": false
+          }
+        },
+        "A5": {
+          "borders": {
+            "bottom": true,
+            "left": true,
+            "right": false,
+            "top": false
+          }
+        },
+        "A6": {
+          "borders": {
+            "bottom": false,
+            "left": true,
+            "right": false,
+            "top": false
+          }
+        },
+        "B1": {
+          "align": "center",
+          "bold": true,
+          "borders": {
+            "bottom": false,
+            "left": false,
+            "right": false,
+            "top": true
+          },
+          "fill_color": "#eeeeee"
+        },
+        "B5": {
+          "borders": {
+            "bottom": true,
+            "left": false,
+            "right": false,
+            "top": false
+          }
+        },
+        "C1": {
+          "align": "center",
+          "bold": true,
+          "borders": {
+            "bottom": false,
+            "left": false,
+            "right": false,
+            "top": true
+          },
+          "fill_color": "#eeeeee"
+        },
+        "C3": {
+          "number_format": "$#,##0.00"
+        },
+        "C4": {
+          "number_format": "$#,##0.00"
+        },
+        "C5": {
+          "borders": {
+            "bottom": true,
+            "left": false,
+            "right": false,
+            "top": false
+          },
+          "number_format": "$#,##0.00"
+        },
+        "C6": {
+          "number_format": "$#,##0.00"
+        },
+        "D1": {
+          "align": "center",
+          "bold": true,
+          "borders": {
+            "bottom": false,
+            "left": false,
+            "right": false,
+            "top": true
+          },
+          "fill_color": "#eeeeee"
+        },
+        "D3": {
+          "number_format": "$#,##0.00"
+        },
+        "D4": {
+          "number_format": "$#,##0.00"
+        },
+        "D5": {
+          "borders": {
+            "bottom": true,
+            "left": false,
+            "right": false,
+            "top": false
+          },
+          "number_format": "$#,##0.00"
+        },
+        "D6": {
+          "number_format": "$#,##0.00"
+        },
+        "E1": {
+          "align": "center",
+          "bold": true,
+          "borders": {
+            "bottom": false,
+            "left": false,
+            "right": false,
+            "top": true
+          },
+          "fill_color": "#eeeeee"
+        },
+        "E5": {
+          "borders": {
+            "bottom": true,
+            "left": false,
+            "right": false,
+            "top": false
+          }
+        },
+        "F1": {
+          "align": "center",
+          "bold": true,
+          "borders": {
+            "bottom": false,
+            "left": false,
+            "right": true,
+            "top": true
+          },
+          "fill_color": "#eeeeee"
+        },
+        "F3": {
+          "borders": {
+            "bottom": false,
+            "left": false,
+            "right": true,
+            "top": false
+          }
+        },
+        "F4": {
+          "borders": {
+            "bottom": false,
+            "left": false,
+            "right": true,
+            "top": false
+          }
+        },
+        "F5": {
+          "borders": {
+            "bottom": false,
+            "left": false,
+            "right": true,
+            "top": false
+          }
+        },
+        "F6": {
+          "borders": {
+            "bottom": true,
+            "left": false,
+            "right": true,
+            "top": false
+          }
+        }
+      },
       "hidden_rows": [],
       "merged": [],
       "name": "Ledger"
@@ -130,6 +314,7 @@
           "value": "750"
         }
       },
+      "formats": {},
       "hidden_rows": [],
       "merged": [],
       "name": "Rates"

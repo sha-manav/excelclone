@@ -61,6 +61,51 @@
         "H2": {
           "input": "=IFERROR(E2,\"caught\")",
           "value": "caught"
+        },
+        "I2": {
+          "input": "=IF(TRUE,\"ISSUED\",\"FINAL\")",
+          "value": "ISSUED"
+        }
+      },
+      "formats": {
+        "I4": {
+          "font_color": "#b3261e"
+        },
+        "J7": {
+          "borders": {
+            "bottom": true,
+            "left": true,
+            "right": true,
+            "top": true
+          },
+          "italic": true
+        },
+        "J8": {
+          "borders": {
+            "bottom": true,
+            "left": true,
+            "right": true,
+            "top": true
+          },
+          "italic": true
+        },
+        "K7": {
+          "borders": {
+            "bottom": true,
+            "left": true,
+            "right": true,
+            "top": true
+          },
+          "italic": true
+        },
+        "K8": {
+          "borders": {
+            "bottom": true,
+            "left": true,
+            "right": true,
+            "top": true
+          },
+          "italic": true
         }
       },
       "hidden_rows": [],

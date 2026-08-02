@@ -2,9 +2,10 @@
 
 use crate::addr::{CellAddr, RangeAddr};
 use crate::ast::Expr;
+use crate::format::{FormatId, FormatTable};
 use crate::value::Value;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 /// Stable sheet identifier: survives renames and reorders.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -67,6 +68,11 @@ pub struct Sheet {
     pub id: SheetId,
     pub name: String,
     pub cells: HashMap<CellAddr, Cell>,
+    /// Presentation, keyed by address and independent of whether the cell
+    /// holds anything. Ordered so iteration — and therefore export and the
+    /// state snapshot — is deterministic. Only non-default formats appear.
+    #[serde(default)]
+    pub formats: BTreeMap<CellAddr, FormatId>,
     /// Merged regions; anchor (top-left) holds the value.
     pub merged: Vec<RangeAddr>,
     /// Active value filter, if any.
@@ -83,6 +89,7 @@ impl Sheet {
             id,
             name: name.into(),
             cells: HashMap::new(),
+            formats: BTreeMap::new(),
             merged: Vec::new(),
             filter: None,
             hidden_rows: Vec::new(),
@@ -97,23 +104,54 @@ impl Sheet {
     }
 
     /// The bounding box of populated cells, if any.
+    ///
+    /// Deliberately blind to formatting: this is the *data* extent, and it is
+    /// what CSV export and whole-sheet formula ranges mean. A bold empty
+    /// column is not data.
     pub fn used_range(&self) -> Option<RangeAddr> {
-        let mut it = self.cells.keys();
-        let first = *it.next()?;
-        let mut r = RangeAddr::single(first);
-        for a in it {
-            r.start.row = r.start.row.min(a.row);
-            r.start.col = r.start.col.min(a.col);
-            r.end.row = r.end.row.max(a.row);
-            r.end.col = r.end.col.max(a.col);
-        }
-        Some(r)
+        bounds(self.cells.keys().copied())
     }
+
+    /// The bounding box of everything the grid has to draw — cells, formats
+    /// and merges. Larger than [`Sheet::used_range`] when the user has
+    /// formatted or merged cells they have not typed into yet.
+    pub fn painted_range(&self) -> Option<RangeAddr> {
+        bounds(
+            self.cells
+                .keys()
+                .copied()
+                .chain(self.formats.keys().copied())
+                .chain(self.merged.iter().flat_map(|m| [m.start, m.end])),
+        )
+    }
+
+    /// The format id at an address, if the cell carries one.
+    pub fn format_id(&self, addr: CellAddr) -> Option<FormatId> {
+        self.formats.get(&addr).copied()
+    }
+}
+
+fn bounds(addrs: impl Iterator<Item = CellAddr>) -> Option<RangeAddr> {
+    let mut it = addrs;
+    let first = it.next()?;
+    let mut r = RangeAddr::single(first);
+    for a in it {
+        r.start.row = r.start.row.min(a.row);
+        r.start.col = r.start.col.min(a.col);
+        r.end.row = r.end.row.max(a.row);
+        r.end.col = r.end.col.max(a.col);
+    }
+    Some(r)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Workbook {
     pub sheets: Vec<Sheet>,
+    /// The palette every `Sheet::formats` entry indexes into. Workbook-level
+    /// rather than per-sheet so a format survives a cut-and-paste across
+    /// sheets, and append-only so ids recorded for undo stay valid.
+    #[serde(default)]
+    pub formats: FormatTable,
     next_sheet_id: u32,
     /// The original xlsx package this workbook was imported from, kept so
     /// export can patch only the parts we model and write everything else
@@ -133,6 +171,7 @@ impl Workbook {
     pub fn new() -> Self {
         let mut wb = Workbook {
             sheets: Vec::new(),
+            formats: FormatTable::default(),
             next_sheet_id: 0,
             preserved: None,
         };
@@ -193,6 +232,22 @@ impl Workbook {
                         )
                     })
                     .collect();
+                // Formats resolve to their values rather than their ids. An
+                // id is an artefact of the order formats happened to be
+                // interned, which differs between two paths to the same
+                // workbook — exactly the difference the replay suite must
+                // *not* see.
+                let formats: serde_json::Map<String, serde_json::Value> = s
+                    .formats
+                    .iter()
+                    .map(|(a, id)| {
+                        (
+                            a.to_a1(),
+                            serde_json::to_value(self.formats.resolve(Some(*id)))
+                                .unwrap_or(serde_json::Value::Null),
+                        )
+                    })
+                    .collect();
                 let mut merged: Vec<String> = s.merged.iter().map(|r| r.to_a1()).collect();
                 merged.sort();
                 let mut hidden = s.hidden_rows.clone();
@@ -200,6 +255,7 @@ impl Workbook {
                 serde_json::json!({
                     "name": s.name,
                     "cells": cells,
+                    "formats": formats,
                     "merged": merged,
                     "hidden_rows": hidden,
                 })

@@ -283,6 +283,7 @@
           "value": "$120.00"
         }
       },
+      "formats": {},
       "hidden_rows": [],
       "merged": [],
       "name": "Ledger"
@@ -314,6 +315,7 @@
           "value": "750"
         }
       },
+      "formats": {},
       "hidden_rows": [],
       "merged": [],
       "name": "Rates"

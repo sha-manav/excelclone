@@ -9,6 +9,7 @@ pub mod ast;
 pub mod deps;
 pub mod engine;
 pub mod eval;
+pub mod format;
 pub mod functions;
 pub mod io;
 pub mod model;
@@ -21,6 +22,7 @@ pub mod value;
 
 pub use addr::{CellAddr, RangeAddr};
 pub use engine::{Action, ApplyError, Engine, Event, FilterSpec, PasteMode, SortKey};
+pub use format::{BorderPreset, Borders, CellFormat, FormatId, FormatPatch, FormatTable, HAlign};
 pub use model::{Cell, CellContent, CellKey, Sheet, SheetId, Workbook};
 pub use telemetry::{EventEnvelope, PrivacyMode};
 pub use value::{ErrorKind, Value};

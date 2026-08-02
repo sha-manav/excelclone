@@ -15,7 +15,9 @@
 //! `<name>.final.json` holding the expected final state; run with
 //! `UPDATE_GOLDEN=1` to regenerate after an intentional change.
 
-use engine::{Action, CellAddr, Engine, PasteMode, RangeAddr, SortKey};
+use engine::{
+    Action, BorderPreset, CellAddr, Engine, FormatPatch, HAlign, PasteMode, RangeAddr, SortKey,
+};
 use proptest::prelude::*;
 use std::path::PathBuf;
 
@@ -109,6 +111,27 @@ fn ledger_session() -> Vec<Action> {
         mode: PasteMode::Values,
         cut: false,
     });
+    // Dress the table before sorting it, so the sort has to carry formatting
+    // with the rows it moves rather than leaving it behind at the position.
+    log.push(Action::FormatApply {
+        sheet: "Ledger".into(),
+        range: r("A1:F1"),
+        patches: vec![
+            FormatPatch::Bold(true),
+            FormatPatch::FillColor(Some("#EEEEEE".into())),
+            FormatPatch::Align(Some(HAlign::Center)),
+        ],
+    });
+    log.push(Action::FormatApply {
+        sheet: "Ledger".into(),
+        range: r("C2:D5"),
+        patches: vec![FormatPatch::NumberFormat(Some("$#,##0.00".into()))],
+    });
+    log.push(Action::FormatApply {
+        sheet: "Ledger".into(),
+        range: r("A1:F5"),
+        patches: vec![FormatPatch::Border(BorderPreset::Outline)],
+    });
     log.push(Action::SortApply {
         sheet: "Ledger".into(),
         range: r("A1:E5"),
@@ -117,6 +140,17 @@ fn ledger_session() -> Vec<Action> {
             ascending: true,
         }],
         has_header: true,
+    });
+    // Renaming a column heading, before the undo tail so the replacement is
+    // still standing in the final state. Whole-cell matching keeps it off the
+    // "pro"/"basic" tier values the VLOOKUPs below depend on.
+    log.push(Action::FindReplace {
+        sheet: "Ledger".into(),
+        range: None,
+        find: "OWED".into(),
+        replace: "balance".into(),
+        match_case: false,
+        whole_cell: true,
     });
     log.push(Action::RowInsert {
         sheet: "Ledger".into(),
@@ -163,12 +197,73 @@ fn edge_case_session() -> Vec<Action> {
         Action::SheetDelete {
             name: "Renamed".into(),
         }, // leaves #REF! behind
+        // Formatting a cell that holds nothing: the format has to survive on
+        // its own, without a cell to hang off.
+        Action::FormatApply {
+            sheet: "Sheet1".into(),
+            range: r("J8:K9"),
+            patches: vec![
+                FormatPatch::Italic(true),
+                FormatPatch::Border(BorderPreset::All),
+            ],
+        },
+        // Formatting, then clearing the contents underneath: Delete removes
+        // values, not formatting, exactly as in Excel. These two cells exist
+        // only for this case — the neighbouring ones carry coverage of their
+        // own that a clear would silently erase.
+        edit("Sheet1", "I5", "keep the format"),
+        edit("Sheet1", "J5", "lose the format"),
+        Action::FormatApply {
+            sheet: "Sheet1".into(),
+            range: r("I5:J5"),
+            patches: vec![FormatPatch::FontColor(Some("#B3261E".into()))],
+        },
+        Action::RangeClear {
+            sheet: "Sheet1".into(),
+            range: r("I5:J5"),
+        },
+        // ...and clearing the formatting explicitly, on one of the two.
+        Action::FormatClear {
+            sheet: "Sheet1".into(),
+            range: r("J5"),
+        },
+        // A replacement that rewrites a formula's source, not its result.
+        // The token is deliberately one no other cell contains: a fixture
+        // that quietly rewrites its neighbours stops testing what they were
+        // put there for.
+        edit("Sheet1", "I3", "=IF(TRUE,\"DRAFT\",\"FINAL\")"),
+        Action::FindReplace {
+            sheet: "Sheet1".into(),
+            range: None,
+            find: "draft".into(),
+            replace: "ISSUED".into(),
+            match_case: false,
+            whole_cell: false,
+        },
         Action::RowDelete {
             sheet: "Sheet1".into(),
             at: 0,
             count: 1,
         },
         // Actions the engine must reject, identically, on replay.
+        Action::FormatApply {
+            sheet: "NoSuchSheet".into(),
+            range: r("A1"),
+            patches: vec![FormatPatch::Bold(true)],
+        },
+        Action::FormatApply {
+            sheet: "Sheet1".into(),
+            range: r("A1"),
+            patches: vec![],
+        },
+        Action::FindReplace {
+            sheet: "Sheet1".into(),
+            range: None,
+            find: String::new(),
+            replace: "x".into(),
+            match_case: false,
+            whole_cell: false,
+        },
         edit("NoSuchSheet", "A1", "1"),
         edit("Sheet1", "A1", "=1+"),
         Action::SheetDelete {
@@ -321,6 +416,28 @@ fn any_input() -> impl Strategy<Value = String> {
     ]
 }
 
+fn any_patch() -> impl Strategy<Value = FormatPatch> {
+    prop_oneof![
+        any::<bool>().prop_map(FormatPatch::Bold),
+        any::<bool>().prop_map(FormatPatch::Italic),
+        Just(FormatPatch::FontColor(Some("#b3261e".into()))),
+        Just(FormatPatch::FontColor(None)),
+        // Two spellings of the same colour, so interning has to fold them
+        // together rather than mint two ids for one format.
+        Just(FormatPatch::FillColor(Some("#FFF".into()))),
+        Just(FormatPatch::FillColor(Some("ffffff".into()))),
+        Just(FormatPatch::FillColor(None)),
+        Just(FormatPatch::Border(BorderPreset::All)),
+        Just(FormatPatch::Border(BorderPreset::Outline)),
+        Just(FormatPatch::Border(BorderPreset::None)),
+        Just(FormatPatch::NumberFormat(Some("0.00%".into()))),
+        Just(FormatPatch::NumberFormat(Some("General".into()))),
+        Just(FormatPatch::NumberFormat(None)),
+        Just(FormatPatch::Align(Some(HAlign::Center))),
+        Just(FormatPatch::Align(None)),
+    ]
+}
+
 fn any_action() -> impl Strategy<Value = Action> {
     let sheets = prop_oneof![Just("Sheet1".to_string()), Just("Two".to_string())];
     prop_oneof![
@@ -391,6 +508,46 @@ fn any_action() -> impl Strategy<Value = Action> {
         ),
         (sheets.clone(), any_range())
             .prop_map(|(sheet, range)| Action::MergeApply { sheet, range }),
+        (
+            sheets.clone(),
+            any_range(),
+            prop::collection::vec(any_patch(), 1..4)
+        )
+            .prop_map(|(sheet, range, patches)| Action::FormatApply {
+                sheet,
+                range,
+                patches
+            }),
+        (sheets.clone(), any_range())
+            .prop_map(|(sheet, range)| Action::FormatClear { sheet, range }),
+        (
+            sheets.clone(),
+            prop::option::of(any_range()),
+            prop_oneof![
+                Just("text".to_string()),
+                Just("A1".to_string()),
+                Just("SUM".to_string()),
+                Just("1".to_string()),
+            ],
+            prop_oneof![
+                Just(String::new()),
+                Just("other".to_string()),
+                Just("=A1".to_string()),
+                Just("B2".to_string()),
+            ],
+            any::<bool>(),
+            any::<bool>()
+        )
+            .prop_map(|(sheet, range, find, replace, match_case, whole_cell)| {
+                Action::FindReplace {
+                    sheet,
+                    range,
+                    find,
+                    replace,
+                    match_case,
+                    whole_cell,
+                }
+            }),
         sheets.clone().prop_map(|name| Action::SheetAdd { name }),
         sheets.clone().prop_map(|name| Action::SheetDelete { name }),
         (sheets.clone(), sheets.clone()).prop_map(|(from, to)| Action::SheetRename { from, to }),
