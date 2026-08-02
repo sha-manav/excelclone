@@ -20,20 +20,51 @@ export const KIND_TEXT = 2
 export const KIND_BOOL = 3
 export const KIND_ERROR = 4
 
+export interface Borders {
+  top: boolean
+  right: boolean
+  bottom: boolean
+  left: boolean
+}
+
+/**
+ * A cell's presentation, as the engine resolved it. Absent fields mean the
+ * default — the Rust side omits them, so an unformatted cell is `{}`.
+ */
+export interface CellFormat {
+  bold?: boolean
+  italic?: boolean
+  font_color?: string
+  fill_color?: string
+  borders?: Borders
+  number_format?: string
+  align?: 'left' | 'center' | 'right'
+}
+
+export const EMPTY_FORMAT: CellFormat = {}
+
 export interface Viewport {
   row0: number
   col0: number
   rows: number
   cols: number
+  /** Already run through each cell's number format. */
   values: string[]
   kinds: number[]
   formulas: boolean[]
+  /** `rows * cols` indices into `palette`; 0 is the default format. */
+  styles: number[]
+  palette: CellFormat[]
 }
 
 export interface SheetInfo {
   name: string
+  /** Extent of the data — where Ctrl+Down stops. */
   used_rows: number
   used_cols: number
+  /** Extent of everything that must be drawn, including empty formatted cells. */
+  painted_rows: number
+  painted_cols: number
   hidden_rows: number[]
   merged: string[]
 }
@@ -71,7 +102,26 @@ export class EngineHandle {
 
   static async create(): Promise<EngineHandle> {
     await ensureInit()
-    return new EngineHandle(new Gridline())
+    const handle = new EngineHandle(new Gridline())
+    handle.exposeProbe()
+    return handle
+  }
+
+  /**
+   * A read-only window hook for the end-to-end suite.
+   *
+   * The grid is a canvas, so there is no DOM to assert formatting against.
+   * This exposes the same deterministic snapshot the replay tests compare —
+   * and nothing else. It is deliberately not a way to mutate anything: the
+   * single-mutation-path invariant is what makes the event log trustworthy,
+   * and a test-only back door into `apply` would be exactly the side door
+   * that invariant exists to forbid. Dev builds only.
+   */
+  private exposeProbe(): void {
+    if (!import.meta.env.DEV) return
+    ;(window as unknown as { __gridline__?: unknown }).__gridline__ = {
+      stateSnapshot: () => this.stateSnapshot(),
+    }
   }
 
   /** Subscribe to the engine's event stream. Returns an unsubscribe fn. */
@@ -134,6 +184,20 @@ export class EngineHandle {
 
   columnValues(sheet: string, rangeA1: string, col: number): string[] {
     return this.inner.columnValues(sheet, rangeA1, col) as string[]
+  }
+
+  /** A1 addresses matching a search term, in reading order. */
+  findMatches(
+    sheet: string,
+    find: string,
+    matchCase: boolean,
+    wholeCell: boolean,
+  ): string[] {
+    return this.inner.findMatches(sheet, find, matchCase, wholeCell) as string[]
+  }
+
+  cellFormat(sheet: string, row: number, col: number): CellFormat {
+    return this.inner.cellFormat(sheet, row, col) as CellFormat
   }
 
   canUndo(): boolean {

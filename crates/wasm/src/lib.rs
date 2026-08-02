@@ -6,8 +6,9 @@
 //! across the language boundary, and means the event stream the capture
 //! pipeline records is exactly the one the engine produced.
 
+use engine::functions::numfmt;
 use engine::io;
-use engine::{Action, CellAddr, Engine, RangeAddr, Value};
+use engine::{Action, CellAddr, CellFormat, Engine, RangeAddr, Value};
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
 
@@ -18,6 +19,18 @@ const KIND_NUMBER: u8 = 1;
 const KIND_TEXT: u8 = 2;
 const KIND_BOOL: u8 = 3;
 const KIND_ERROR: u8 = 4;
+
+/// A cell's display text under its number format.
+///
+/// `numfmt` fails soft by design — an unrecognised code renders as General
+/// rather than erroring — so a format we cannot parse shows the plain value
+/// instead of blocking the paint.
+fn display_with_format(v: &Value, f: &CellFormat) -> String {
+    match &f.number_format {
+        None => v.display(),
+        Some(code) => numfmt::format_value(v, code).unwrap_or_else(|_| v.display()),
+    }
+}
 
 fn kind_of(v: &Value) -> u8 {
     match v {
@@ -37,19 +50,33 @@ struct Viewport {
     col0: u32,
     rows: u32,
     cols: u32,
-    /// `rows * cols` display strings.
+    /// `rows * cols` display strings, already run through each cell's number
+    /// format. The grid draws text; deciding what the text says is the
+    /// engine's job, and doing it here keeps one implementation of Excel's
+    /// format codes rather than a second one in TypeScript.
     values: Vec<String>,
     /// `rows * cols` kind tags.
     kinds: Vec<u8>,
     /// Formula cells, so the grid can mark them.
     formulas: Vec<bool>,
+    /// `rows * cols` indices into `palette`. Sent as indices rather than
+    /// objects because a formatted block is overwhelmingly repetitive: a bold
+    /// header row is one palette entry and N small integers.
+    styles: Vec<u32>,
+    /// Distinct formats used in this block. Entry 0 is always the default.
+    palette: Vec<CellFormat>,
 }
 
 #[derive(Serialize)]
 struct SheetInfo {
     name: String,
+    /// Extent of the *data*: what Ctrl+Down should reach.
     used_rows: u32,
     used_cols: u32,
+    /// Extent of everything that has to be drawn, which is larger when cells
+    /// carry formatting or merges but no value.
+    painted_rows: u32,
+    painted_cols: u32,
     hidden_rows: Vec<u32>,
     merged: Vec<String>,
 }
@@ -135,9 +162,27 @@ impl Gridline {
         let mut values = Vec::with_capacity(n);
         let mut kinds = Vec::with_capacity(n);
         let mut formulas = Vec::with_capacity(n);
+        let mut styles = Vec::with_capacity(n);
+        let mut palette = vec![CellFormat::default()];
+        // Format id in the workbook table -> index in this viewport's palette.
+        let mut seen: Vec<(u32, u32)> = Vec::new();
+
         for r in row0..row0 + rows {
             for c in col0..col0 + cols {
                 let addr = CellAddr::new(r, c);
+                let style = match s.format_id(addr) {
+                    None => 0,
+                    Some(id) => match seen.iter().find(|(k, _)| *k == id) {
+                        Some((_, i)) => *i,
+                        None => {
+                            palette.push(self.engine.wb.formats.resolve(Some(id)));
+                            let i = (palette.len() - 1) as u32;
+                            seen.push((id, i));
+                            i
+                        }
+                    },
+                };
+                styles.push(style);
                 match s.cells.get(&addr) {
                     None => {
                         values.push(String::new());
@@ -146,7 +191,7 @@ impl Gridline {
                     }
                     Some(cell) => {
                         let v = cell.value();
-                        values.push(v.display());
+                        values.push(display_with_format(v, &palette[style as usize]));
                         kinds.push(kind_of(v));
                         formulas.push(cell.is_formula());
                     }
@@ -161,6 +206,8 @@ impl Gridline {
             values,
             kinds,
             formulas,
+            styles,
+            palette,
         })
     }
 
@@ -195,10 +242,13 @@ impl Gridline {
             .iter()
             .map(|s| {
                 let used = s.used_range();
+                let painted = s.painted_range();
                 SheetInfo {
                     name: s.name.clone(),
                     used_rows: used.map(|r| r.end.row + 1).unwrap_or(0),
                     used_cols: used.map(|r| r.end.col + 1).unwrap_or(0),
+                    painted_rows: painted.map(|r| r.end.row + 1).unwrap_or(0),
+                    painted_cols: painted.map(|r| r.end.col + 1).unwrap_or(0),
                     hidden_rows: s.hidden_rows.clone(),
                     merged: s.merged.iter().map(|m| m.to_a1()).collect(),
                 }
@@ -226,6 +276,42 @@ impl Gridline {
         }
         seen.sort();
         to_js(&seen)
+    }
+
+    /// Addresses matching a search term, in reading order.
+    ///
+    /// Read-only, and it goes through the engine's own matcher so "find next"
+    /// walks exactly the cells "replace all" would rewrite. A second matcher
+    /// in TypeScript would eventually disagree with the first, and the
+    /// disagreement would show up as a replacement the user never saw coming.
+    #[wasm_bindgen(js_name = findMatches)]
+    pub fn find_matches(
+        &self,
+        sheet: &str,
+        find: &str,
+        match_case: bool,
+        whole_cell: bool,
+    ) -> Result<JsValue, JsValue> {
+        let hits: Vec<String> = self
+            .engine
+            .find_matches(sheet, None, find, match_case, whole_cell)
+            .iter()
+            .map(|a| a.to_a1())
+            .collect();
+        to_js(&hits)
+    }
+
+    /// The resolved format of one cell, for the toolbar's pressed states.
+    #[wasm_bindgen(js_name = cellFormat)]
+    pub fn cell_format(&self, sheet: &str, row: u32, col: u32) -> Result<JsValue, JsValue> {
+        let f = self
+            .engine
+            .wb
+            .sheet_by_name(sheet)
+            .and_then(|s| s.format_id(CellAddr::new(row, col)))
+            .map(|id| self.engine.wb.formats.resolve(Some(id)))
+            .unwrap_or_default();
+        to_js(&f)
     }
 
     /// Inject the wall clock so NOW/TODAY stay replayable.

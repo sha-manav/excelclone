@@ -13,12 +13,21 @@ export default defineConfig({
   },
   // CI installs Playwright's own Chromium; locally we drive the system
   // Chrome so a developer does not need the extra 150MB download.
+  //
+  // GRIDLINE_CHROMIUM overrides both. Some sandboxes ship a Chromium whose
+  // build number does not match the one this Playwright version expects, and
+  // cannot reach the download host to fetch the matching one; pointing at the
+  // binary that is already there beats not running the suite at all.
   projects: [
     {
       name: 'chromium',
       use: {
         ...devices['Desktop Chrome'],
-        ...(process.env.CI ? {} : { channel: 'chrome' }),
+        ...(process.env.GRIDLINE_CHROMIUM
+          ? { launchOptions: { executablePath: process.env.GRIDLINE_CHROMIUM } }
+          : process.env.CI
+            ? {}
+            : { channel: 'chrome' }),
       },
     },
   ],

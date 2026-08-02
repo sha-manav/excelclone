@@ -18,5 +18,16 @@ quick-xml = "0.37"
 sha2 = "0.10"
 hex = "0.4"
 
+# `rust_xlsxwriter` stamps the workbook with the current time, and on
+# wasm32-unknown-unknown `SystemTime::now()` traps — so every xlsx export from
+# the browser panicked with `RuntimeError: unreachable`. The crate's `wasm`
+# feature reads the clock through `js_sys::Date` instead. Scoped to the wasm
+# target so native builds do not pull in wasm-bindgen.
+#
+# Nothing native can catch a regression here; the guard is the end-to-end
+# test that saves a workbook from the real browser and opens it again.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+rust_xlsxwriter = { version = "0.90", features = ["wasm"] }
+
 [dev-dependencies]
 proptest = "1"

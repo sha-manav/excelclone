@@ -516,11 +516,172 @@ export function virtualExtent(
   }
 }
 
-export type CellAlign = 'left' | 'right'
+export type CellAlign = 'left' | 'right' | 'center'
 
 /** Numbers, booleans and errors hug the right edge; everything else the left. */
 export function cellAlign(kind: number): CellAlign {
   return kind === 2 || kind === 0 ? 'left' : 'right'
+}
+
+/**
+ * A cell's alignment: an explicit format wins, otherwise the value's type
+ * decides. Excel behaves the same way, which is why a number that arrives as
+ * text suddenly jumps to the left and gives itself away.
+ */
+export function resolvedAlign(kind: number, align?: string): CellAlign {
+  if (align === 'left' || align === 'right' || align === 'center') return align
+  return cellAlign(kind)
+}
+
+/* ---------------------------------------------------------------- merges */
+
+/**
+ * Merged regions of the active sheet, in the form the painter needs.
+ *
+ * Lookup is a linear scan: a sheet has tens of merges, not thousands, and a
+ * per-cell index would cost more to build every repaint than it saves.
+ */
+export class MergeMap {
+  readonly ranges: readonly Range[]
+
+  constructor(ranges: readonly Range[]) {
+    this.ranges = ranges
+  }
+
+  /** Parse the A1 strings the engine reports. */
+  static fromA1(list: readonly string[]): MergeMap {
+    const out: Range[] = []
+    for (const text of list) {
+      const r = parseRangeA1(text)
+      if (r) out.push(r)
+    }
+    return new MergeMap(out)
+  }
+
+  get isEmpty(): boolean {
+    return this.ranges.length === 0
+  }
+
+  /** The merge covering an address, if any. */
+  at(row: number, col: number): Range | null {
+    for (const r of this.ranges) {
+      if (row >= r.start.row && row <= r.end.row && col >= r.start.col && col <= r.end.col) {
+        return r
+      }
+    }
+    return null
+  }
+
+  /**
+   * Where a click on this address should actually land. Clicking anywhere in
+   * a merged block selects the whole block, so the selection can never sit on
+   * a covered cell the user cannot see.
+   */
+  anchor(row: number, col: number): Addr {
+    const m = this.at(row, col)
+    return m ? m.start : { row, col }
+  }
+
+  /** Grow a selection so it contains every merge it partially overlaps. */
+  expand(range: Range): Range {
+    let out = range
+    // One pass is not enough: absorbing a merge can bring the range into
+    // contact with another one.
+    for (let i = 0; i < this.ranges.length; i++) {
+      let grew = false
+      for (const m of this.ranges) {
+        if (
+          m.start.row > out.end.row ||
+          m.end.row < out.start.row ||
+          m.start.col > out.end.col ||
+          m.end.col < out.start.col
+        ) {
+          continue
+        }
+        const next = {
+          start: {
+            row: Math.min(out.start.row, m.start.row),
+            col: Math.min(out.start.col, m.start.col),
+          },
+          end: {
+            row: Math.max(out.end.row, m.end.row),
+            col: Math.max(out.end.col, m.end.col),
+          },
+        }
+        if (
+          next.start.row !== out.start.row ||
+          next.start.col !== out.start.col ||
+          next.end.row !== out.end.row ||
+          next.end.col !== out.end.col
+        ) {
+          out = next
+          grew = true
+        }
+      }
+      if (!grew) break
+    }
+    return out
+  }
+}
+
+const A1_CELL = /^\$?([A-Za-z]+)\$?(\d+)$/
+
+function parseAddrA1(text: string): Addr | null {
+  const m = A1_CELL.exec(text.trim())
+  if (!m) return null
+  let col = 0
+  for (const ch of m[1].toUpperCase()) col = col * 26 + (ch.charCodeAt(0) - 64)
+  const row = Number(m[2])
+  if (!Number.isFinite(row) || row < 1) return null
+  return { row: row - 1, col: col - 1 }
+}
+
+/** "B2" or "B2:D4" as the engine spells them. */
+export function parseRangeA1(text: string): Range | null {
+  const [a, b] = text.split(':')
+  const start = parseAddrA1(a ?? '')
+  if (!start) return null
+  if (b === undefined) return { start, end: start }
+  const end = parseAddrA1(b)
+  if (!end) return null
+  return mkRange(start, end)
+}
+
+/* ------------------------------------------------------------ autoscroll */
+
+/** How fast a drag past the edge scrolls, in CSS pixels per frame. */
+export const AUTOSCROLL_MAX_PX = 24
+/** How far past the edge counts as "asking to scroll". */
+export const AUTOSCROLL_BAND_PX = 32
+
+/**
+ * Scroll delta for a drag whose pointer has left the content box.
+ *
+ * The speed ramps with distance so nudging the edge creeps and dragging well
+ * past it moves quickly — a fixed step makes selecting a long range either
+ * unbearably slow or impossible to stop on the right row.
+ */
+export function autoscrollDelta(
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  m: GridMetrics,
+): { dx: number; dy: number } {
+  const axis = (pos: number, lo: number, hi: number): number => {
+    if (pos < lo) return -ramp(lo - pos)
+    if (pos > hi) return ramp(pos - hi)
+    return 0
+  }
+  return {
+    dx: axis(x, m.headerWidth, width),
+    dy: axis(y, m.headerHeight, height),
+  }
+}
+
+function ramp(over: number): number {
+  const t = Math.min(1, over / AUTOSCROLL_BAND_PX)
+  return Math.max(1, Math.round(t * AUTOSCROLL_MAX_PX))
 }
 
 /**

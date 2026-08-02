@@ -21,13 +21,14 @@ import type {
   MouseEvent as ReactMouseEvent,
 } from 'react'
 import { KIND_ERROR, KIND_NUMBER } from '../engine/bridge'
-import type { EngineHandle, Viewport } from '../engine/bridge'
+import type { CellFormat, EngineHandle, Viewport } from '../engine/bridge'
 import { colLetters, range as mkRange, rangeContains } from '../engine/actions'
 import type { Addr, Range } from '../engine/actions'
 import type { EditState, MoveDirection, Selection } from '../state/useWorkbook'
 import {
+  MergeMap,
   OVERSCAN,
-  cellAlign,
+  autoscrollDelta,
   cellRect,
   clampColWidth,
   colWidth,
@@ -44,6 +45,7 @@ import {
   pageJump,
   pointInRect,
   rangeRect,
+  resolvedAlign,
   rowAtY,
   rowHeight,
   rowTop,
@@ -57,7 +59,7 @@ import {
   virtualExtent,
   visibleRange,
 } from './grid-geometry'
-import type { GridMetrics } from './grid-geometry'
+import type { CellAlign, GridMetrics } from './grid-geometry'
 
 export interface GridProps {
   engine: EngineHandle
@@ -68,6 +70,11 @@ export interface GridProps {
   editing: EditState | null
   /** Rows hidden by a filter; skipped entirely in layout. */
   hiddenRows: number[]
+  /** Merged ranges in A1 form, as the engine reports them. */
+  merged: string[]
+  /** Extent to make scrollable: includes cells that carry only formatting. */
+  paintedRows: number
+  paintedCols: number
   onSelect(sel: Selection): void
   /** `initial` set means typing replaced the cell rather than opening it. */
   onStartEdit(addr: Addr, initial?: string): void
@@ -77,6 +84,8 @@ export interface GridProps {
   onFill(source: Range, target: Range): void
   onContextMenu(addr: Addr, clientX: number, clientY: number): void
   onAutofitColumn(col: number): void
+  /** Ranges to wash, used by find to show where the matches are. */
+  highlights?: readonly Range[]
 }
 
 const CELL_FONT = '12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace'
@@ -95,6 +104,22 @@ const COLOR_HEADER_ACTIVE = '#dbeae1'
 const COLOR_HEADER_TEXT = '#555555'
 const COLOR_HEADER_LINE = '#c8c8c8'
 const COLOR_FORMULA_MARK = 'rgba(30, 126, 69, 0.5)'
+const COLOR_BORDER = '#333333'
+const COLOR_FIND_HIT = 'rgba(255, 196, 0, 0.35)'
+
+/** Canvas font strings for the four bold/italic combinations, built once. */
+const CELL_FONTS: Record<string, string> = {
+  '': CELL_FONT,
+  b: `bold ${CELL_FONT}`,
+  i: `italic ${CELL_FONT}`,
+  bi: `italic bold ${CELL_FONT}`,
+}
+
+function fontFor(f: CellFormat): string {
+  return CELL_FONTS[`${f.bold ? 'b' : ''}${f.italic ? 'i' : ''}`]
+}
+
+const EMPTY_CELL_FORMAT: CellFormat = {}
 
 type Drag =
   | { kind: 'select'; anchor: Addr; last: Addr }
@@ -106,6 +131,10 @@ interface Latest {
   sheet: string
   version: number
   metrics: GridMetrics
+  merges: MergeMap
+  /** False for the one render after the sheet was renamed or deleted. */
+  sheetExists: boolean
+  highlights: readonly Range[]
   selection: Selection
   editing: EditState | null
   usedRows: number
@@ -116,6 +145,8 @@ interface Latest {
   onContextMenu(addr: Addr, clientX: number, clientY: number): void
   onAutofitColumn(col: number): void
 }
+
+const EMPTY_HIGHLIGHTS: readonly Range[] = []
 
 const sameRange = (a: Range, b: Range): boolean =>
   a.start.row === b.start.row &&
@@ -131,6 +162,10 @@ export function Grid(props: GridProps): JSX.Element {
     selection,
     editing,
     hiddenRows,
+    merged,
+    paintedRows,
+    paintedCols,
+    highlights,
     onSelect,
     onStartEdit,
     onCommitEdit,
@@ -157,11 +192,26 @@ export function Grid(props: GridProps): JSX.Element {
   }, [engine, sheet, version])
   const usedRows = sheetInfo?.used_rows ?? 0
   const usedCols = sheetInfo?.used_cols ?? 0
+  // Renaming or deleting a sheet leaves `sheet` naming one the engine no
+  // longer has, for the single render before the parent notices. Asking for
+  // its viewport throws, and the throw lands inside a requestAnimationFrame
+  // callback where nothing can catch it.
+  const sheetExists = sheetInfo !== null
 
   const hiddenSet = useMemo(() => new Set(hiddenRows), [hiddenRows])
+  const mergedKey = merged.join('|')
+  const merges = useMemo(
+    () => MergeMap.fromA1(mergedKey ? mergedKey.split('|') : []),
+    [mergedKey],
+  )
 
   const metrics = useMemo(() => {
-    const extent = virtualExtent(usedRows, usedCols)
+    // The scrollable extent follows the *painted* range, so a bold empty
+    // column below the data is still reachable.
+    const extent = virtualExtent(
+      Math.max(usedRows, paintedRows),
+      Math.max(usedCols, paintedCols),
+    )
     return createMetrics({
       colWidths,
       rowHeights,
@@ -169,7 +219,7 @@ export function Grid(props: GridProps): JSX.Element {
       rowCount: extent.rows,
       colCount: extent.cols,
     })
-  }, [colWidths, rowHeights, hiddenSet, usedRows, usedCols])
+  }, [colWidths, rowHeights, hiddenSet, usedRows, usedCols, paintedRows, paintedCols])
 
   // Everything the imperative layer (paint, window drag listeners, keyboard)
   // needs, refreshed every render so those handlers can stay identity-stable
@@ -179,6 +229,9 @@ export function Grid(props: GridProps): JSX.Element {
     sheet,
     version,
     metrics,
+    merges,
+    sheetExists,
+    highlights: highlights ?? EMPTY_HIGHLIGHTS,
     selection,
     editing,
     usedRows,
@@ -257,7 +310,10 @@ export function Grid(props: GridProps): JSX.Element {
     if (cacheRef.current.key !== key) {
       cacheRef.current = {
         key,
-        vp: rows > 0 && cols > 0 ? L.engine.viewport(L.sheet, r0, c0, rows, cols) : null,
+        vp:
+          L.sheetExists && rows > 0 && cols > 0
+            ? L.engine.viewport(L.sheet, r0, c0, rows, cols)
+            : null,
       }
     }
     const vp = cacheRef.current.vp
@@ -272,9 +328,27 @@ export function Grid(props: GridProps): JSX.Element {
     ctx.rect(hw, hh, cssW - hw, cssH - hh)
     ctx.clip()
 
-    if (multi) {
-      ctx.fillStyle = COLOR_WASH
-      ctx.fillRect(selRect.x, selRect.y, selRect.w, selRect.h)
+    // The palette entry for a visible cell; index 0 is always the default.
+    const formatAt = (ri: number, ci: number): CellFormat => {
+      if (!vp) return EMPTY_CELL_FORMAT
+      const vrow = vis.firstRow + ri - vp.row0
+      const vcol = vis.firstCol + ci - vp.col0
+      if (vrow < 0 || vrow >= vp.rows || vcol < 0 || vcol >= vp.cols) {
+        return EMPTY_CELL_FORMAT
+      }
+      return vp.palette[vp.styles[vrow * vp.cols + vcol]] ?? EMPTY_CELL_FORMAT
+    }
+
+    // Fills go down first, under the gridlines, exactly as in Excel.
+    for (let ri = 0; ri < nRows; ri++) {
+      const h = ys[ri + 1] - ys[ri]
+      if (h <= 0) continue
+      for (let ci = 0; ci < nCols; ci++) {
+        const fill = formatAt(ri, ci).fill_color
+        if (!fill) continue
+        ctx.fillStyle = fill
+        ctx.fillRect(xs[ci], ys[ri], xs[ci + 1] - xs[ci], h)
+      }
     }
 
     // Grid lines as a single path; the half-pixel offset keeps 1px strokes
@@ -295,11 +369,53 @@ export function Grid(props: GridProps): JSX.Element {
     }
     ctx.stroke()
 
+    // A merged block is one cell to the eye: repaint over it to erase the
+    // interior gridlines, then put the single outline back.
+    const mergesToPaint = L.merges.isEmpty
+      ? []
+      : L.merges.ranges.filter(
+          (r) =>
+            r.end.row >= vis.firstRow &&
+            r.start.row <= vis.lastRow &&
+            r.end.col >= vis.firstCol &&
+            r.start.col <= vis.lastCol,
+        )
+    for (const mr of mergesToPaint) {
+      const rect = rangeRect(m, mr, scrollTop, scrollLeft)
+      if (rect.w <= 0 || rect.h <= 0) continue
+      const anchorFill = L.merges.isEmpty
+        ? undefined
+        : formatAt(mr.start.row - vis.firstRow, mr.start.col - vis.firstCol).fill_color
+      ctx.fillStyle = anchorFill ?? COLOR_BG
+      ctx.fillRect(rect.x, rect.y, rect.w, rect.h)
+      ctx.strokeStyle = COLOR_GRID
+      ctx.lineWidth = 1
+      ctx.strokeRect(
+        Math.round(rect.x) + 0.5,
+        Math.round(rect.y) + 0.5,
+        Math.round(rect.w) - 1,
+        Math.round(rect.h) - 1,
+      )
+    }
+
+    for (const hl of L.highlights) {
+      const r = rangeRect(m, hl, scrollTop, scrollLeft)
+      if (r.w <= 0 || r.h <= 0) continue
+      ctx.fillStyle = COLOR_FIND_HIT
+      ctx.fillRect(r.x, r.y, r.w, r.h)
+    }
+
+    if (multi) {
+      ctx.fillStyle = COLOR_WASH
+      ctx.fillRect(selRect.x, selRect.y, selRect.w, selRect.h)
+    }
+
     if (vp) {
       ctx.font = CELL_FONT
       ctx.textBaseline = 'middle'
       ctx.textAlign = 'left'
-      let align: 'left' | 'right' = 'left'
+      let align: CellAlign = 'left'
+      let font = CELL_FONT
       const hashWidth = ctx.measureText('#').width
 
       for (let ri = 0; ri < nRows; ri++) {
@@ -309,6 +425,7 @@ export function Grid(props: GridProps): JSX.Element {
         const vrow = vis.firstRow + ri - vp.row0
         if (vrow < 0 || vrow >= vp.rows) continue
         const midY = ys[ri] + h / 2
+        const row = vis.firstRow + ri
 
         for (let ci = 0; ci < nCols; ci++) {
           const vcol = vis.firstCol + ci - vp.col0
@@ -316,17 +433,37 @@ export function Grid(props: GridProps): JSX.Element {
           const idx = vrow * vp.cols + vcol
           const text = vp.values[idx]
           if (!text) continue
-          const w = xs[ci + 1] - xs[ci]
+          const col = vis.firstCol + ci
+
+          // Text belongs to the merge's anchor and spans the whole block; a
+          // covered cell holds no value, but a stale one must not surface.
+          const merge = L.merges.isEmpty ? null : L.merges.at(row, col)
+          if (merge && (merge.start.row !== row || merge.start.col !== col)) continue
+          let left = xs[ci]
+          let right = xs[ci + 1]
+          if (merge) {
+            const rect = rangeRect(m, merge, scrollTop, scrollLeft)
+            left = rect.x
+            right = rect.x + rect.w
+          }
+          const w = right - left
           const avail = w - CELL_PAD * 2
           if (avail <= 0) continue
 
           const kind = vp.kinds[idx]
-          const wanted = cellAlign(kind)
+          const style = vp.palette[vp.styles[idx]] ?? EMPTY_CELL_FORMAT
+          const wantedFont = fontFor(style)
+          if (wantedFont !== font) {
+            font = wantedFont
+            ctx.font = wantedFont
+          }
+          const wanted = resolvedAlign(kind, style.align)
           if (wanted !== align) {
             align = wanted
             ctx.textAlign = wanted
           }
-          ctx.fillStyle = kind === KIND_ERROR ? COLOR_ERROR : COLOR_TEXT
+          ctx.fillStyle =
+            kind === KIND_ERROR ? COLOR_ERROR : (style.font_color ?? COLOR_TEXT)
 
           // measureText is the expensive call here, so skip it whenever the
           // string is obviously short enough for the column.
@@ -340,10 +477,16 @@ export function Grid(props: GridProps): JSX.Element {
           if (clip) {
             ctx.save()
             ctx.beginPath()
-            ctx.rect(xs[ci], ys[ri], w, h)
+            ctx.rect(left, ys[ri], w, h)
             ctx.clip()
           }
-          ctx.fillText(out, align === 'left' ? xs[ci] + CELL_PAD : xs[ci + 1] - CELL_PAD, midY)
+          const tx =
+            align === 'left'
+              ? left + CELL_PAD
+              : align === 'right'
+                ? right - CELL_PAD
+                : (left + right) / 2
+          ctx.fillText(out, tx, midY)
           if (clip) ctx.restore()
 
           if (vp.formulas[idx]) {
@@ -352,7 +495,43 @@ export function Grid(props: GridProps): JSX.Element {
           }
         }
       }
+      ctx.font = CELL_FONT
     }
+
+    // Explicit borders go over the gridlines, so a thin black edge reads as
+    // deliberate rather than as a slightly darker gridline.
+    ctx.strokeStyle = COLOR_BORDER
+    ctx.lineWidth = 1
+    ctx.beginPath()
+    for (let ri = 0; ri < nRows; ri++) {
+      const h = ys[ri + 1] - ys[ri]
+      if (h <= 0) continue
+      for (let ci = 0; ci < nCols; ci++) {
+        const b = formatAt(ri, ci).borders
+        if (!b) continue
+        const x0 = Math.round(xs[ci]) + 0.5
+        const x1 = Math.round(xs[ci + 1]) - 0.5
+        const y0 = Math.round(ys[ri]) + 0.5
+        const y1 = Math.round(ys[ri + 1]) - 0.5
+        if (b.top) {
+          ctx.moveTo(x0, y0)
+          ctx.lineTo(x1, y0)
+        }
+        if (b.bottom) {
+          ctx.moveTo(x0, y1)
+          ctx.lineTo(x1, y1)
+        }
+        if (b.left) {
+          ctx.moveTo(x0, y0)
+          ctx.lineTo(x0, y1)
+        }
+        if (b.right) {
+          ctx.moveTo(x1, y0)
+          ctx.lineTo(x1, y1)
+        }
+      }
+    }
+    ctx.stroke()
 
     // Selection chrome sits above the text but below the headers.
     ctx.textAlign = 'left'
@@ -537,13 +716,72 @@ export function Grid(props: GridProps): JSX.Element {
     }
   }, [])
 
+  /** Extend the drag to the cell under the pointer, in content coordinates. */
+  const applyDragAt = useCallback(
+    (clientX: number, clientY: number) => {
+      const d = dragRef.current
+      if (!d || d.kind === 'resize') return
+      const L = latestRef.current
+      const m = L.metrics
+      const p = pointOf(clientX, clientY)
+      const row = rowAtY(m, Math.max(0, p.y - m.headerHeight) + p.scrollTop)
+      const col = columnAtX(m, Math.max(0, p.x - m.headerWidth) + p.scrollLeft)
+
+      if (d.kind === 'select') {
+        if (row === d.last.row && col === d.last.col) return
+        d.last = { row, col }
+        const sel = selectionFrom(d.anchor, { row, col })
+        L.onSelect({ anchor: sel.anchor, range: L.merges.expand(sel.range) })
+        return
+      }
+      const target = fillTarget(d.source, row, col)
+      if (sameRange(target, d.target)) return
+      d.target = target
+      fillPreviewRef.current = target
+      invalidate()
+    },
+    [invalidate, pointOf],
+  )
+
+  /**
+   * Keep scrolling — and keep extending the selection — while the pointer
+   * sits outside the content box. Without this a drag simply stops at the
+   * edge and there is no way to select past the fold with the mouse.
+   */
+  const autoscrollRef = useRef(0)
+  const pointerRef = useRef({ x: 0, y: 0 })
+
+  const stopAutoscroll = useCallback(() => {
+    if (autoscrollRef.current) {
+      cancelAnimationFrame(autoscrollRef.current)
+      autoscrollRef.current = 0
+    }
+  }, [])
+
+  const stepAutoscroll = useCallback(() => {
+    autoscrollRef.current = 0
+    const el = scrollRef.current
+    if (!dragRef.current || !el) return
+    const p = pointOf(pointerRef.current.x, pointerRef.current.y)
+    const { dx, dy } = autoscrollDelta(
+      p.x,
+      p.y,
+      el.clientWidth,
+      el.clientHeight,
+      latestRef.current.metrics,
+    )
+    if (dx === 0 && dy === 0) return
+    el.scrollLeft += dx
+    el.scrollTop += dy
+    applyDragAt(pointerRef.current.x, pointerRef.current.y)
+    autoscrollRef.current = requestAnimationFrame(stepAutoscroll)
+  }, [applyDragAt, pointOf])
+
   const handleDragMove = useCallback(
     (e: MouseEvent) => {
       const d = dragRef.current
       const el = scrollRef.current
       if (!d || !el) return
-      const L = latestRef.current
-      const m = L.metrics
 
       if (d.kind === 'resize') {
         const width = clampColWidth(d.startWidth + (e.clientX - d.startX))
@@ -556,29 +794,32 @@ export function Grid(props: GridProps): JSX.Element {
         return
       }
 
+      pointerRef.current = { x: e.clientX, y: e.clientY }
+      applyDragAt(e.clientX, e.clientY)
+
       const p = pointOf(e.clientX, e.clientY)
-      const row = rowAtY(m, Math.max(0, p.y - m.headerHeight) + p.scrollTop)
-      const col = columnAtX(m, Math.max(0, p.x - m.headerWidth) + p.scrollLeft)
-
-      if (d.kind === 'select') {
-        if (row === d.last.row && col === d.last.col) return
-        d.last = { row, col }
-        L.onSelect(selectionFrom(d.anchor, { row, col }))
-        return
+      const { dx, dy } = autoscrollDelta(
+        p.x,
+        p.y,
+        el.clientWidth,
+        el.clientHeight,
+        latestRef.current.metrics,
+      )
+      if (dx !== 0 || dy !== 0) {
+        if (!autoscrollRef.current) {
+          autoscrollRef.current = requestAnimationFrame(stepAutoscroll)
+        }
+      } else {
+        stopAutoscroll()
       }
-
-      const target = fillTarget(d.source, row, col)
-      if (sameRange(target, d.target)) return
-      d.target = target
-      fillPreviewRef.current = target
-      invalidate()
     },
-    [invalidate, pointOf],
+    [applyDragAt, pointOf, stepAutoscroll, stopAutoscroll],
   )
 
   const handleDragEnd = useCallback(() => {
     const d = dragRef.current
     dragRef.current = null
+    stopAutoscroll()
     window.removeEventListener('mousemove', handleDragMove)
     window.removeEventListener('mouseup', handleDragEnd)
     if (d && d.kind === 'fill') {
@@ -586,7 +827,7 @@ export function Grid(props: GridProps): JSX.Element {
       if (!sameRange(d.target, d.source)) latestRef.current.onFill(d.source, d.target)
       invalidate()
     }
-  }, [handleDragMove, invalidate])
+  }, [handleDragMove, invalidate, stopAutoscroll])
 
   const beginDrag = useCallback(
     (drag: Drag) => {
@@ -601,8 +842,9 @@ export function Grid(props: GridProps): JSX.Element {
     () => () => {
       window.removeEventListener('mousemove', handleDragMove)
       window.removeEventListener('mouseup', handleDragEnd)
+      stopAutoscroll()
     },
-    [handleDragEnd, handleDragMove],
+    [handleDragEnd, handleDragMove, stopAutoscroll],
   )
 
   const handleMouseDown = useCallback(
@@ -667,12 +909,18 @@ export function Grid(props: GridProps): JSX.Element {
           return
         case 'cell': {
           const addr = { row: hit.row, col: hit.col }
+          pointerRef.current = { x: e.clientX, y: e.clientY }
           if (e.shiftKey) {
-            L.onSelect(selectionFrom(L.selection.anchor, addr))
+            const sel = selectionFrom(L.selection.anchor, addr)
+            L.onSelect({ anchor: sel.anchor, range: L.merges.expand(sel.range) })
             beginDrag({ kind: 'select', anchor: L.selection.anchor, last: addr })
           } else {
-            L.onSelect(selectionAt(addr))
-            beginDrag({ kind: 'select', anchor: addr, last: addr })
+            // Clicking anywhere inside a merged block selects the block, so
+            // the cursor never lands on a cell the user cannot see.
+            const anchor = L.merges.anchor(addr.row, addr.col)
+            const sel = selectionAt(anchor)
+            L.onSelect({ anchor, range: L.merges.expand(sel.range) })
+            beginDrag({ kind: 'select', anchor, last: addr })
           }
           return
         }
