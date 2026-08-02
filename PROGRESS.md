@@ -74,7 +74,7 @@ Living checklist. Updated every session.
 - [x] Playwright happy-path suite (17 new tests, canvas pixels *and* engine
       state)
 
-## M6 — Miner + routines
+## M6 — Miner + routines (complete)
 - [x] Normalization to abstract tokens (R1C1 formula shapes, no literals)
 - [x] Tandem-repeat loop detection, scoped to a single session
 - [x] PrefixSpan (min support 3, max length 12, gap tolerance 1)
@@ -100,7 +100,7 @@ Living checklist. Updated every session.
 
 ## Notes
 
-- 325 Rust tests, 140 web unit tests, 35 Playwright end-to-end tests; full
+- 341 Rust tests, 140 web unit tests, 44 Playwright end-to-end tests; full
   CI gate (fmt, clippy -D warnings, tests, wasm build, vite build, e2e)
   passes locally.
 - M5 found a bug that had been latent since M2: **xlsx export had never
@@ -126,6 +126,12 @@ Living checklist. Updated every session.
   boundaries, so three sittings became one "loop repeated 3 times in a row";
   and review cost was charged per repetition, which made a genuine twelve-row
   habit score below the threshold and vanish.
+- Driving the routines panel in the browser found two more. `applyBatch`
+  pushed one undo entry per action, so the panel's own promise — "runs in one
+  undo step" — was false and rejecting a five-step routine took five Ctrl+Z;
+  nothing had used `applyBatch` until routines did. And the dry run compared
+  cell values only, so a routine that bolds a header row previewed as
+  "nothing would change" and Run was disabled on a routine that worked.
 - The property suite caught a real determinism bug: cells that only
   *syntactically* referenced a cycle (an untaken `IF` branch) were marked
   `#CIRC!` by a full recalculation but evaluated correctly by an incremental
