@@ -843,3 +843,80 @@ button.linkish {
 .context-menu li.is-disabled:hover {
   background: none;
 }
+
+/* Routines panel */
+
+.routines .drawer__head > div {
+  display: flex;
+  gap: 4px;
+}
+
+.routines__error {
+  color: var(--error);
+  line-height: 1.45;
+  margin-bottom: 8px;
+}
+
+.routine {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px;
+  background: #fff;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.routine__summary {
+  line-height: 1.45;
+}
+
+.routine__meta {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.routine__partial {
+  color: #8a6100;
+  background: #fff8e1;
+  border-radius: 4px;
+  padding: 6px 8px;
+  line-height: 1.45;
+}
+
+.routine__diff {
+  border-collapse: collapse;
+  width: 100%;
+  font-variant-numeric: tabular-nums;
+}
+
+.routine__diff th,
+.routine__diff td {
+  text-align: left;
+  padding: 2px 6px 2px 0;
+  border-bottom: 1px solid var(--grid-line);
+}
+
+.routine__diff thead th {
+  color: var(--muted);
+  font-weight: 500;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.routine__before {
+  color: var(--muted);
+  text-decoration: line-through;
+}
+
+.routine__after {
+  color: var(--accent);
+}
+
+.routine__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 2px;
+}

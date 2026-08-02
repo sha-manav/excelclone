@@ -12,9 +12,9 @@ per milestone, and never leave the repo red.
 
 ## What is already done
 
-**M0–M5 are complete. M6 is complete except for the panel.** 325 Rust tests,
-140 web unit tests (vitest), 35 end-to-end tests (Playwright); `cargo clippy
---workspace --all-targets -- -D warnings` is clean.
+**M0–M6 are complete.** 339 Rust tests, 140 web unit tests (vitest), 44
+end-to-end tests (Playwright); `cargo clippy --workspace --all-targets -- -D
+warnings` is clean.
 
 | Milestone | State |
 | --- | --- |
@@ -24,7 +24,7 @@ per milestone, and never leave the repo red.
 | M3 Wasm + grid | wasm bindings, virtualized canvas grid, formula bar, sheet tabs, verified in a real browser |
 | M4 Event spine | Envelope + redaction in Rust, client capture pipeline, consent flow, capture chip, transparency page, axum server (ingest/consent/export/sessions), determinism-replay suite |
 | M5 Grid completeness | Per-cell format model through the xlsx round trip, find & replace, formatting toolbar, context menu, sort/filter UI, merges painted, import-notes drawer, file open/save, autoscroll, autofit |
-| M6 Miner | Normalization, loop + PrefixSpan mining, scoring, routine synthesis, dry-run sandbox, CLI, planted-pattern acceptance suite. **The panel and the server write-back are not done.** |
+| M6 Miner + routines | Normalization, loop + PrefixSpan mining, scoring, routine synthesis, dry-run sandbox, CLI with `--db` write-back, Routines panel with live preview / Run / Dismiss, planted-pattern and browser acceptance suites |
 
 ### Architecture facts worth knowing before changing anything
 
@@ -48,6 +48,14 @@ per milestone, and never leave the repo red.
 - **Formats live beside cells, not inside them** (`Sheet::formats`, interned in
   a workbook-level `FormatTable`). A format can exist with no value; that is
   deliberate and several tests depend on it.
+- **`Routine` and its dry-run sandbox live in the engine**
+  (`crates/engine/src/routine.rs`), because the miner discovers routines, the
+  server stores them and the client runs them. The miner keeps only the
+  discovery half. Running a routine hands its shifted actions back to the
+  client, which pushes them through the same `applyBatch` as any other
+  gesture — there is no second execution path.
+- **`Engine::apply_batch` coalesces the undo entries** its actions push into
+  one, so a five-step routine is one Ctrl+Z. Applying in a loop does not.
 - **Number display caps at 15 significant digits**, matching Excel, so
   `=0.1*3` renders `0.3`.
 - Serials reproduce Excel's phantom 1900-02-29 so dates round-trip with real
@@ -63,6 +71,7 @@ make ci      # fmt, clippy -D warnings, cargo test, vite build
 cd apps/web && npx vitest run      # unit tests
 cd apps/web && npx playwright test # end-to-end
 cargo run -p miner --bin gridline-miner -- mine --in events.jsonl
+cargo run -p miner --bin gridline-miner -- mine --in events.jsonl --db gridline.db
 ```
 
 **Two environment notes, both worked around rather than papered over:**
@@ -78,35 +87,7 @@ cargo run -p miner --bin gridline-miner -- mine --in events.jsonl
 
 ## What is left
 
-### M6 — finish the routines loop (next, and small)
-
-The miner produces `Routine` values and previews them; nothing shows them to a
-user yet. Three pieces:
-
-1. **Write routines into the server.** The `routines` table and
-   `GET /v1/routines` + `POST /v1/routines/:id/feedback` already exist and are
-   tested. The miner needs a `--db <path>` (or an admin `POST /v1/routines`)
-   that upserts on `Routine::id`, which is stable across mining runs precisely
-   so re-mining updates rather than duplicating.
-2. **Expose the dry run through wasm.** `miner::routine::dry_run` takes an
-   `&Engine`; the wasm crate holds one. The bridge needs
-   `previewRoutine(bodyJson, sheet, row, col) -> DryRun` and
-   `runRoutine(bodyJson, sheet, row, col)`. Running must go through
-   `Engine::apply` so the actions are captured, and should emit `routine.run`
-   as a shell action alongside them (already in the vocabulary and in
-   `docs/EVENTS.md`).
-   *Note:* `crates/wasm` does not depend on `miner` today. Either add the
-   dependency or move `Routine`/`dry_run` into the engine. The former is
-   quicker; the latter is arguably where they belong, since the engine already
-   owns telemetry for the same reason.
-3. **The Routines panel.** List proposals ranked by
-   `estimated_minutes_saved`, each with its summary, a preview of the cell
-   diff at the current selection, and Run / Dismiss. Dismiss posts feedback. A
-   routine with a non-empty `requires` must say plainly which values it cannot
-   supply rather than making a partial change silently — the miner already
-   reports them as offsets and kinds.
-
-### M7 — Dataset export + polish
+### M7 — Dataset export + polish (next)
 
 `miner -- export --consented-only --mode structural --out data/` writing JSONL
 `{pre_state_digest, context, action, post_state_digest}` grouped by session,
@@ -161,6 +142,12 @@ score, not a claim.
     or the search terms. Those steps are skipped during synthesis, so a routine
     mined from a gesture containing them is shorter than the gesture was. If
     this matters, the fix is in what the *capture* records, not in the miner.
+11. **Nothing runs the miner automatically.** `gridline-miner mine --db …` has
+    to be invoked by hand or by cron; there is no scheduler and `make dev` does
+    not wire one up. The M7 demo script will need a step that runs it.
+12. **A partial routine runs its known steps and leaves the rest to the user.**
+    The panel names the cells it cannot fill, but there is no flow for typing
+    them into the routine — you run it and then fill them in yourself.
 
 ---
 
@@ -193,6 +180,10 @@ tests first. Keep that stance.
   session boundaries** and so claimed three sittings were one loop, and a
   **scoring model that charged the review cost per repetition**, hiding genuine
   habits below the threshold.
+- The routines panel's browser suite caught that **`applyBatch` pushed one undo
+  entry per action**, so the panel's own promise — "runs in one undo step" —
+  was false, and rejecting a five-step routine took five Ctrl+Z. Latent because
+  nothing had used `applyBatch` until routines did.
 
 Two habits worth keeping specifically:
 

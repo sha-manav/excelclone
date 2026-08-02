@@ -9,8 +9,11 @@
 //!      then PrefixSpan for patterns spread across sessions.
 //!   3. [`score`] — estimated minutes saved, so the panel can be ranked and
 //!      the small stuff never shown.
-//!   4. [`routine`] — synthesis into a macro of typed engine `Action`s, and a
-//!      dry run that reports exactly which cells would change.
+//!   4. [`routine`] — synthesis into a macro of typed engine `Action`s. The
+//!      routine type and its dry-run sandbox live in the engine, because the
+//!      miner, the server and the client all need them and they must agree.
+//!
+//! [`store`] writes the result into the server's `routines` table.
 //!
 //! Nothing here reads a file or a socket; the CLI in `main.rs` does the I/O.
 
@@ -18,6 +21,7 @@ pub mod mine;
 pub mod normalize;
 pub mod routine;
 pub mod score;
+pub mod store;
 
 use engine::telemetry::EventEnvelope;
 use mine::MineConfig;

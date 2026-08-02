@@ -85,9 +85,14 @@ Living checklist. Updated every session.
       recalculation
 - [x] `gridline-miner mine --in events.jsonl`
 - [x] Planted-pattern acceptance tests, positive and negative
-- [ ] Writing routines into the server's `routines` table
-- [ ] Routines panel in the app: preview diff, run, dismiss
-- [ ] End-to-end routine flow in the browser
+- [x] `gridline-miner mine --db <path>` upserts into the server's `routines`
+      table, per (actor, workbook), preserving any verdict the user has given
+      and pruning proposals the log no longer supports
+- [x] `Routine` and the dry-run sandbox moved into the engine, so the miner,
+      the server and the client share one definition
+- [x] Routines panel: ranked proposals, a live diff against the current
+      selection, Run and Dismiss, partial routines naming what they cannot fill
+- [x] End-to-end routine flow in the browser
 
 ## M7 — Dataset export + polish
 - [ ] miner export JSONL (consent-enforced)

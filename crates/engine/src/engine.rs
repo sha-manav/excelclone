@@ -364,6 +364,44 @@ impl Engine {
         }
     }
 
+    /// Apply several actions as one user-visible gesture.
+    ///
+    /// The difference from calling [`Engine::apply`] in a loop is undo: this
+    /// coalesces everything the batch pushed into a single entry, so the
+    /// gesture comes back in one Ctrl+Z. A routine that took five actions to
+    /// express is still one thing the user asked for, and making them reject
+    /// it five times would be a good way to stop anyone using routines.
+    ///
+    /// A failure part-way through leaves the earlier actions applied, as it
+    /// does for a loop of `apply` — and, in that case, uncoalesced, because
+    /// the caller is now looking at a partial result and should be able to
+    /// step back through it.
+    pub fn apply_batch(
+        &mut self,
+        actions: &[Action],
+        label: &str,
+    ) -> Result<Vec<Event>, ApplyError> {
+        let mark = self.undo_stack.len();
+        let mut events = Vec::new();
+        for a in actions {
+            events.extend(self.apply(a)?);
+        }
+        // `>` and not `>=`: one entry is already one undo step, and an
+        // `Undo` inside the batch can leave the stack shorter than the mark.
+        if self.undo_stack.len() > mark + 1 {
+            let parts: Vec<UndoState> = self
+                .undo_stack
+                .drain(mark..)
+                .map(|entry| entry.state)
+                .collect();
+            self.undo_stack.push(UndoEntry {
+                label: label.to_string(),
+                state: UndoState::Compound(parts),
+            });
+        }
+        Ok(events)
+    }
+
     fn apply_forward(&mut self, action: &Action) -> Result<Vec<Event>, ApplyError> {
         match action {
             Action::CellEdit { sheet, addr, input } => self.cell_edit(sheet, *addr, input),

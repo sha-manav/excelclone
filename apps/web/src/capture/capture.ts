@@ -473,6 +473,14 @@ export class CaptureController {
   }
 
   /**
+   * Which workbook this session is about. The routines panel needs it to ask
+   * the server for suggestions, and the id is derived here already.
+   */
+  currentWorkbookId(): string {
+    return this.workbookId
+  }
+
+  /**
    * Record a shell-level action — the ones the engine cannot know about, like
    * `file.open` or `routine.run`. The payload must already be redaction-safe.
    */

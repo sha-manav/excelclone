@@ -12,6 +12,8 @@ import { SortDialog } from './components/SortDialog'
 import { FilterMenu } from './components/FilterMenu'
 import { FindReplacePanel } from './components/FindReplacePanel'
 import { WarningsDrawer } from './components/WarningsDrawer'
+import { RoutinesPanel } from './components/RoutinesPanel'
+import { api, type RoutineRecord } from './capture/api'
 import { MergeMap, parseRangeA1 } from './components/grid-geometry'
 import { useWorkbook } from './state/useWorkbook'
 import { useCapture } from './state/useCapture'
@@ -53,6 +55,10 @@ export default function App() {
   const [matches, setMatches] = useState<string[]>([])
   const [matchIndex, setMatchIndex] = useState(0)
   const [menu, setMenu] = useState<{ addr: Addr; x: number; y: number } | null>(null)
+  const [showRoutines, setShowRoutines] = useState(false)
+  const [routines, setRoutines] = useState<RoutineRecord[]>([])
+  const [routinesLoading, setRoutinesLoading] = useState(false)
+  const [routinesError, setRoutinesError] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   // Routing, such as it is: two screens do not justify a router, and the
@@ -216,6 +222,64 @@ export default function App() {
         .filter((r): r is Range => r !== null),
     [matches],
   )
+
+  /* ------------------------------------------------------------- routines */
+
+  const workbookId = capture.controller.currentWorkbookId()
+
+  const loadRoutines = useCallback(async () => {
+    setRoutinesLoading(true)
+    const res = await api.getRoutines(workbookId)
+    setRoutinesLoading(false)
+    if (!res.ok) {
+      // The panel is a suggestion box. A server that is down means no
+      // suggestions, not a broken spreadsheet, so this is a line of text in
+      // the panel rather than the error toast.
+      setRoutinesError(res.error ?? 'could not reach the server')
+      return
+    }
+    setRoutinesError(null)
+    setRoutines(res.data ?? [])
+  }, [workbookId])
+
+  useEffect(() => {
+    if (showRoutines) void loadRoutines()
+  }, [showRoutines, loadRoutines])
+
+  const runRoutine = useCallback(
+    (routine: RoutineRecord) => {
+      if (!wb.engine) return
+      try {
+        const actions = wb.engine.routineActions(
+          routine.body,
+          wb.activeSheet,
+          active.row,
+          active.col,
+        )
+        if (actions.length === 0) return
+        // Through the same batch path every other gesture uses, so it lands
+        // in one undo step and the capture pipeline sees the actions without
+        // being taught what a routine is.
+        if (!wb.applyBatch(actions)) return
+        capture.controller.recordShellAction('routine.run', {
+          routine_id: routine.id,
+          steps: actions.length,
+          anchor: rangeA1(singleRange(active)),
+        })
+        void api.postRoutineFeedback(routine.id, 'accepted').then(() => loadRoutines())
+      } catch (e) {
+        wb.reportError(String(e))
+      }
+    },
+    [wb, active, capture, loadRoutines],
+  )
+
+  const dismissRoutine = useCallback((routine: RoutineRecord) => {
+    // Optimistic: the panel is not worth a spinner, and a dismissal the
+    // server never received simply reappears on the next refresh.
+    setRoutines((prev) => prev.filter((r) => r.id !== routine.id))
+    void api.postRoutineFeedback(routine.id, 'dismissed')
+  }, [])
 
   /* ---------------------------------------------------------------- files */
 
@@ -613,6 +677,14 @@ export default function App() {
           <button onClick={() => setFinding((v) => !v)} title="Find & replace (Cmd/Ctrl+F)">
             Find
           </button>
+          <button
+            onClick={() => setShowRoutines((v) => !v)}
+            aria-pressed={showRoutines}
+            className={showRoutines ? 'is-on' : undefined}
+            title="Work Gridline noticed you repeating"
+          >
+            Routines
+          </button>
         </div>
 
         <div className="toolbar__spacer" />
@@ -690,6 +762,21 @@ export default function App() {
           <WarningsDrawer
             warnings={wb.warnings}
             onClose={() => setShowWarnings(false)}
+          />
+        )}
+        {showRoutines && wb.engine && (
+          <RoutinesPanel
+            engine={wb.engine}
+            routines={routines}
+            sheet={wb.activeSheet}
+            anchor={active}
+            version={wb.version}
+            loading={routinesLoading}
+            error={routinesError}
+            onRun={runRoutine}
+            onDismiss={dismissRoutine}
+            onRefresh={() => void loadRoutines()}
+            onClose={() => setShowRoutines(false)}
           />
         )}
       </div>

@@ -37,6 +37,18 @@ export interface IngestAck {
   duplicates: number
 }
 
+/** A routine as the server stores it. `body` is the engine-shaped macro. */
+export interface RoutineRecord {
+  id: string
+  workbook_id: string
+  summary: string
+  body: unknown
+  estimated_minutes_saved: number
+  support: number
+  status: 'proposed' | 'accepted' | 'dismissed'
+  created_at: string
+}
+
 export function apiBaseUrl(): string {
   const env = import.meta.env as { VITE_API_URL?: string } | undefined
   return env?.VITE_API_URL ?? 'http://localhost:8787'
@@ -121,6 +133,25 @@ export class GridlineApi {
   /** `GET /v1/consent/me`. */
   async getConsent(): Promise<ApiResponse<ConsentRecord>> {
     return call<ConsentRecord>('/v1/consent/me', { method: 'GET' })
+  }
+
+  /** `GET /v1/routines?workbook=…`. */
+  async getRoutines(workbookId: string): Promise<ApiResponse<RoutineRecord[]>> {
+    return call<RoutineRecord[]>(
+      `/v1/routines?workbook=${encodeURIComponent(workbookId)}`,
+      { method: 'GET' },
+    )
+  }
+
+  /** `POST /v1/routines/:id/feedback`. */
+  async postRoutineFeedback(
+    id: string,
+    status: 'accepted' | 'dismissed',
+  ): Promise<ApiResponse<{ id: string; status: string }>> {
+    return call<{ id: string; status: string }>(
+      `/v1/routines/${encodeURIComponent(id)}/feedback`,
+      { method: 'POST', body: { status } },
+    )
   }
 
   /** Adapter for `EventQueue`, which only cares whether to retry. */

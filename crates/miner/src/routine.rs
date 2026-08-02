@@ -1,85 +1,35 @@
-//! Turning a mined pattern into something the user can actually run.
+//! Discovering a routine from a mined pattern.
 //!
-//! A routine is a JSON macro of typed engine `Action`s, shifted so it can be
-//! applied anywhere. Two consequences follow, and both are deliberate:
+//! The routine *type* and its sandbox live in the engine
+//! ([`engine::routine`]), because the miner, the server and the client all
+//! need them and they must agree. What lives here is the half that is
+//! specific to mining: turning a scored pattern back into the concrete
+//! actions that produced it.
 //!
-//! * **Running a routine goes through `Engine::apply` like everything else.**
-//!   There is no second execution path, so a routine cannot do anything the
-//!   user could not have done by hand, and every action it takes is captured
-//!   like any other.
-//! * **A routine is built from a real occurrence, not from the tokens.**
-//!   Tokens are deliberately lossy — that is what makes mining work — so
-//!   synthesizing from them would mean inventing the details back. Instead
-//!   the most recent occurrence's actual actions are kept.
-//!
-//! Rebasing shifts addresses *and* the relative references inside formulas,
-//! so a routine mined at row 5 and run at row 20 writes `=SUM(B20:D20)`
-//! rather than `=SUM(B5:D5)`.
-//!
-//! The actions are stored with the coordinates they were recorded at, next to
-//! the anchor they were recorded from, and shifted once by the difference
-//! when the routine runs. Normalizing them to the origin first would be
-//! tidier to look at and quietly wrong: `=SUM(B5:D5)` written in E5 points
-//! three columns left, so moving it to A1 walks off the grid and the
-//! reference collapses to `#REF!` before it can be moved back.
+//! **A routine is built from a real occurrence, not from the tokens.** Tokens
+//! are deliberately lossy — that is what makes mining work — so synthesizing
+//! from them would mean inventing the details back. The most recent
+//! occurrence is used as the template, on the grounds that the user's latest
+//! way of doing something is the one most likely to still be right.
 //!
 //! What cannot be rebuilt is stated rather than guessed. Under `structural`
 //! capture a typed literal is a hash, and no amount of cleverness recovers
 //! the number: those steps become [`Requirement`]s the routine reports and
 //! does not perform.
 
-use engine::{Action, CellAddr, Engine, RangeAddr};
-use serde::{Deserialize, Serialize};
+use engine::{Action, CellAddr, RangeAddr};
+
+/// Re-exported so a caller mining routines does not also have to import the
+/// engine to name what it got back.
+pub use engine::{Requirement, Routine};
 
 use crate::mine::{Pattern, PatternKind};
 use crate::normalize::Step;
 use crate::score::Scored;
 
-/// A step the routine cannot perform because its value was redacted.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Requirement {
-    /// Where it goes, relative to wherever the routine is run.
-    pub row_offset: i64,
-    pub col_offset: i64,
-    /// "number", "text", "bool" — the shape of what is missing.
-    pub kind: String,
-}
-
-/// A runnable routine.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Routine {
-    pub id: String,
-    /// One line a person can read without knowing the vocabulary.
-    pub summary: String,
-    /// Actions with the coordinates they were recorded at.
-    pub actions: Vec<Action>,
-    /// Where they were recorded, so running elsewhere is one shift away.
-    pub anchor: String,
-    /// Values the routine cannot supply. Non-empty means partial.
-    pub requires: Vec<Requirement>,
-    pub support: usize,
-    pub estimated_minutes_saved: f64,
-    /// `loop` or `recurring`, so the panel can say why it is proposing this.
-    pub kind: String,
-}
-
-impl Routine {
-    pub fn is_partial(&self) -> bool {
-        !self.requires.is_empty()
-    }
-
-    /// The actions this routine would apply at a given anchor.
-    pub fn actions_at(&self, sheet: &str, anchor: CellAddr) -> Vec<Action> {
-        let base = CellAddr::parse_a1(&self.anchor).unwrap_or(CellAddr::new(0, 0));
-        let dr = anchor.row as i64 - base.row as i64;
-        let dc = anchor.col as i64 - base.col as i64;
-        self.actions
-            .iter()
-            .filter_map(|a| rebase(a, dr, dc))
-            .map(|a| retarget_sheet(a, sheet))
-            .collect()
-    }
-}
+/// Re-exported so callers can reach the sandbox without also importing the
+/// engine directly; the definition lives there.
+pub use engine::routine::dry_run;
 
 /// Build a routine from a scored pattern and the steps it was mined from.
 ///
@@ -328,179 +278,6 @@ fn primary_addr(a: &Action) -> Option<CellAddr> {
     }
 }
 
-/// Shift an action by (dr, dc), including the relative references inside any
-/// formula it carries. Returns None when the shift would leave the grid.
-pub fn rebase(a: &Action, dr: i64, dc: i64) -> Option<Action> {
-    let shift_addr = |x: CellAddr| -> Option<CellAddr> {
-        let row = x.row as i64 + dr;
-        let col = x.col as i64 + dc;
-        (row >= 0 && col >= 0).then(|| CellAddr::new(row as u32, col as u32))
-    };
-    let shift_range = |r: RangeAddr| -> Option<RangeAddr> {
-        Some(RangeAddr::new(shift_addr(r.start)?, shift_addr(r.end)?))
-    };
-    let shift_index = |i: u32, delta: i64| -> Option<u32> {
-        let v = i as i64 + delta;
-        (v >= 0).then_some(v as u32)
-    };
-
-    Some(match a.clone() {
-        Action::CellEdit { sheet, addr, input } => Action::CellEdit {
-            sheet,
-            addr: shift_addr(addr)?,
-            input: shift_formula(&input, dr, dc),
-        },
-        Action::CellClear { sheet, addr } => Action::CellClear {
-            sheet,
-            addr: shift_addr(addr)?,
-        },
-        Action::RangeClear { sheet, range } => Action::RangeClear {
-            sheet,
-            range: shift_range(range)?,
-        },
-        Action::FillApply {
-            sheet,
-            source,
-            target,
-        } => Action::FillApply {
-            sheet,
-            source: shift_range(source)?,
-            target: shift_range(target)?,
-        },
-        Action::RowInsert { sheet, at, count } => Action::RowInsert {
-            sheet,
-            at: shift_index(at, dr)?,
-            count,
-        },
-        Action::RowDelete { sheet, at, count } => Action::RowDelete {
-            sheet,
-            at: shift_index(at, dr)?,
-            count,
-        },
-        Action::ColInsert { sheet, at, count } => Action::ColInsert {
-            sheet,
-            at: shift_index(at, dc)?,
-            count,
-        },
-        Action::ColDelete { sheet, at, count } => Action::ColDelete {
-            sheet,
-            at: shift_index(at, dc)?,
-            count,
-        },
-        Action::SortApply {
-            sheet,
-            range,
-            keys,
-            has_header,
-        } => Action::SortApply {
-            sheet,
-            range: shift_range(range)?,
-            keys: keys
-                .into_iter()
-                .map(|k| {
-                    Some(engine::SortKey {
-                        column: shift_index(k.column, dc)?,
-                        ascending: k.ascending,
-                    })
-                })
-                .collect::<Option<Vec<_>>>()?,
-            has_header,
-        },
-        Action::MergeApply { sheet, range } => Action::MergeApply {
-            sheet,
-            range: shift_range(range)?,
-        },
-        Action::MergeClear { sheet, range } => Action::MergeClear {
-            sheet,
-            range: shift_range(range)?,
-        },
-        Action::FormatApply {
-            sheet,
-            range,
-            patches,
-        } => Action::FormatApply {
-            sheet,
-            range: shift_range(range)?,
-            patches,
-        },
-        Action::FormatClear { sheet, range } => Action::FormatClear {
-            sheet,
-            range: shift_range(range)?,
-        },
-        other => other,
-    })
-}
-
-/// Shift the relative references inside a formula. Anything that is not a
-/// formula, or that will not parse, is returned unchanged.
-fn shift_formula(input: &str, dr: i64, dc: i64) -> String {
-    let Some(body) = input.strip_prefix('=') else {
-        return input.to_string();
-    };
-    match engine::parser::parse_formula(body) {
-        Ok(ast) => format!("={}", engine::refs::offset(&ast, dr, dc).to_formula()),
-        Err(_) => input.to_string(),
-    }
-}
-
-fn retarget_sheet(a: Action, sheet: &str) -> Action {
-    let s = sheet.to_string();
-    match a {
-        Action::CellEdit { addr, input, .. } => Action::CellEdit {
-            sheet: s,
-            addr,
-            input,
-        },
-        Action::CellClear { addr, .. } => Action::CellClear { sheet: s, addr },
-        Action::RangeClear { range, .. } => Action::RangeClear { sheet: s, range },
-        Action::FillApply { source, target, .. } => Action::FillApply {
-            sheet: s,
-            source,
-            target,
-        },
-        Action::RowInsert { at, count, .. } => Action::RowInsert {
-            sheet: s,
-            at,
-            count,
-        },
-        Action::RowDelete { at, count, .. } => Action::RowDelete {
-            sheet: s,
-            at,
-            count,
-        },
-        Action::ColInsert { at, count, .. } => Action::ColInsert {
-            sheet: s,
-            at,
-            count,
-        },
-        Action::ColDelete { at, count, .. } => Action::ColDelete {
-            sheet: s,
-            at,
-            count,
-        },
-        Action::SortApply {
-            range,
-            keys,
-            has_header,
-            ..
-        } => Action::SortApply {
-            sheet: s,
-            range,
-            keys,
-            has_header,
-        },
-        Action::MergeApply { range, .. } => Action::MergeApply { sheet: s, range },
-        Action::MergeClear { range, .. } => Action::MergeClear { sheet: s, range },
-        Action::FormatApply { range, patches, .. } => Action::FormatApply {
-            sheet: s,
-            range,
-            patches,
-        },
-        Action::FormatClear { range, .. } => Action::FormatClear { sheet: s, range },
-        other => other,
-    }
-}
-
 /// A one-line description. Deliberately plain: the panel is asking someone to
 /// trust a suggestion, and vocabulary names are not an explanation.
 fn summarize(p: &Pattern, minutes: f64) -> String {
@@ -573,111 +350,13 @@ fn capitalize(s: &str) -> String {
     }
 }
 
-/// What a routine would change, without changing it.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct DryRun {
-    pub sheet: String,
-    pub anchor: String,
-    pub changes: Vec<CellChange>,
-    /// Actions the engine refused, with its reason. A routine that cannot run
-    /// cleanly must say so before the user presses Run, not after.
-    pub errors: Vec<String>,
-    pub requires: Vec<Requirement>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CellChange {
-    pub sheet: String,
-    pub addr: String,
-    pub before: String,
-    pub after: String,
-}
-
-/// Apply a routine to a *copy* of the engine and report the difference.
-///
-/// The sandbox is a clone rather than an apply-then-undo: undo is itself
-/// engine behaviour, and a preview that leaned on undo being correct could
-/// not show the user a bug in undo.
-pub fn dry_run(engine: &Engine, routine: &Routine, sheet: &str, anchor: CellAddr) -> DryRun {
-    let before = engine.wb.state_snapshot();
-    let mut sandbox = engine.clone();
-    let mut errors = Vec::new();
-    for action in routine.actions_at(sheet, anchor) {
-        if let Err(e) = sandbox.apply(&action) {
-            errors.push(e.to_string());
-        }
-    }
-    let after = sandbox.wb.state_snapshot();
-
-    DryRun {
-        sheet: sheet.to_string(),
-        anchor: anchor.to_a1(),
-        changes: diff_snapshots(&before, &after),
-        errors,
-        requires: routine.requires.clone(),
-    }
-}
-
-type SheetCells = (String, serde_json::Map<String, serde_json::Value>);
-
-/// Cell-level difference between two state snapshots, in reading order.
-fn diff_snapshots(before: &serde_json::Value, after: &serde_json::Value) -> Vec<CellChange> {
-    let mut out = Vec::new();
-    let empty = serde_json::Map::new();
-    let sheets_of = |v: &serde_json::Value| -> Vec<SheetCells> {
-        v["sheets"]
-            .as_array()
-            .map(|a| {
-                a.iter()
-                    .map(|s| {
-                        (
-                            s["name"].as_str().unwrap_or_default().to_string(),
-                            s["cells"].as_object().cloned().unwrap_or_default(),
-                        )
-                    })
-                    .collect()
-            })
-            .unwrap_or_default()
-    };
-    let before_sheets = sheets_of(before);
-    let after_sheets = sheets_of(after);
-
-    for (name, after_cells) in &after_sheets {
-        let before_cells = before_sheets
-            .iter()
-            .find(|(n, _)| n == name)
-            .map(|(_, c)| c)
-            .unwrap_or(&empty);
-        let mut addrs: Vec<&String> = after_cells.keys().chain(before_cells.keys()).collect();
-        addrs.sort_by_key(|a| CellAddr::parse_a1(a).unwrap_or(CellAddr::new(0, 0)));
-        addrs.dedup();
-        for addr in addrs {
-            let b = before_cells
-                .get(addr)
-                .and_then(|c| c["value"].as_str())
-                .unwrap_or("");
-            let a = after_cells
-                .get(addr)
-                .and_then(|c| c["value"].as_str())
-                .unwrap_or("");
-            if a != b {
-                out.push(CellChange {
-                    sheet: name.clone(),
-                    addr: addr.clone(),
-                    before: b.to_string(),
-                    after: a.to_string(),
-                });
-            }
-        }
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::mine::Occurrence;
     use crate::normalize::Token;
+    use engine::routine::dry_run;
+    use engine::{CellChange, Engine};
     use serde_json::json;
 
     fn step(source: usize) -> Step {
@@ -717,60 +396,6 @@ mod tests {
             .unwrap();
         }
         e
-    }
-
-    /* ------------------------------------------------------------ rebase */
-
-    #[test]
-    fn rebasing_shifts_the_address_and_the_formula_together() {
-        let a = Action::CellEdit {
-            sheet: "S".into(),
-            addr: CellAddr::parse_a1("E2").unwrap(),
-            input: "=SUM(B2:D2)".into(),
-        };
-        match rebase(&a, 10, 0).unwrap() {
-            Action::CellEdit { addr, input, .. } => {
-                assert_eq!(addr.to_a1(), "E12");
-                assert_eq!(input, "=SUM(B12:D12)");
-            }
-            other => panic!("{other:?}"),
-        }
-    }
-
-    #[test]
-    fn rebasing_leaves_absolute_references_alone() {
-        let a = Action::CellEdit {
-            sheet: "S".into(),
-            addr: CellAddr::parse_a1("E2").unwrap(),
-            input: "=B2*$F$1".into(),
-        };
-        match rebase(&a, 5, 0).unwrap() {
-            Action::CellEdit { input, .. } => assert_eq!(input, "=B7*$F$1"),
-            other => panic!("{other:?}"),
-        }
-    }
-
-    #[test]
-    fn rebasing_off_the_grid_is_refused_rather_than_clamped() {
-        let a = Action::CellEdit {
-            sheet: "S".into(),
-            addr: CellAddr::parse_a1("A1").unwrap(),
-            input: "1".into(),
-        };
-        assert!(rebase(&a, -1, 0).is_none());
-    }
-
-    #[test]
-    fn rebasing_a_literal_does_not_mangle_it() {
-        let a = Action::CellEdit {
-            sheet: "S".into(),
-            addr: CellAddr::parse_a1("A1").unwrap(),
-            input: "A1 is fine as text".into(),
-        };
-        match rebase(&a, 3, 0).unwrap() {
-            Action::CellEdit { input, .. } => assert_eq!(input, "A1 is fine as text"),
-            other => panic!("{other:?}"),
-        }
     }
 
     /* -------------------------------------------------------- synthesize */

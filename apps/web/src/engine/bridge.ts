@@ -69,6 +69,32 @@ export interface SheetInfo {
   merged: string[]
 }
 
+/** One cell a routine would change, as the sandbox reports it. */
+export interface CellChange {
+  sheet: string
+  addr: string
+  before: string
+  after: string
+}
+
+/** A value a routine cannot supply, because the log only has a hash of it. */
+export interface RoutineRequirement {
+  row_offset: number
+  col_offset: number
+  kind: string
+}
+
+export interface RoutinePreview {
+  sheet: string
+  anchor: string
+  changes: CellChange[]
+  /** Cells whose formatting would change, described in words. */
+  format_changes: CellChange[]
+  /** Actions the engine would refuse, with its reason. */
+  errors: string[]
+  requires: RoutineRequirement[]
+}
+
 export interface ImportWarning {
   kind: string
   detail: string
@@ -198,6 +224,31 @@ export class EngineHandle {
 
   cellFormat(sheet: string, row: number, col: number): CellFormat {
     return this.inner.cellFormat(sheet, row, col) as CellFormat
+  }
+
+  /** What a routine would change here, without changing it. */
+  previewRoutine(
+    body: unknown,
+    sheet: string,
+    row: number,
+    col: number,
+  ): RoutinePreview {
+    return JSON.parse(
+      this.inner.previewRoutine(JSON.stringify(body), sheet, row, col),
+    ) as RoutinePreview
+  }
+
+  /**
+   * The actions a routine would apply here.
+   *
+   * Handed back rather than applied inside the engine, so the caller pushes
+   * them through the same `applyBatch` every other gesture uses and the
+   * capture pipeline sees them without knowing routines exist.
+   */
+  routineActions(body: unknown, sheet: string, row: number, col: number): Action[] {
+    return JSON.parse(
+      this.inner.routineActions(JSON.stringify(body), sheet, row, col),
+    ) as Action[]
   }
 
   canUndo(): boolean {

@@ -635,3 +635,92 @@ fn reapplying_the_same_format_reports_no_cells_changed() {
         other => panic!("expected FormatApplied, got {other:?}"),
     }
 }
+
+/* --------------------------------------------------------------- batches */
+
+#[test]
+fn a_batch_undoes_as_one_gesture() {
+    // The bug this pins: applying a batch one action at a time pushes one
+    // undo entry per action, so a five-step routine took five Ctrl+Z to
+    // reject. Nobody would use a suggestion that costs that much to refuse.
+    let mut e = Engine::new();
+    set(&mut e, "A1", "seed");
+    e.apply_batch(
+        &[
+            Action::CellEdit {
+                sheet: "Sheet1".into(),
+                addr: a1("B1"),
+                input: "=A1&\"!\"".into(),
+            },
+            Action::CellEdit {
+                sheet: "Sheet1".into(),
+                addr: a1("C1"),
+                input: "=B1&\"?\"".into(),
+            },
+            Action::FormatApply {
+                sheet: "Sheet1".into(),
+                range: r("B1:C1"),
+                patches: vec![FormatPatch::Bold(true)],
+            },
+        ],
+        "run routine",
+    )
+    .unwrap();
+    assert_eq!(input(&e, "C1"), "=B1&\"?\"");
+    assert!(format_at(&e, "B1").bold);
+
+    e.apply(&Action::Undo).unwrap();
+    assert_eq!(input(&e, "B1"), "", "one undo should take the whole batch");
+    assert_eq!(input(&e, "C1"), "");
+    assert!(format_at(&e, "B1").is_default());
+    // ...and no further, so the work before the batch survives.
+    assert_eq!(input(&e, "A1"), "seed");
+
+    // Redo brings all of it back, also in one step.
+    e.apply(&Action::Redo).unwrap();
+    assert_eq!(input(&e, "C1"), "=B1&\"?\"");
+    assert!(format_at(&e, "B1").bold);
+}
+
+#[test]
+fn a_single_action_batch_is_still_one_undo_step() {
+    let mut e = Engine::new();
+    e.apply_batch(
+        &[Action::CellEdit {
+            sheet: "Sheet1".into(),
+            addr: a1("A1"),
+            input: "1".into(),
+        }],
+        "run routine",
+    )
+    .unwrap();
+    e.apply(&Action::Undo).unwrap();
+    assert_eq!(input(&e, "A1"), "");
+    assert!(!e.can_undo());
+}
+
+#[test]
+fn a_batch_that_fails_part_way_leaves_what_it_did() {
+    // Documented behaviour: the caller is looking at a partial result and
+    // should be able to step back through it, so those entries stay separate.
+    let mut e = Engine::new();
+    let err = e.apply_batch(
+        &[
+            Action::CellEdit {
+                sheet: "Sheet1".into(),
+                addr: a1("A1"),
+                input: "1".into(),
+            },
+            Action::CellEdit {
+                sheet: "NoSuchSheet".into(),
+                addr: a1("A1"),
+                input: "2".into(),
+            },
+        ],
+        "run routine",
+    );
+    assert!(err.is_err());
+    assert_eq!(e.value_at("Sheet1", "A1"), Value::Number(1.0));
+    e.apply(&Action::Undo).unwrap();
+    assert_eq!(e.value_at("Sheet1", "A1"), Value::Empty);
+}

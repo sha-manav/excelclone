@@ -131,17 +131,21 @@ impl Gridline {
         serde_json::to_string(&events).map_err(js_err)
     }
 
-    /// Apply several actions as one unit, returning every event produced.
-    /// A failure part-way through leaves the earlier actions applied — the
-    /// caller decides whether to undo, exactly as a user would.
+    /// Apply several actions as one user-visible gesture, returning every
+    /// event produced.
+    ///
+    /// One undo step, not one per action: a routine that took five actions to
+    /// express is still one thing the user asked for. A failure part-way
+    /// through leaves the earlier actions applied — the caller decides
+    /// whether to undo, exactly as a user would.
     #[wasm_bindgen(js_name = applyBatchJson)]
     pub fn apply_batch_json(&mut self, actions_json: &str) -> Result<String, JsValue> {
         let actions: Vec<Action> = serde_json::from_str(actions_json).map_err(js_err)?;
-        let mut all = Vec::new();
-        for a in &actions {
-            all.extend(self.engine.apply(a).map_err(js_err)?);
-        }
-        serde_json::to_string(&all).map_err(js_err)
+        let events = self
+            .engine
+            .apply_batch(&actions, "run routine")
+            .map_err(js_err)?;
+        serde_json::to_string(&events).map_err(js_err)
     }
 
     /// Display data for a visible block of cells.
@@ -312,6 +316,43 @@ impl Gridline {
             .map(|id| self.engine.wb.formats.resolve(Some(id)))
             .unwrap_or_default();
         to_js(&f)
+    }
+
+    /// What a routine would change if it ran at `(row, col)`, without
+    /// changing anything.
+    #[wasm_bindgen(js_name = previewRoutine)]
+    pub fn preview_routine(
+        &self,
+        body_json: &str,
+        sheet: &str,
+        row: u32,
+        col: u32,
+    ) -> Result<String, JsValue> {
+        let routine: engine::Routine = serde_json::from_str(body_json).map_err(js_err)?;
+        let preview =
+            engine::routine::dry_run(&self.engine, &routine, sheet, CellAddr::new(row, col));
+        serde_json::to_string(&preview).map_err(js_err)
+    }
+
+    /// The actions a routine would apply at `(row, col)`.
+    ///
+    /// Deliberately *not* a `runRoutine` that applies them here. Handing the
+    /// actions back lets the client push them through the same `applyBatch`
+    /// every other gesture uses, which means the capture pipeline sees them
+    /// without anything being taught about routines. A second execution path
+    /// inside the engine would be exactly the side door the single-mutation
+    /// rule exists to forbid.
+    #[wasm_bindgen(js_name = routineActions)]
+    pub fn routine_actions(
+        &self,
+        body_json: &str,
+        sheet: &str,
+        row: u32,
+        col: u32,
+    ) -> Result<String, JsValue> {
+        let routine: engine::Routine = serde_json::from_str(body_json).map_err(js_err)?;
+        let actions = routine.actions_at(sheet, CellAddr::new(row, col));
+        serde_json::to_string(&actions).map_err(js_err)
     }
 
     /// Inject the wall clock so NOW/TODAY stay replayable.
