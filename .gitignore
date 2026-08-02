@@ -1,0 +1,10 @@
+/target
+node_modules/
+dist/
+apps/web/dist/
+crates/wasm/pkg/
+*.db
+*.db-shm
+*.db-wal
+.DS_Store
+data/
