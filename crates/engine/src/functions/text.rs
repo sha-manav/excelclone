@@ -359,7 +359,8 @@ fn find_index(needle: &str, hay: &str, start: usize) -> Option<usize> {
     if n.is_empty() {
         return Some(start);
     }
-    (from..h.len()).find(|&p| p + n.len() <= h.len() && h[p..p + n.len()] == n[..])
+    (from..h.len())
+        .find(|&p| p + n.len() <= h.len() && h[p..p + n.len()] == n[..])
         .map(|p| p + 1)
 }
 

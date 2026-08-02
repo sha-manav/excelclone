@@ -1,0 +1,10 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 3e6964c25158dfc6eb3768b9596ccc859759d3c6229aa6ebcf8c6a20dfe11dd9 # shrinks to seeds = [(CellAddr { row: 1, col: 0 }, "=IF(A1>2,B1,C1)")], ops = []
+cc cc883321f7fb8174235dcfa1a3ec4e0592d8fa7053357db47df68d4d6c79bc72 # shrinks to seeds = [(CellAddr { row: 1, col: 1 }, "=IF(A1>2,B1,C1)"), (CellAddr { row: 1, col: 2 }, "=SUM(A1:A4)*C2"), (CellAddr { row: 0, col: 1 }, "=SUM(A1:A4)*C2")], at = 0, count = 1
+cc b050ee668e1652f446833a447a010244b32fa38a115807ca74f313b6abbd103d # shrinks to seeds = [(CellAddr { row: 0, col: 1 }, "=IF(A1>2,B1,C1)"), (CellAddr { row: 0, col: 3 }, "=IF(A1>2,B1,C1)")], src = RangeAddr { start: CellAddr { row: 0, col: 0 }, end: CellAddr { row: 0, col: 0 } }, dst_anchor = CellAddr { row: 0, col: 0 }, mode = Formulas, cut = false, at = 0, count = 1, op = 0
+cc ab2c29746cdf5864ee59e10517339950dc4f3d370e1f1c26ee20abd095cd5848 # shrinks to seeds = [(CellAddr { row: 0, col: 1 }, "=IF(A1>2,B1,C1)"), (CellAddr { row: 0, col: 3 }, "=IF(A1>2,B1,C1)")], at = 0, count = 1

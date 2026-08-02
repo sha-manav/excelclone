@@ -404,6 +404,13 @@ impl Engine {
         });
     }
 
+    /// Rebuild the dependency graph and recalculate every formula. A full
+    /// recalculation must always agree with the incremental one; the
+    /// property tests assert exactly that.
+    pub fn recalc_all(&mut self) {
+        self.rebuild_deps_and_recalc_all();
+    }
+
     pub fn can_undo(&self) -> bool {
         !self.undo_stack.is_empty()
     }
@@ -586,6 +593,11 @@ impl Engine {
     ) -> Result<Vec<Event>, ApplyError> {
         if !addr.is_valid() {
             return Err(ApplyError::BadAddr);
+        }
+        // Committing an empty edit leaves the cell blank rather than storing
+        // an empty string, so ISBLANK and COUNTBLANK behave as in Excel.
+        if input.is_empty() {
+            return self.cell_clear(sheet, addr);
         }
         let sid = self.sheet_id(sheet)?;
         let key = CellKey { sheet: sid, addr };
@@ -918,9 +930,80 @@ impl Engine {
             }
         }
 
-        // 4. Anything unprocessed is part of (or downstream inside) a cycle.
+        // 4. Whatever Kahn could not order is a cycle or sits downstream of
+        //    one. Only cells genuinely on a cycle become #CIRC!; the rest
+        //    evaluate normally, reading #CIRC! from their precedents only
+        //    where they actually use them. Distinguishing the two matters:
+        //    otherwise `=IF(FALSE,circular,ok)` would report #CIRC! after a
+        //    full recalculation but its real value after an incremental one,
+        //    and the replay invariant would not hold.
+        let remaining: Vec<CellKey> = dirty_formulas
+            .iter()
+            .copied()
+            .filter(|k| !processed.contains(k))
+            .collect();
+        let cyclic = cyclic_nodes(&remaining, &edges);
+        for &k in &remaining {
+            if cyclic.contains(&k) && self.store_value(k, Value::Error(ErrorKind::Circ)) {
+                changed.push(k);
+            }
+        }
+
+        // 5. The survivors form a DAG once the cycles are pinned; evaluate
+        //    them in topological order.
+        let rest: Vec<CellKey> = remaining
+            .iter()
+            .copied()
+            .filter(|k| !cyclic.contains(k))
+            .collect();
+        let rest_set: HashSet<CellKey> = rest.iter().copied().collect();
+        let mut rest_indeg: HashMap<CellKey, usize> = rest.iter().map(|k| (*k, 0)).collect();
+        for (from, tos) in &edges {
+            if !rest_set.contains(from) {
+                continue;
+            }
+            for to in tos {
+                if let Some(e) = rest_indeg.get_mut(to) {
+                    *e += 1;
+                }
+            }
+        }
+        let mut ready: Vec<CellKey> = rest
+            .iter()
+            .copied()
+            .filter(|k| rest_indeg[k] == 0)
+            .collect();
+        ready.sort();
+        ready.reverse();
+        while let Some(k) = ready.pop() {
+            if self.eval_and_store(k) {
+                changed.push(k);
+            }
+            if let Some(deps) = edges.get(&k) {
+                let mut newly: Vec<CellKey> = Vec::new();
+                for d in deps.clone() {
+                    if let Some(e) = rest_indeg.get_mut(&d) {
+                        *e -= 1;
+                        if *e == 0 {
+                            newly.push(d);
+                        }
+                    }
+                }
+                newly.sort();
+                for n in newly.into_iter().rev() {
+                    ready.push(n);
+                }
+            }
+        }
+
+        // Legacy fallback: nothing should be left, but never leave a formula
+        // cell holding a stale value.
         for &k in &dirty_formulas {
-            if !processed.contains(&k) && self.store_value(k, Value::Error(ErrorKind::Circ)) {
+            if !processed.contains(&k)
+                && !cyclic.contains(&k)
+                && !rest_set.contains(&k)
+                && self.store_value(k, Value::Error(ErrorKind::Circ))
+            {
                 changed.push(k);
             }
         }
@@ -1057,4 +1140,93 @@ fn sheet_matches(sheet: &Option<String>, name: &str) -> bool {
         .as_deref()
         .map(|s| s.eq_ignore_ascii_case(name))
         .unwrap_or(false)
+}
+
+/// The cells that genuinely lie on a dependency cycle: members of a strongly
+/// connected component of more than one node, plus self-referencing cells.
+/// Nodes merely reachable *from* a cycle are excluded, so they can still be
+/// evaluated normally.
+///
+/// Iterative Tarjan — a recursive implementation would risk blowing the stack
+/// on deep dependency chains in real workbooks.
+fn cyclic_nodes(nodes: &[CellKey], edges: &HashMap<CellKey, Vec<CellKey>>) -> HashSet<CellKey> {
+    let node_set: HashSet<CellKey> = nodes.iter().copied().collect();
+    let mut index_of: HashMap<CellKey, u32> = HashMap::new();
+    let mut low: HashMap<CellKey, u32> = HashMap::new();
+    let mut on_stack: HashSet<CellKey> = HashSet::new();
+    let mut stack: Vec<CellKey> = Vec::new();
+    let mut next_index: u32 = 0;
+    let mut cyclic: HashSet<CellKey> = HashSet::new();
+
+    // Each frame tracks how many of the node's successors we have visited.
+    let mut frames: Vec<(CellKey, usize)> = Vec::new();
+
+    for &root in nodes {
+        if index_of.contains_key(&root) {
+            continue;
+        }
+        frames.push((root, 0));
+        index_of.insert(root, next_index);
+        low.insert(root, next_index);
+        next_index += 1;
+        stack.push(root);
+        on_stack.insert(root);
+
+        while let Some(&mut (v, ref mut child_i)) = frames.last_mut() {
+            let successors = edges.get(&v).map(|s| s.as_slice()).unwrap_or(&[]);
+            // Skip successors outside the subgraph under consideration.
+            let mut advanced = false;
+            while *child_i < successors.len() {
+                let w = successors[*child_i];
+                *child_i += 1;
+                if !node_set.contains(&w) {
+                    continue;
+                }
+                if w == v {
+                    // A self-reference is a cycle of one.
+                    cyclic.insert(v);
+                    continue;
+                }
+                if let std::collections::hash_map::Entry::Vacant(slot) = index_of.entry(w) {
+                    slot.insert(next_index);
+                    low.insert(w, next_index);
+                    next_index += 1;
+                    stack.push(w);
+                    on_stack.insert(w);
+                    frames.push((w, 0));
+                    advanced = true;
+                    break;
+                } else if on_stack.contains(&w) {
+                    let lw = index_of[&w];
+                    let lv = low[&v];
+                    low.insert(v, lv.min(lw));
+                }
+            }
+            if advanced {
+                continue;
+            }
+
+            // All successors explored: close this node out.
+            let (v, _) = frames.pop().expect("frame exists");
+            if low[&v] == index_of[&v] {
+                let mut component = Vec::new();
+                while let Some(w) = stack.pop() {
+                    on_stack.remove(&w);
+                    component.push(w);
+                    if w == v {
+                        break;
+                    }
+                }
+                if component.len() > 1 {
+                    cyclic.extend(component);
+                }
+            }
+            if let Some(&mut (parent, _)) = frames.last_mut() {
+                let lv = low[&v];
+                let lp = low[&parent];
+                low.insert(parent, lp.min(lv));
+            }
+        }
+    }
+    cyclic
 }

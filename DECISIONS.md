@@ -25,3 +25,28 @@ One-line rationale for every non-obvious choice.
 - **`now_ms` is injected into the engine rather than read from the system clock** — `NOW`/`TODAY` must be replayable from the event log.
 - **Excel's 1900 leap-year quirk is NOT reproduced** — dates use a plain proleptic serial system; documented per spec §5. Revisit in the Parity Track if the oracle corpus demands it.
 - **`ROUND` snaps within 1e-9 before rounding half-away-from-zero** — Excel rounds the *decimal* the user typed, so `ROUND(2.675,2)` is 2.68 even though the binary double is just below 2.675.
+
+## M2 — Engine complete
+
+**Date system**
+- **Excel's phantom 1900-02-29 IS reproduced** (serials ≥ 61 use a 1899-12-30 epoch) — the spec permits skipping it, but every real workbook's dates would then be off by one against Excel. Serial 60 itself has no calendar date and converts to `#NUM!` rather than a fake 1900-02-29.
+
+**Structural operations**
+- **Undo stores recorded previous state, not inverse actions** — cell-level ops record the cells they touched; ops that relocate cells wholesale (insert/delete row/col, sort, merge, sheet ops) record the affected sheets. Restoring returns the replaced state, so undo and redo are the same operation run in opposite directions, and both flow through `apply()` and emit events. A synthesized inverse *action* cannot express `#REF!` damage faithfully; recorded state can.
+- **A copy tiles into a target that is an exact multiple of the source, else pastes once at the anchor** — matches Excel's common cases without implementing its full paste-shape dialog.
+- **Cut/paste moves formulas verbatim and retargets references elsewhere that pointed into the moved block** — matches Excel. A range reference follows only when it lies *entirely* inside the moved block; partial overlaps are left alone, as in Excel.
+- **Fill treats a single numeric seed as a copy, two or more as a linear series** (constant step, verified consistent). Excel uses a least-squares trend for longer selections; we use the constant step and fall back to repeating the block when no consistent progression exists.
+- **Fill has no date awareness yet** — a lone date cell copies rather than incrementing by a day, because number formats (which is how Excel knows a number is a date) arrive in M5. Revisit then.
+- **Sort shifts moved rows' relative formula references by the distance travelled** and places blanks last in both directions, matching Excel.
+- **Filters are view state** (`Sheet::hidden_rows`), computed from a checkbox-style allowed-value set; no cell values change and no recalculation is triggered.
+- **Committing an empty cell edit clears the cell** rather than storing an empty string, so `ISBLANK`/`COUNTBLANK` match Excel.
+
+**Function semantics decided while implementing**
+- **Lookups return `0` for a blank result cell** (`VLOOKUP`/`HLOOKUP`/`INDEX`/`XLOOKUP`), matching Excel; `CHOOSE` passes `Empty` through since it evaluates an expression rather than reading a grid.
+- **`XLOOKUP` supports exact modes only** (`match_mode` 0 and 2); approximate and binary-search modes return `#VALUE!` until P2.
+- **`INDEX` with a 0 index is honoured only when that dimension is a single row/column**; a whole-row/column array result needs the dynamic-array model (P2), so anything else is `#VALUE!`.
+- **Approximate lookup is a linear "last entry ≤ lookup" scan, not a binary search** — degrades predictably on unsorted data instead of reproducing Excel's binary-search surprises. Pinned for the oracle corpus.
+- **Criteria comparisons are type-restricted**: `">100"` matches only numbers, `"apple"` only text; `"<>"` is the one inclusive operator. Without this, Excel's cross-type ordering (text > number) would make `">100"` match `"zebra"`.
+- **`RAND`/`RANDBETWEEN` derive from the injected clock via a pure SplitMix64 mixer, not system entropy** — the engine must stay replayable and I/O-free. Consequence: two `RAND()` calls with identical arguments in one recalc return the same value.
+- **`COUNTIF` and friends propagate errors found anywhere in a scanned range**, where Excel ignores them. Pinned as an open oracle question for P0 rather than guessed at.
+- **`numfmt` fails soft**: an unrecognised format code renders as General instead of erroring, because it only affects display.

@@ -3,10 +3,13 @@
 //! Function names are uppercase at parse time; unknown names evaluate to
 //! `#NAME?` (fail loudly, never silently).
 
+mod condagg;
 mod date;
 mod logic;
 mod lookup;
 mod math;
+pub mod numfmt;
+mod text;
 
 use crate::ast::Expr;
 use crate::eval::{EvalCtx, Operand};
@@ -49,6 +52,31 @@ pub fn call(ctx: &EvalCtx, name: &str, args: &[Expr]) -> Value {
         "MATCH" => lookup::match_fn(ctx, args),
         "XLOOKUP" => lookup::xlookup(ctx, args),
         "CHOOSE" => lookup::choose(ctx, args),
+        // Text
+        "CONCAT" => text::concat(ctx, args),
+        "CONCATENATE" => text::concatenate(ctx, args),
+        "TEXTJOIN" => text::textjoin(ctx, args),
+        "LEFT" => text::left(ctx, args),
+        "RIGHT" => text::right(ctx, args),
+        "MID" => text::mid(ctx, args),
+        "LEN" => text::len(ctx, args),
+        "TRIM" => text::trim(ctx, args),
+        "UPPER" => text::upper(ctx, args),
+        "LOWER" => text::lower(ctx, args),
+        "PROPER" => text::proper(ctx, args),
+        "SUBSTITUTE" => text::substitute(ctx, args),
+        "REPLACE" => text::replace_fn(ctx, args),
+        "FIND" => text::find(ctx, args),
+        "SEARCH" => text::search(ctx, args),
+        "TEXT" => text::text(ctx, args),
+        "VALUE" => text::value(ctx, args),
+        // Conditional aggregation
+        "COUNTIF" => condagg::countif(ctx, args),
+        "COUNTIFS" => condagg::countifs(ctx, args),
+        "SUMIF" => condagg::sumif(ctx, args),
+        "SUMIFS" => condagg::sumifs(ctx, args),
+        "AVERAGEIF" => condagg::averageif(ctx, args),
+        "AVERAGEIFS" => condagg::averageifs(ctx, args),
         // Date/time
         "TODAY" => date::today(ctx, args),
         "NOW" => date::now(ctx, args),

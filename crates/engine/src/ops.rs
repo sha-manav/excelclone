@@ -187,25 +187,22 @@ impl Engine {
             ((n + (step % n)) % n) as usize
         };
         let src_addr = seed_addrs[idx];
-        let new_cell = match &seeds[idx] {
-            None => None,
-            Some(c) => Some(match &c.content {
-                // Formulas always shift by the real distance moved.
-                CellContent::Formula { ast, .. } => {
-                    let dr = addr.row as i64 - src_addr.row as i64;
-                    let dc = addr.col as i64 - src_addr.col as i64;
-                    let new_ast = refs::offset(ast, dr, dc);
-                    Cell {
-                        content: CellContent::Formula {
-                            src: new_ast.to_formula(),
-                            ast: new_ast,
-                            cached: Value::Empty,
-                        },
-                    }
+        let new_cell = seeds[idx].as_ref().map(|c| match &c.content {
+            // Formulas always shift by the real distance moved.
+            CellContent::Formula { ast, .. } => {
+                let dr = addr.row as i64 - src_addr.row as i64;
+                let dc = addr.col as i64 - src_addr.col as i64;
+                let new_ast = refs::offset(ast, dr, dc);
+                Cell {
+                    content: CellContent::Formula {
+                        src: new_ast.to_formula(),
+                        ast: new_ast,
+                        cached: Value::Empty,
+                    },
                 }
-                CellContent::Literal(v) => Cell::literal(series.extend(v, step, n)),
-            }),
-        };
+            }
+            CellContent::Literal(v) => Cell::literal(series.extend(v, step, n)),
+        });
         match new_cell {
             Some(nc) => self.wb.sheet_mut(sheet).unwrap().cells.insert(addr, nc),
             None => self.wb.sheet_mut(sheet).unwrap().cells.remove(&addr),
@@ -519,14 +516,18 @@ fn tiling(src: RangeAddr, dst: RangeAddr) -> (u32, u32) {
     (rows, cols)
 }
 
-/// Positions to fill on one line, split into those before and after the
-/// source block, each paired with its signed step distance.
+/// Positions to fill on one line, paired with their signed step distance
+/// from the source block.
+type FillTargets = Vec<(i64, CellAddr)>;
+
+/// Fill positions on one line, split into those before and after the source
+/// block.
 fn fill_targets(
     src: RangeAddr,
     dst: RangeAddr,
     line: u32,
     down: bool,
-) -> (Vec<(i64, CellAddr)>, Vec<(i64, CellAddr)>) {
+) -> (FillTargets, FillTargets) {
     let mut before = Vec::new();
     let mut after = Vec::new();
     if down {

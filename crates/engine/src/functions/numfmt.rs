@@ -149,8 +149,7 @@ enum Tok {
 
 fn starts_ampm(cs: &[char], i: usize) -> bool {
     let want = ['a', 'm', '/', 'p', 'm'];
-    cs.len() >= i + want.len()
-        && (0..want.len()).all(|k| cs[i + k].to_ascii_lowercase() == want[k])
+    cs.len() >= i + want.len() && (0..want.len()).all(|k| cs[i + k].to_ascii_lowercase() == want[k])
 }
 
 fn tokenize_date(code: &str) -> Vec<Tok> {
@@ -226,8 +225,8 @@ fn resolve_minutes(toks: Vec<Tok>) -> Vec<Tok> {
             Tok::MonthOrMinute(padded) => {
                 let prev = toks[..i].iter().rev().find(|t| !matches!(t, Tok::Lit(_)));
                 let next = toks[i + 1..].iter().find(|t| !matches!(t, Tok::Lit(_)));
-                let minutes = matches!(prev, Some(Tok::Hour(_)))
-                    || matches!(next, Some(Tok::Second(_)));
+                let minutes =
+                    matches!(prev, Some(Tok::Hour(_))) || matches!(next, Some(Tok::Second(_)));
                 out.push(if minutes {
                     Tok::Minute(*padded)
                 } else {
@@ -425,7 +424,7 @@ fn group_thousands(digits: &str) -> String {
     let n = digits.len();
     let mut out = String::with_capacity(n + n / 3);
     for (i, c) in digits.chars().enumerate() {
-        if i > 0 && (n - i) % 3 == 0 {
+        if i > 0 && (n - i).is_multiple_of(3) {
             out.push(',');
         }
         out.push(c);
@@ -455,7 +454,11 @@ fn render_number(n: f64, p: &NumPattern) -> String {
         frac.pop();
     }
     if int_digits.len() < p.int_zeros {
-        int_digits = format!("{}{}", "0".repeat(p.int_zeros - int_digits.len()), int_digits);
+        int_digits = format!(
+            "{}{}",
+            "0".repeat(p.int_zeros - int_digits.len()),
+            int_digits
+        );
     }
     if int_digits.is_empty() && frac.is_empty() {
         int_digits.push('0');
@@ -588,10 +591,7 @@ mod tests {
             format_value(&Value::Bool(true), "0.00"),
             Ok("TRUE".to_string())
         );
-        assert_eq!(
-            format_value(&Value::Empty, "0.00"),
-            Ok("0.00".to_string())
-        );
+        assert_eq!(format_value(&Value::Empty, "0.00"), Ok("0.00".to_string()));
         assert_eq!(
             format_value(&Value::Error(ErrorKind::Div0), "0.00"),
             Err(ErrorKind::Div0)
