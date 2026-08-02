@@ -46,7 +46,8 @@ cat <<EOF
   Development token (already in .dev-token):
     $TOKEN
 
-  The web app reads it from VITE_DEV_TOKEN, so no manual step is needed.
+  The web app adopts it from VITE_DEV_TOKEN on first load (dev builds only),
+  so no manual step is needed. A token already in localStorage wins.
 
 EOF
 

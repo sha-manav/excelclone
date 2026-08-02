@@ -92,7 +92,14 @@ export interface RoutinePreview {
   format_changes: CellChange[]
   /** Actions the engine would refuse, with its reason. */
   errors: string[]
+  /** Everything the routine cannot supply, wherever it runs. */
   requires: RoutineRequirement[]
+  /**
+   * The subset of `requires` whose target cell is empty here. Optional so a
+   * preview from an older engine still parses; the panel falls back to
+   * `requires`, which over-reports rather than under-reports.
+   */
+  unmet?: RoutineRequirement[]
 }
 
 export interface ImportWarning {

@@ -265,7 +265,15 @@ pub struct DryRun {
     /// Actions the engine refused, with its reason. A routine that cannot run
     /// cleanly must say so before the user presses Run, not after.
     pub errors: Vec<String>,
+    /// Everything the routine cannot supply, whatever the target looks like.
     pub requires: Vec<Requirement>,
+    /// The subset of `requires` whose target cell is still empty here.
+    ///
+    /// A routine that needs a name in column A is not blocked by that when
+    /// the name is already typed. Telling the user to type something they can
+    /// see on screen is the kind of small wrongness that makes people stop
+    /// reading a panel.
+    pub unmet: Vec<Requirement>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -292,6 +300,24 @@ pub fn dry_run(engine: &Engine, routine: &Routine, sheet: &str, anchor: CellAddr
     }
     let after = sandbox.wb.state_snapshot();
 
+    let unmet = routine
+        .requires
+        .iter()
+        .filter(|q| {
+            let Some(addr) = shifted(anchor, q) else {
+                // Off the grid: it cannot be filled in, so it is certainly
+                // not filled in.
+                return true;
+            };
+            engine
+                .wb
+                .sheet_by_name(sheet)
+                .map(|s| s.value(addr) == crate::value::Value::Empty)
+                .unwrap_or(true)
+        })
+        .cloned()
+        .collect();
+
     DryRun {
         sheet: sheet.to_string(),
         anchor: anchor.to_a1(),
@@ -299,7 +325,19 @@ pub fn dry_run(engine: &Engine, routine: &Routine, sheet: &str, anchor: CellAddr
         format_changes: diff_formats(&before, &after),
         errors,
         requires: routine.requires.clone(),
+        unmet,
     }
+}
+
+/// Where a requirement lands when the routine runs at `anchor`.
+fn shifted(anchor: CellAddr, q: &Requirement) -> Option<CellAddr> {
+    let row = anchor.row as i64 + q.row_offset;
+    let col = anchor.col as i64 + q.col_offset;
+    if row < 0 || col < 0 {
+        return None;
+    }
+    let addr = CellAddr::new(row as u32, col as u32);
+    addr.is_valid().then_some(addr)
 }
 
 /// Formatting differences between two snapshots, described in words.
@@ -494,6 +532,54 @@ mod tests {
             Action::CellEdit { input, .. } => assert_eq!(input, "A1 is fine as text"),
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn a_requirement_already_filled_in_is_not_reported_as_missing() {
+        // Telling someone to type a value they can see on screen is the kind
+        // of small wrongness that makes people stop reading a panel.
+        let mut engine = Engine::new();
+        let r = Routine {
+            id: "rt_1".into(),
+            summary: "finish the row".into(),
+            anchor: "A5".into(),
+            actions: vec![Action::CellEdit {
+                sheet: "<routine>".into(),
+                addr: CellAddr::parse_a1("B5").unwrap(),
+                input: "=A5*2".into(),
+            }],
+            // The name in column A, which the log only ever hashed.
+            requires: vec![Requirement {
+                row_offset: 0,
+                col_offset: 0,
+                kind: "number".into(),
+            }],
+            support: 4,
+            estimated_minutes_saved: 3.0,
+            kind: "loop".into(),
+        };
+
+        let anchor = CellAddr::parse_a1("A9").unwrap();
+        let empty = dry_run(&engine, &r, "Sheet1", anchor);
+        assert_eq!(empty.requires.len(), 1);
+        assert_eq!(empty.unmet.len(), 1, "an empty cell is still needed");
+
+        engine
+            .apply(&Action::CellEdit {
+                sheet: "Sheet1".into(),
+                addr: anchor,
+                input: "21".into(),
+            })
+            .unwrap();
+        let filled = dry_run(&engine, &r, "Sheet1", anchor);
+        assert_eq!(
+            filled.requires.len(),
+            1,
+            "the routine still cannot supply it"
+        );
+        assert!(filled.unmet.is_empty(), "it is already there");
+        // ...and the routine's own action ran against the value that is there.
+        assert_eq!(filled.changes[0].after, "42");
     }
 
     #[test]

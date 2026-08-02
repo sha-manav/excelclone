@@ -254,13 +254,25 @@ test('a partial routine names the values it cannot supply', async ({ page }) => 
   const state: StubState = { routines: [record(PARTIAL_ROUTINE)], feedback: [] }
   await open(page, state)
   await seedRow(page, SEED_ROW)
-  await clickCell(page, SEED_ROW, 4)
 
+  // An empty row two below the seeded one: the routine needs a number three
+  // columns left of where it runs, and there is nothing there.
+  await clickCell(page, SEED_ROW + 2, 4)
   await page.getByRole('button', { name: 'Routines' }).click()
   const panel = page.getByRole('dialog', { name: 'Routines' })
-  // Offset (0, -3) from E6 is B6.
-  await expect(panel.locator('.routine__partial')).toContainText('number at B6')
+  // Offset (0, -3) from E8 is B8.
+  await expect(panel.locator('.routine__partial')).toContainText('number at B8')
   await expect(panel.getByRole('button', { name: /Run here/ })).toBeEnabled()
+
+  // On the seeded row that value is already there, and telling someone to
+  // type something they can see on screen is how a panel stops being read.
+  await clickCell(page, SEED_ROW, 4)
+  await expect(panel.locator('.routine__partial')).toContainText(
+    'already filled in here',
+  )
+  await expect(panel.locator('.routine__partial')).not.toContainText(
+    'still need to type',
+  )
 })
 
 test('dismissing a routine removes it and tells the server', async ({ page }) => {

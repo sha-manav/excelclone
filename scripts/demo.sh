@@ -68,14 +68,22 @@ cat <<'NEXT'
 
 == Now in the browser
 
-  DATABASE_URL="sqlite://demo/gridline.db?mode=rwc" make dev
+  DATABASE_URL="sqlite://demo/gridline.db?mode=rwc" \
+  VITE_DEV_TOKEN=<the token printed above> \
+  VITE_DEV_WORKBOOK_ID=wb_demo_dues_ledger \
+  make dev
+
+  The two VITE_ variables are what connect the browser to the history that
+  was just seeded: the token because there is no sign-in screen, and the
+  workbook id because the routines were mined for that workbook and the
+  client would otherwise invent its own.
 
   1. Open demo/dues-ledger.xlsx — the fixture with the scripted history
      already in it, so the workbook and the event log agree about what
      happened. Styles, the theme and the shared string table are the file's
      own, preserved through the round trip.
-  2. Sign in with the token printed above, and choose "structural" capture.
-     The chip in the header says when recording is on; pause it and it stops.
+  2. Accept "structural" capture when the notice appears. The chip in the
+     header says when recording is on; click it and capture pauses at once.
   3. Open the Routines panel. The mined habit is there: enter a member row,
      repeated twelve times across three sittings. It names the four values it
      cannot fill, because the log only ever held their hashes.

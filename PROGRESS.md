@@ -109,11 +109,15 @@ Living checklist. Updated every session.
       with scripted history (including an actor who declined), writes the
       worked workbook, mines it, exports the dataset and checks that the
       refusal held
-- [ ] Walk the demo in the browser; docs complete; README
+- [x] Walked the whole demo in a real browser against the real server and the
+      seeded database: open, routines panel, preview, run, one-undo, add and
+      rename a sheet, save, reopen, transparency page. Three real bugs fixed
+      (see DECISIONS.md)
+- [ ] Docs complete; README
 
 ## Notes
 
-- 384 Rust tests, 140 web unit tests, 44 Playwright end-to-end tests; full
+- 385 Rust tests, 140 web unit tests, 44 Playwright end-to-end tests; full
   CI gate (fmt, clippy -D warnings, tests, wasm build, vite build, e2e)
   passes locally.
 - M5 found a bug that had been latent since M2: **xlsx export had never

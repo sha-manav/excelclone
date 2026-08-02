@@ -195,3 +195,13 @@ One-line rationale for every non-obvious choice.
 - **A loop explains the steps it covers; nothing else may count them as evidence.** Twelve identical rows typed over three sittings produced **155 proposals**: every subsequence straddling a row boundary reached support, and the ones that hit `max_length` looked maximal only because the search stopped there. Masking the steps a tandem repeat covers takes it to one. The masked steps are skipped, not deleted — they still occupy their positions, so the work either side of a loop does not become spuriously adjacent.
 - **Identical loops from different sittings merge into one proposal.** The detector works per session, so a habit run every morning arrived as three identical patterns; proposing each separately offered the same routine three times and understated what it saved.
 - **A merged loop does not say "in a row".** Twelve repetitions across three mornings is not twelve consecutive ones, and the summary now distinguishes them. The same reasoning that stopped tandem repeats spanning sessions in the first place.
+
+**What walking the demo in a browser changed**
+
+- **`VITE_DEV_TOKEN` now actually does something.** `scripts/dev.sh` had been printing "the web app reads it from VITE_DEV_TOKEN, so no manual step is needed" since M4, and nothing read it. There is no sign-in screen, so every API call in a `make dev` session came back 401 unless you opened the console and wrote to `localStorage` by hand. The app adopts it at start-up, only in a dev build, and only when nothing is already stored — a token typed in by hand still wins.
+- **`VITE_DEV_WORKBOOK_ID` exists for the demo.** The workbook id is minted by the client and kept in `localStorage`, so routines mined for a seeded workbook could never appear in a panel that had invented its own id. Same guards as the token.
+- **A requirement that is already filled in is not reported as missing.** The preview said "you will still need to type them" about four cells the user could see on screen, filled in. `DryRun` now reports `unmet` — the subset of `requires` whose target is actually empty — alongside `requires`, and the panel says the values are already in place when they are. Found by looking at a screenshot of the panel, not by a test.
+
+**The demo's own conventions**
+
+- **The ledger labels every column it uses and formats the rows it will grow into.** Six unlabelled columns under a header band is what an unfinished sheet looks like, and a currency band that stops at the last filled row makes the next row someone types look like a different sheet.

@@ -71,7 +71,21 @@ fn dues_ledger() -> Engine {
         set(&mut e, "Rates", &format!("B{r}"), rate);
     }
 
-    let headers = ["member", "tier", "joined", "paid"];
+    // Every column the sheet uses is labelled. Six unlabelled columns under a
+    // header band is what an unfinished sheet looks like, and this one is the
+    // demo's front page.
+    let headers = [
+        "member",
+        "tier",
+        "joined",
+        "paid",
+        "owed",
+        "balance",
+        "status",
+        "label",
+        "year",
+        "owed (fmt)",
+    ];
     for (c, h) in headers.iter().enumerate() {
         set(
             &mut e,
@@ -177,10 +191,13 @@ fn dues_ledger() -> Engine {
             FormatPatch::Border(BorderPreset::All),
         ],
     );
+    // The currency band covers the rows the table will grow into, not just
+    // the ones already filled: a format that stops at the last row makes the
+    // next row someone types look like a different sheet.
     fmt(
         &mut e,
         "Ledger",
-        "D2:F6",
+        "D2:F20",
         vec![FormatPatch::NumberFormat(Some("$#,##0.00".into()))],
     );
     fmt(

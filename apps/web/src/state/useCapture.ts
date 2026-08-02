@@ -18,7 +18,7 @@ import {
   type PrivacyMode,
 } from '../capture/capture'
 import { EventQueue, openQueueStorage } from '../capture/queue'
-import { api, authToken, type ConsentRecord } from '../capture/api'
+import { api, authToken, setAuthToken, type ConsentRecord } from '../capture/api'
 
 const CONSENT_KEY = 'gridline.consent'
 const ACTOR_KEY = 'gridline.actor'
@@ -76,6 +76,26 @@ function writeConsent(record: ConsentRecord): void {
   writeLocal(CONSENT_KEY, JSON.stringify(record))
 }
 
+/**
+ * Development overrides, read once at start-up and only in a dev build.
+ *
+ * `scripts/dev.sh` and `scripts/demo.sh` mint a user and a scripted history
+ * on the server, and there is no sign-in screen: without this the app runs
+ * unauthenticated and every request comes back 401. `VITE_DEV_WORKBOOK_ID`
+ * exists for the demo, whose seeded routines belong to a workbook the client
+ * would otherwise never name — a routines panel that cannot show the
+ * routines that were mined for it is not a demo.
+ *
+ * Both are guarded on `import.meta.env.DEV`, so a production bundle can carry
+ * neither a baked-in credential nor someone else's workbook.
+ */
+function devEnv(name: string): string | null {
+  const env = import.meta.env as Record<string, string | boolean | undefined>
+  if (!env?.DEV) return null
+  const value = env[name]
+  return typeof value === 'string' && value.length > 0 ? value : null
+}
+
 /** An opaque id: not an email address, not a name. See `docs/PRIVACY.md`. */
 function opaqueId(prefix: string): string {
   return `${prefix}_${ulid().slice(-8).toLowerCase()}`
@@ -102,8 +122,16 @@ function getPipeline(): Pipeline {
     .then((storage) => queue.useStorage(storage))
     .catch(() => {})
 
+  // A dev token is adopted only when nothing is stored, so a token typed in
+  // by hand always wins over one baked into the dev server's environment.
+  const devToken = devEnv('VITE_DEV_TOKEN')
+  if (devToken && !authToken()) setAuthToken(devToken)
+
   const consent = readConsent()
-  const workbookId = readOrCreate(WORKBOOK_KEY, () => opaqueId('wb'))
+  const workbookId = readOrCreate(
+    WORKBOOK_KEY,
+    () => devEnv('VITE_DEV_WORKBOOK_ID') ?? opaqueId('wb'),
+  )
   const actorId = readOrCreate(ACTOR_KEY, () => opaqueId('u'))
   // The salt belongs to the server (`docs/PRIVACY.md`), and is adopted from
   // the consent response when there is one. Until then a locally generated

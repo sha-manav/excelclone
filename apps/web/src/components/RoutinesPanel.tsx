@@ -139,6 +139,10 @@ function RoutineCard(props: RoutineCardProps): JSX.Element {
   }
 
   const blocked = preview.errors.length > 0
+  // Older previews (and any server that has not caught up) carry only
+  // `requires`; treating a missing `unmet` as "all of them" keeps the panel
+  // honest rather than silently claiming everything is ready.
+  const unmet = preview.unmet ?? preview.requires
   // Formatting counts: a routine that only bolds a row still does something,
   // and calling that "no change" would disable Run on a routine that works.
   const all = [...preview.changes, ...preview.format_changes]
@@ -155,11 +159,11 @@ function RoutineCard(props: RoutineCardProps): JSX.Element {
         {routine.status === 'accepted' && ' · used before'}
       </p>
 
-      {preview.requires.length > 0 && (
+      {unmet.length > 0 && (
         <p className="routine__partial">
-          Runs everything except {preview.requires.length}{' '}
-          {preview.requires.length === 1 ? 'value' : 'values'} it cannot know:{' '}
-          {preview.requires
+          Runs everything except {unmet.length}{' '}
+          {unmet.length === 1 ? 'value' : 'values'} it cannot know:{' '}
+          {unmet
             .map(
               (q) =>
                 `${q.kind} at ${a1({
@@ -168,7 +172,14 @@ function RoutineCard(props: RoutineCardProps): JSX.Element {
                 })}`,
             )
             .join(', ')}
-          . You will still need to type {preview.requires.length === 1 ? 'it' : 'them'}.
+          . You will still need to type {unmet.length === 1 ? 'it' : 'them'}.
+        </p>
+      )}
+
+      {unmet.length === 0 && preview.requires.length > 0 && (
+        <p className="routine__partial routine__partial--met">
+          The {preview.requires.length} values this routine cannot supply are
+          already filled in here.
         </p>
       )}
 
