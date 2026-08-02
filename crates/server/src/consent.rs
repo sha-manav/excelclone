@@ -99,10 +99,7 @@ pub async fn record(
     })))
 }
 
-pub async fn me(
-    State(pool): State<SqlitePool>,
-    user: AuthUser,
-) -> Result<Json<Value>, ApiError> {
+pub async fn me(State(pool): State<SqlitePool>, user: AuthUser) -> Result<Json<Value>, ApiError> {
     let body = match current(&pool, &user.id).await? {
         Some(c) => json!({
             "actor_id": user.id,

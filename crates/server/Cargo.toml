@@ -19,6 +19,12 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 sha2 = "0.10"
 hex = "0.4"
+# `Stream` + `ReceiverStream`, so the JSONL export streams rows instead of
+# buffering the whole dataset in memory.
+tokio-stream = "0.1"
 
 [dev-dependencies]
 reqwest = { version = "0.12", features = ["json"] }
+# Drive the router in process (`ServiceExt::oneshot`) and read its bodies.
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
