@@ -131,7 +131,7 @@ Living checklist. Updated every session.
       returning IEEE infinity instead of `#NUM!` — fixed on the spot, because
       `inf` is not a spreadsheet value and would have reached the dataset
 
-## P1 — Closing the measured differences (in progress)
+## P1 — Closing the measured differences (complete)
 - [x] Number-format sections (`0;(0)`, literal and empty sections, the text
       section), with the stale test that pinned their absence corrected
 - [x] Serial 60 reports Excel's 1900-02-29 through YEAR/MONTH/DAY, and
@@ -144,7 +144,7 @@ Living checklist. Updated every session.
 - [ ] Excel's 15-significant-digit final rounding (2 recorded differences)
 - [ ] Excel's calendar for rollovers landing on the phantom day
 
-## P2 — Function coverage (in progress)
+## P2 — Function coverage (complete)
 - [x] 26 tier-2 functions: CEILING, FLOOR, MROUND, TRUNC, SIGN, EXP, LN, LOG,
       LOG10, GCD, LCM, MEDIAN, LARGE, SMALL, RANK, ISNA, ISERR, ISLOGICAL,
       IFNA, NA, TYPE, REPT, EXACT, CHAR, CODE, CLEAN
