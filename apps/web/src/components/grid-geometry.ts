@@ -489,6 +489,37 @@ export function moveAddr(m: GridMetrics, from: Addr, dir: MoveDirection): Addr {
 }
 
 /**
+ * An arrow key, with merges taken into account.
+ *
+ * Two rules, both Excel's. Leaving a merged block steps from its *far* edge,
+ * so pressing Right in a block spanning A1:C1 lands on D1 rather than on B1,
+ * which the user cannot see. Arriving in one lands on its anchor, so the
+ * selection never sits on a covered cell.
+ *
+ * Without this, arrowing across a merged header walked invisibly through its
+ * covered cells and the selection appeared to stop moving.
+ */
+export function moveWithMerges(
+  m: GridMetrics,
+  merges: MergeMap,
+  from: Addr,
+  dir: MoveDirection,
+): Addr {
+  const here = merges.at(from.row, from.col)
+  const edge = here
+    ? {
+        up: { row: here.start.row, col: here.start.col },
+        down: { row: here.end.row, col: here.start.col },
+        left: { row: here.start.row, col: here.start.col },
+        right: { row: here.start.row, col: here.end.col },
+        none: from,
+      }[dir]
+    : from
+  const landed = moveAddr(m, edge, dir)
+  return merges.anchor(landed.row, landed.col)
+}
+
+/**
  * Ctrl/Cmd+Arrow: jump to the edge of the used range in that direction, which
  * is where Excel lands when the run of cells continues to the boundary.
  */

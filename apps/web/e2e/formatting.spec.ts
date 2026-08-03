@@ -435,3 +435,22 @@ test('double-clicking a column border sizes it to its contents', async ({ page }
   // Column A now swallows the first 250px, so the same click lands in A.
   await expect.poll(at250, { timeout: 5000 }).toBe('A1')
 })
+
+test('arrowing across a merged block steps over it rather than into it', async ({ page }) => {
+  await clickCell(page, 0, 0)
+  await typeInCell(page, 'header')
+  await clickCell(page, 0, 0)
+  await page.keyboard.down('Shift')
+  await clickCell(page, 0, 2)
+  await page.keyboard.up('Shift')
+  await page.getByRole('button', { name: 'Merge cells' }).click()
+
+  // Right from the block lands past its far edge, not on a covered cell.
+  await clickCell(page, 0, 0)
+  await page.keyboard.press('ArrowRight')
+  await expect(page.locator('.formula-bar__address')).toHaveValue('D1')
+
+  // ...and coming back lands on the anchor rather than inside.
+  await page.keyboard.press('ArrowLeft')
+  await expect(page.locator('.formula-bar__address')).toHaveValue('A1')
+})

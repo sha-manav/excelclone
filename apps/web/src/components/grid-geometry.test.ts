@@ -18,7 +18,9 @@ import {
   hitTest,
   isRowHidden,
   lastVisibleRow,
+  MergeMap,
   moveAddr,
+  moveWithMerges,
   nextVisibleRow,
   overflowHashes,
   pageJump,
@@ -494,6 +496,47 @@ describe('selection helpers', () => {
       col: 1,
     })
     expect(selectionFocus(selectionAt({ row: 2, col: 2 }))).toEqual({ row: 2, col: 2 })
+  })
+})
+
+describe('moveWithMerges', () => {
+  // A1:C1 merged, with a second block below it so a vertical step has
+  // something to arrive in.
+  const merges = MergeMap.fromA1(['A1:C1', 'B3:B4'])
+
+  it('leaves a merged block from its far edge', () => {
+    // Right from inside A1:C1 has to reach D1, not B1, which is covered.
+    expect(moveWithMerges(plain, merges, { row: 0, col: 0 }, 'right')).toEqual({
+      row: 0,
+      col: 3,
+    })
+  })
+
+  it('lands on a merge anchor rather than a cell nobody can see', () => {
+    expect(moveWithMerges(plain, merges, { row: 0, col: 3 }, 'left')).toEqual({
+      row: 0,
+      col: 0,
+    })
+    // Arriving in B3:B4 from below stops at B3, its top-left.
+    expect(moveWithMerges(plain, merges, { row: 4, col: 1 }, 'up')).toEqual({
+      row: 2,
+      col: 1,
+    })
+  })
+
+  it('steps down from the bottom of a block, not from where the cursor was', () => {
+    expect(moveWithMerges(plain, merges, { row: 2, col: 1 }, 'down')).toEqual({
+      row: 4,
+      col: 1,
+    })
+  })
+
+  it('behaves exactly like moveAddr when nothing is merged', () => {
+    const none = new MergeMap([])
+    for (const dir of ['up', 'down', 'left', 'right'] as const) {
+      const from = { row: 5, col: 5 }
+      expect(moveWithMerges(plain, none, from, dir)).toEqual(moveAddr(plain, from, dir))
+    }
   })
 })
 

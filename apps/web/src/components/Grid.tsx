@@ -41,7 +41,7 @@ import {
   firstVisibleRow,
   hitTest,
   lastVisibleRow,
-  moveAddr,
+  moveWithMerges,
   overflowHashes,
   pageJump,
   pointInRect,
@@ -1151,18 +1151,22 @@ export function Grid(props: GridProps): JSX.Element {
     }
     if (dir) {
       e.preventDefault()
-      go(mod ? usedEdge(m, from, dir, L.usedRows, L.usedCols) : moveAddr(m, from, dir))
+      go(
+        mod
+          ? usedEdge(m, from, dir, L.usedRows, L.usedCols)
+          : moveWithMerges(m, L.merges, from, dir),
+      )
       return
     }
 
     switch (e.key) {
       case 'Tab':
         e.preventDefault()
-        L.onSelect(selectionAt(moveAddr(m, active, e.shiftKey ? 'left' : 'right')))
+        L.onSelect(selectionAt(moveWithMerges(m, L.merges, active, e.shiftKey ? 'left' : 'right')))
         return
       case 'Enter':
         e.preventDefault()
-        L.onSelect(selectionAt(moveAddr(m, active, e.shiftKey ? 'up' : 'down')))
+        L.onSelect(selectionAt(moveWithMerges(m, L.merges, active, e.shiftKey ? 'up' : 'down')))
         return
       case 'F2':
         e.preventDefault()
