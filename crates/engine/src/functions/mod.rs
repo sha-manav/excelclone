@@ -149,6 +149,10 @@ pub const IMPLEMENTED: &[&str] = &[
     "DATEVALUE",
     "EDATE",
     "DAYS",
+    "TIMEVALUE",
+    "NETWORKDAYS",
+    "WORKDAY",
+    "YEARFRAC",
 ];
 
 pub fn call(ctx: &EvalCtx, name: &str, args: &[Expr]) -> Value {
@@ -280,6 +284,10 @@ pub fn call(ctx: &EvalCtx, name: &str, args: &[Expr]) -> Value {
         "DATEVALUE" => date::datevalue(ctx, args),
         "EDATE" => date::edate(ctx, args),
         "DAYS" => date::days(ctx, args),
+        "TIMEVALUE" => date::timevalue(ctx, args),
+        "NETWORKDAYS" => date::networkdays(ctx, args),
+        "WORKDAY" => date::workday(ctx, args),
+        "YEARFRAC" => date::yearfrac(ctx, args),
         _ => Value::Error(ErrorKind::Name),
     }
 }

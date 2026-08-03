@@ -151,7 +151,7 @@ Living checklist. Updated every session.
 - [x] 52 cases pinning them, including the sign rules Microsoft's own page
       spends a paragraph on and the difference between competition and dense
       ranking
-- [x] Coverage 48.5% → 88.9%; cell match 98.4%; 96.7% of implemented
+- [x] Coverage 48.5% → 91.9%; cell match 98.5%; 96.8% of implemented
       functions pinned
 - [x] The reference family (ROW, COLUMN, ROWS, COLUMNS) — `EvalCtx` now
       carries the cell being evaluated, which nothing else had needed
@@ -170,7 +170,10 @@ Living checklist. Updated every session.
 - [ ] `OFFSET`, `INDIRECT` and `TRANSPOSE` need functions that return
       *references*; today a function returns a `Value`, so `SUM(OFFSET(...))`
       could not work and a scalar-only version would fail on the common use
-- [ ] `AGGREGATE`, `TIMEVALUE`, `NETWORKDAYS`, `WORKDAY`, `YEARFRAC`, `LET`
+- [x] `TIMEVALUE`, `NETWORKDAYS`, `WORKDAY`, `YEARFRAC` (five day-count
+      bases; actual/actual recorded as an open question, because it is the one
+      convention whose exact definition is genuinely disputed)
+- [ ] `AGGREGATE` and `LET`
 - [ ] Dynamic arrays (UNIQUE, SORT, FILTER, SEQUENCE, TEXTSPLIT) need spilling
       first, which is a model change rather than a function
 

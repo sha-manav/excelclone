@@ -15,12 +15,12 @@ this file and fails if the result differs from what is committed.
 
 | Measure | Score | |
 | --- | --- | --- |
-| Cell match (settled cases) | **98.4%** | 250 of 254 |
-| Function coverage | **88.9%** | 120 of 135 target functions implemented |
-| Functions pinned by a case | **96.7%** | 116 of 120 implemented |
+| Cell match (settled cases) | **98.5%** | 262 of 266 |
+| Function coverage | **91.9%** | 124 of 135 target functions implemented |
+| Functions pinned by a case | **96.8%** | 120 of 124 implemented |
 | Round-trip fidelity | **100.0%** | 2 of 2 workbooks |
 | Recorded differences | 4 | counted as misses above |
-| Open questions | 3 | excluded above |
+| Open questions | 4 | excluded above |
 
 ## Functions
 
@@ -101,7 +101,7 @@ against anything but our own opinion.
 | `RAND` | yes | — |
 | `RANDBETWEEN` | yes | — |
 
-### Tier 2 — 54 of 69 implemented
+### Tier 2 — 58 of 69 implemented
 
 | Function | Implemented | Pinned |
 | --- | --- | --- |
@@ -150,10 +150,10 @@ against anything but our own opinion.
 | `MINUTE` | yes | yes |
 | `SECOND` | yes | yes |
 | `DATEVALUE` | yes | yes |
-| `TIMEVALUE` | — | — |
-| `NETWORKDAYS` | — | — |
-| `WORKDAY` | — | — |
-| `YEARFRAC` | — | — |
+| `TIMEVALUE` | yes | yes |
+| `NETWORKDAYS` | yes | yes |
+| `WORKDAY` | yes | yes |
+| `YEARFRAC` | yes | yes |
 | `EDATE` | yes | yes |
 | `DAYS` | yes | yes |
 | `PMT` | yes | yes |
@@ -240,6 +240,24 @@ with Excel can settle it in one line.
 Candidates: mid (linear scan for the last key not greater than 15), high (binary search that stops at the first row), #N/A (a binary search that walks off the range)
 
 Gridline currently answers `mid`.
+
+### `d2.yearfrac-actual-actual`
+
+```
+=YEARFRAC(DATE(2024,1,1),DATE(2025,1,1),1)
+```
+
+Basis 1 is actual/actual, and what Excel divides by is the one day-count rule
+whose exact definition is genuinely disputed. Gridline uses the average length
+of the calendar years the span touches, which is the behaviour Microsoft's
+documentation describes; the other two candidates are what the common
+alternative readings give. Excluded from the score until somebody can check
+it against Excel, because a confident-looking wrong number here is a bond
+priced wrong.
+
+Candidates: 1.00136798905609 (366 days over the mean of 366 and 365), 1 (366 days over 366, the year the range starts in), 1.00273972602740 (366 days over 365)
+
+Gridline currently answers `1.00136798905609`.
 
 ### `number.general-switches-to-scientific-when-large`
 

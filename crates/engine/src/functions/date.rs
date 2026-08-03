@@ -378,6 +378,212 @@ pub fn days(ctx: &EvalCtx, args: &[Expr]) -> Value {
     })())
 }
 
+/// TIMEVALUE(text): the fraction of a day a written time represents.
+///
+/// The date part of the text is ignored if there is one, which is what makes
+/// it the complement of DATEVALUE rather than a competitor to it.
+pub fn timevalue(ctx: &EvalCtx, args: &[Expr]) -> Value {
+    if let Err(k) = expect_args(args, 1, 1) {
+        return Value::Error(k);
+    }
+    num_result((|| {
+        let text = ctx.eval_text(&args[0])?;
+        parse_time_of_day(text.trim()).ok_or(ErrorKind::Value)
+    })())
+}
+
+/// `13:45`, `13:45:30`, `1:45 PM`. Returns a fraction in [0, 1).
+fn parse_time_of_day(s: &str) -> Option<f64> {
+    let upper = s.to_ascii_uppercase();
+    let (body, meridiem) = match (upper.strip_suffix("AM"), upper.strip_suffix("PM")) {
+        (Some(rest), _) => (rest.trim().to_string(), Some(false)),
+        (_, Some(rest)) => (rest.trim().to_string(), Some(true)),
+        _ => (upper.clone(), None),
+    };
+    let parts: Vec<&str> = body.trim().split(':').collect();
+    if parts.len() < 2 || parts.len() > 3 {
+        return None;
+    }
+    let h: u32 = parts[0].trim().parse().ok()?;
+    let m: u32 = parts[1].trim().parse().ok()?;
+    let sec: u32 = match parts.get(2) {
+        Some(p) => p.trim().parse().ok()?,
+        None => 0,
+    };
+    if m > 59 || sec > 59 {
+        return None;
+    }
+    let h = match meridiem {
+        // 12 AM is midnight and 12 PM is noon, which is the one place a
+        // 12-hour clock is not simply "add twelve".
+        Some(pm) => match (h, pm) {
+            (12, false) => 0,
+            (12, true) => 12,
+            (h, true) if h < 12 => h + 12,
+            (h, false) if h < 12 => h,
+            _ => return None,
+        },
+        None if h < 24 => h,
+        None => return None,
+    };
+    Some((h * 3600 + m * 60 + sec) as f64 / 86_400.0)
+}
+
+/// Dates listed as holidays, as whole-day serials.
+fn holiday_serials(ctx: &EvalCtx, arg: Option<&Expr>) -> Result<Vec<f64>, ErrorKind> {
+    let Some(e) = arg else { return Ok(Vec::new()) };
+    Ok(super::gather_numbers(ctx, std::slice::from_ref(e))?
+        .into_iter()
+        .map(f64::floor)
+        .collect())
+}
+
+/// Whether a serial is a working day, Monday to Friday.
+///
+/// Asked of the calendar date, which is where `WEEKDAY` asks too. The first
+/// version of this counted `serial mod 7` and was a day out — Excel's serial
+/// line contains a phantom 1900-02-29, so a modulus over it does not line up
+/// with the weekday the rest of the engine reports. Two mappings for one
+/// question is how they end up disagreeing; the parity harness caught it on
+/// `WORKDAY(Friday, 1)`, which answered Sunday.
+///
+/// A serial with no calendar date — 60, the phantom day — is not a day
+/// anybody can work on, so it is not a working day either.
+fn is_workday(serial: f64) -> bool {
+    serial::serial_to_date(serial)
+        .map(|d| d.weekday().num_days_from_monday() < 5)
+        .unwrap_or(false)
+}
+
+/// NETWORKDAYS(start, end, [holidays]): whole working days between two dates,
+/// counting both ends.
+///
+/// Negative when the end is before the start, which is Excel's answer and
+/// worth reproducing: a schedule that subtracts in the wrong order gets a
+/// sign rather than a silent zero.
+pub fn networkdays(ctx: &EvalCtx, args: &[Expr]) -> Value {
+    if let Err(k) = expect_args(args, 2, 3) {
+        return Value::Error(k);
+    }
+    num_result((|| {
+        let a = arg_serial(ctx, &args[0])?.floor();
+        let b = arg_serial(ctx, &args[1])?.floor();
+        let holidays = holiday_serials(ctx, args.get(2))?;
+        let (lo, hi, sign) = if a <= b { (a, b, 1.0) } else { (b, a, -1.0) };
+        let mut count = 0.0;
+        let mut d = lo;
+        while d <= hi {
+            if is_workday(d) && !holidays.contains(&d) {
+                count += 1.0;
+            }
+            d += 1.0;
+        }
+        Ok(count * sign)
+    })())
+}
+
+/// WORKDAY(start, days, [holidays]): the date that many working days away.
+///
+/// The start date itself is never counted, in either direction — the answer
+/// to "one working day after Friday" is Monday, not Friday.
+pub fn workday(ctx: &EvalCtx, args: &[Expr]) -> Value {
+    if let Err(k) = expect_args(args, 2, 3) {
+        return Value::Error(k);
+    }
+    num_result((|| {
+        let start = arg_serial(ctx, &args[0])?.floor();
+        let days = ctx.eval_number(&args[1])?.trunc() as i64;
+        let holidays = holiday_serials(ctx, args.get(2))?;
+        let step = if days < 0 { -1.0 } else { 1.0 };
+        let mut remaining = days.abs();
+        let mut d = start;
+        // Bounded so a pathological holiday list cannot spin forever; the
+        // limit is far beyond Excel's own date range.
+        let mut guard = 0;
+        while remaining > 0 && guard < 4_000_000 {
+            d += step;
+            guard += 1;
+            if is_workday(d) && !holidays.contains(&d) {
+                remaining -= 1;
+            }
+        }
+        if remaining > 0 || d < 1.0 {
+            return Err(ErrorKind::Num);
+        }
+        Ok(d)
+    })())
+}
+
+/// YEARFRAC(start, end, [basis]): the fraction of a year between two dates.
+///
+/// The `basis` is a day-count convention, and finance runs on the difference
+/// between them: 0 is US 30/360, 1 actual/actual, 2 actual/360, 3 actual/365,
+/// 4 European 30/360. A bond priced on the wrong basis is wrong by a few
+/// days' interest, every time.
+pub fn yearfrac(ctx: &EvalCtx, args: &[Expr]) -> Value {
+    if let Err(k) = expect_args(args, 2, 3) {
+        return Value::Error(k);
+    }
+    num_result((|| {
+        let a = arg_serial(ctx, &args[0])?.floor();
+        let b = arg_serial(ctx, &args[1])?.floor();
+        let basis = match args.get(2) {
+            Some(e) => ctx.eval_number(e)?.trunc() as i64,
+            None => 0,
+        };
+        let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+        let start = serial::serial_to_parts(lo).ok_or(ErrorKind::Num)?;
+        let end = serial::serial_to_parts(hi).ok_or(ErrorKind::Num)?;
+        match basis {
+            0 => Ok(thirty_360(start, end, false) / 360.0),
+            4 => Ok(thirty_360(start, end, true) / 360.0),
+            2 => Ok((hi - lo) / 360.0),
+            3 => Ok((hi - lo) / 365.0),
+            1 => {
+                // Excel divides by the *average* length of the calendar years
+                // the span touches, which is why a leap day inside the range
+                // changes the answer for ranges that do not contain one.
+                let years = (end.0 - start.0 + 1) as f64;
+                let days: f64 = (start.0..=end.0)
+                    .map(|y| if is_leap(y) { 366.0 } else { 365.0 })
+                    .sum();
+                Ok((hi - lo) / (days / years))
+            }
+            _ => Err(ErrorKind::Num),
+        }
+    })())
+}
+
+fn is_leap(y: i32) -> bool {
+    (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
+}
+
+/// The 30/360 day count, in its US and European spellings.
+///
+/// Both pretend every month has 30 days; they disagree about what to do with
+/// a 31st. The European rule simply caps both days at 30; the US rule only
+/// caps the end date when the start date was already at 30 or 31, which makes
+/// the count asymmetric and is the whole reason the two conventions exist
+/// separately.
+fn thirty_360(start: (i32, u32, u32), end: (i32, u32, u32), european: bool) -> f64 {
+    let (y1, m1, mut d1) = start;
+    let (y2, m2, mut d2) = end;
+    if european {
+        d1 = d1.min(30);
+        d2 = d2.min(30);
+    } else {
+        if d1 == 31 {
+            d1 = 30;
+        }
+        if d2 == 31 && d1 >= 30 {
+            d2 = 30;
+        }
+    }
+    ((y2 - y1) as f64) * 360.0
+        + ((m2 as i64 - m1 as i64) as f64) * 30.0
+        + (d2 as i64 - d1 as i64) as f64
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
