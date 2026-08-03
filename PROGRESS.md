@@ -193,12 +193,15 @@ Living checklist. Updated every session.
       `Action::Resize` records them, undo takes them back, insert and delete
       shift them, and they are written to and read from `<cols>` and
       `<row ht=…>`. Row borders are draggable too, which they never were
+- [x] The system clipboard: copy writes TSV and an HTML table, paste reads
+      either, and text from outside lands as one batched, single-undo edit.
+      An internal paste still carries formulas, decided by comparing the
+      clipboard text with what we last put there
 - [ ] Spilling, and the dynamic-array functions behind it
-- [ ] System clipboard bridge
 
 ## Notes
 
-- 433 Rust tests, 142 web unit tests, 46 Playwright end-to-end tests; full
+- 433 Rust tests, 157 web unit tests, 50 Playwright end-to-end tests; full
   CI gate (fmt, clippy -D warnings, tests, wasm build, vite build, e2e)
   passes locally.
 - M5 found a bug that had been latent since M2: **xlsx export had never

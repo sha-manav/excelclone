@@ -14,7 +14,7 @@ import { FindReplacePanel } from './components/FindReplacePanel'
 import { WarningsDrawer } from './components/WarningsDrawer'
 import { RoutinesPanel } from './components/RoutinesPanel'
 import { api, type RoutineRecord } from './capture/api'
-import { MergeMap, parseRangeA1 } from './components/grid-geometry'
+import { MAX_COL, MAX_ROW, MergeMap, parseRangeA1 } from './components/grid-geometry'
 import { useWorkbook } from './state/useWorkbook'
 import { useCapture } from './state/useCapture'
 import {
@@ -23,12 +23,14 @@ import {
   rangeCols,
   rangeRows,
   singleRange,
+  type Action,
   type Addr,
   type Axis,
   type FormatPatch,
   type Range,
   type SortKey,
 } from './engine/actions'
+import { readClipboard, toHtml, toTsv, type Block } from './engine/clipboard'
 import type { CellFormat } from './engine/bridge'
 import type { MoveDirection } from './state/useWorkbook'
 
@@ -40,6 +42,15 @@ interface Clipboard {
   sheet: string
   range: Range
   cut: boolean
+  /**
+   * Exactly the text put on the system clipboard when this was copied.
+   *
+   * A paste compares it with what the system clipboard now holds. Equal means
+   * nothing has happened since and the internal range paste applies, formulas
+   * and all; different means someone copied elsewhere and what is on the
+   * clipboard is theirs, not ours.
+   */
+  text: string
 }
 
 type Overlay =
@@ -377,30 +388,10 @@ export default function App() {
       if (!mod) return
 
       switch (e.key.toLowerCase()) {
-        case 'c':
-          e.preventDefault()
-          setClipboard({ sheet: wb.activeSheet, range: sel.range, cut: false })
-          break
-        case 'x':
-          e.preventDefault()
-          setClipboard({ sheet: wb.activeSheet, range: sel.range, cut: true })
-          break
-        case 'v': {
-          if (!clipboard) return
-          e.preventDefault()
-          apply({
-            action: 'range_paste',
-            source_sheet: clipboard.sheet,
-            source: clipboard.range,
-            target_sheet: wb.activeSheet,
-            target: sel.range,
-            mode: 'formulas',
-            cut: clipboard.cut,
-          })
-          // A cut is consumed by its paste, as in Excel.
-          if (clipboard.cut) setClipboard(null)
-          break
-        }
+        // c, x and v are deliberately absent: preventing the default would
+        // suppress the browser's own copy/cut/paste events, and those are the
+        // only route to the system clipboard that needs no permission prompt.
+        // They are handled below.
         case 'z':
           e.preventDefault()
           apply({ action: e.shiftKey ? 'redo' : 'undo' })
@@ -457,13 +448,118 @@ export default function App() {
         }
       }
     },
-    [wb, sel.range, clipboard, apply, patchFormat, activeFormat],
+    [wb, sel.range, apply, patchFormat, activeFormat],
   )
 
   useEffect(() => {
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [onKeyDown])
+
+  /* ------------------------------------------------------------ clipboard */
+
+  /** The selected block as displayed text, which is what Excel copies out. */
+  const selectedBlock = useCallback((): Block => {
+    if (!wb.engine) return []
+    const r = sel.range
+    const rows = r.end.row - r.start.row + 1
+    const cols = r.end.col - r.start.col + 1
+    const vp = wb.engine.viewport(wb.activeSheet, r.start.row, r.start.col, rows, cols)
+    const out: Block = []
+    for (let i = 0; i < rows; i++) {
+      out.push(Array.from({ length: cols }, (_, j) => vp.values[i * cols + j] ?? ''))
+    }
+    return out
+  }, [wb.engine, wb.activeSheet, sel.range])
+
+  const onCopyOrCut = useCallback(
+    (e: ClipboardEvent, cut: boolean) => {
+      if (wb.editing || !wb.engine) return
+      const target = e.target as HTMLElement | null
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) return
+      e.preventDefault()
+      const block = selectedBlock()
+      const tsv = toTsv(block)
+      e.clipboardData?.setData('text/plain', tsv)
+      e.clipboardData?.setData('text/html', toHtml(block))
+      // The internal clipboard is kept as well as the system one: a paste
+      // back into Gridline carries formulas and adjusts their references,
+      // which the text on the system clipboard cannot. `text` is how the
+      // paste handler tells "this is the block I copied" from "someone else
+      // put something here since".
+      setClipboard({ sheet: wb.activeSheet, range: sel.range, cut, text: tsv })
+    },
+    [wb.editing, wb.engine, wb.activeSheet, sel.range, selectedBlock],
+  )
+
+  const onPaste = useCallback(
+    (e: ClipboardEvent) => {
+      if (wb.editing || !wb.engine) return
+      const target = e.target as HTMLElement | null
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) return
+      e.preventDefault()
+      const incoming = e.clipboardData?.getData('text/plain') ?? ''
+
+      // Our own block, untouched since we copied it: paste it the rich way.
+      if (clipboard && incoming === clipboard.text) {
+        apply({
+          action: 'range_paste',
+          source_sheet: clipboard.sheet,
+          source: clipboard.range,
+          target_sheet: wb.activeSheet,
+          target: sel.range,
+          mode: 'formulas',
+          cut: clipboard.cut,
+        })
+        // A cut is consumed by its paste, as in Excel.
+        if (clipboard.cut) setClipboard(null)
+        return
+      }
+
+      const block = readClipboard(e.clipboardData)
+      if (!block || block.length === 0) return
+      // Text from outside has no formulas to adjust and no source range to
+      // read from, so it lands as edits — one per cell, batched so the whole
+      // paste is a single Ctrl+Z.
+      const actions: Action[] = []
+      for (let i = 0; i < block.length; i++) {
+        for (let j = 0; j < block[i].length; j++) {
+          const row = sel.range.start.row + i
+          const col = sel.range.start.col + j
+          if (row > MAX_ROW || col > MAX_COL) continue
+          actions.push({
+            action: 'cell_edit',
+            sheet: wb.activeSheet,
+            addr: { row, col },
+            input: block[i][j],
+          })
+        }
+      }
+      if (actions.length === 0) return
+      wb.applyBatch(actions)
+      // Select what landed, which is what Excel does and what makes a second
+      // paste elsewhere obvious.
+      const end = {
+        row: Math.min(MAX_ROW, sel.range.start.row + block.length - 1),
+        col: Math.min(MAX_COL, sel.range.start.col + block[0].length - 1),
+      }
+      wb.select({ anchor: sel.range.start, range: mkRange(sel.range.start, end) })
+    },
+    [wb, sel.range, clipboard, apply],
+  )
+
+  useEffect(() => {
+    const copy = (e: ClipboardEvent) => onCopyOrCut(e, false)
+    const cut = (e: ClipboardEvent) => onCopyOrCut(e, true)
+    document.addEventListener('copy', copy)
+    document.addEventListener('cut', cut)
+    document.addEventListener('paste', onPaste)
+    return () => {
+      document.removeEventListener('copy', copy)
+      document.removeEventListener('cut', cut)
+      document.removeEventListener('paste', onPaste)
+    }
+  }, [onCopyOrCut, onPaste])
 
   const handleFill = useCallback(
     (source: Range, target: Range) => {

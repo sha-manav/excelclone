@@ -188,10 +188,14 @@ export class EngineHandle {
     this.inner.setNowMs(Date.now())
     const json = this.inner.applyBatchJson(JSON.stringify(actions))
     const events = JSON.parse(json) as EngineEvent[]
-    for (const [i, action] of actions.entries()) {
-      // Attribute all events to the batch; individual actions still appear
-      // in order for the miner.
-      if (i === 0) for (const sink of this.sinks) sink(events, action)
+    // Every action, in order. The batch is one *undo* step, not one event:
+    // capturing only the first would make the log replay to a different
+    // workbook than the user is looking at, and a routine mined from it
+    // would be the first fifth of a habit. The events are the batch's as a
+    // whole — no sink reads them per action, and splitting them by action
+    // would mean guessing which recalculation belonged to which edit.
+    for (const action of actions) {
+      for (const sink of this.sinks) sink(events, action)
     }
     return events
   }

@@ -208,3 +208,66 @@ test('a row resize moves the rows', async ({ page }) => {
   await page.mouse.click(box.x + HEADER_W + 40, box.y + HEADER_H + 60)
   await expect(page.locator('.formula-bar__address')).toHaveText('A2')
 })
+
+test('copying puts tab-separated text on the system clipboard', async ({ page, context }) => {
+  await context.grantPermissions(['clipboard-read', 'clipboard-write'])
+  await clickCell(page, 0, 0)
+  await typeInCell(page, 'a')
+  await typeInCell(page, 'b')
+  await clickCell(page, 0, 1)
+  await typeInCell(page, '1')
+  await typeInCell(page, '2')
+
+  // Select A1:B2 and copy.
+  await clickCell(page, 0, 0)
+  await page.keyboard.down('Shift')
+  await clickCell(page, 1, 1)
+  await page.keyboard.up('Shift')
+  await page.keyboard.press('Control+c')
+
+  const text = await page.evaluate(() => navigator.clipboard.readText())
+  expect(text).toBe('a\t1\nb\t2')
+})
+
+test('pasting text from outside lands as cells in one undo step', async ({ page, context }) => {
+  await context.grantPermissions(['clipboard-read', 'clipboard-write'])
+  // Text nothing in this app produced: the point is that it comes from
+  // somewhere else, the way a paste out of Excel does.
+  await page.evaluate(() => navigator.clipboard.writeText('10\t20\n30\t40\n'))
+
+  await clickCell(page, 1, 1)
+  await page.keyboard.press('Control+v')
+
+  await clickCell(page, 1, 1)
+  await expect(formulaInput(page)).toHaveValue('10')
+  await clickCell(page, 2, 2)
+  await expect(formulaInput(page)).toHaveValue('40')
+
+  // Four cells, one Ctrl+Z.
+  await page.keyboard.press('Control+z')
+  await clickCell(page, 1, 1)
+  await expect(formulaInput(page)).toHaveValue('')
+  await clickCell(page, 2, 2)
+  await expect(formulaInput(page)).toHaveValue('')
+})
+
+test('pasting a block we copied keeps its formulas and moves their references', async ({
+  page,
+  context,
+}) => {
+  await context.grantPermissions(['clipboard-read', 'clipboard-write'])
+  await clickCell(page, 0, 0)
+  await typeInCell(page, '5')
+  await clickCell(page, 0, 1)
+  await typeInCell(page, '=A1*2')
+
+  await clickCell(page, 0, 1)
+  await page.keyboard.press('Control+c')
+  await clickCell(page, 1, 1)
+  await page.keyboard.press('Control+v')
+
+  // The system clipboard holds "10". An internal paste is the one that can
+  // bring the formula across and repoint it a row down.
+  await clickCell(page, 1, 1)
+  await expect(formulaInput(page)).toHaveValue('=A2*2')
+})

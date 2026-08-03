@@ -274,3 +274,25 @@ test('the transparency page lists the live action vocabulary', async ({ page }) 
   // The mode in force is shown, so the page answers "what is happening now".
   await expect(main).toContainText(/structural/i)
 })
+
+test('every action in a batch is captured, not just the first', async ({ page, context }) => {
+  // A batched gesture — an external paste is four cell edits in one step —
+  // must reach the log as four events. One would make the log replay to a
+  // different workbook than the user is looking at, which is the one thing
+  // the log is for.
+  await context.grantPermissions(['clipboard-read', 'clipboard-write'])
+  await gotoFresh(page, { consent: grantedConsent('structural') })
+  await expect(page.locator('canvas')).toBeVisible({ timeout: 30_000 })
+  const ingest = trackIngest(page)
+
+  await page.evaluate(() => navigator.clipboard.writeText('10\t20\n30\t40\n'))
+  await clickCell(page, 0, 0)
+  await page.keyboard.press('Control+v')
+  await page.waitForTimeout(6000)
+
+  const edits = ingest
+    .bodies()
+    .flatMap((b) => (JSON.parse(b) as { events: { action: string }[] }).events)
+    .filter((e) => e.action === 'cell.edit')
+  expect(edits.length, 'the batch was captured as fewer events than it had').toBe(4)
+})
