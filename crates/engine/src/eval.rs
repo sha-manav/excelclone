@@ -443,7 +443,16 @@ pub fn apply_binary(op: BinOp, a: Value, b: Value) -> Value {
             };
             match op {
                 BinOp::Add => finite(a + b),
-                BinOp::Sub => finite(a - b),
+                // Excel's 15-digit resolution again: subtracting two numbers
+                // it considers equal gives exactly zero, not the 5.55e-17 the
+                // doubles leave behind.
+                BinOp::Sub => {
+                    if agree_to_15_digits(a, b) {
+                        Value::Number(0.0)
+                    } else {
+                        finite(a - b)
+                    }
+                }
                 BinOp::Mul => finite(a * b),
                 BinOp::Div => {
                     if b == 0.0 {
@@ -561,7 +570,35 @@ pub fn compare_values(a: &Value, b: &Value) -> Ordering {
 }
 
 fn cmp_f64(a: f64, b: f64) -> Ordering {
+    if agree_to_15_digits(a, b) {
+        return Ordering::Equal;
+    }
     a.partial_cmp(&b).unwrap_or(Ordering::Equal)
+}
+
+/// Whether two numbers are the same to Excel's working precision.
+///
+/// Excel carries 15 significant decimal digits, and that is not only a
+/// display rule: `=0.1+0.2=0.3` is TRUE there, because the two sides agree
+/// to every digit Excel is claiming to know. Comparing the raw doubles
+/// instead answers FALSE, which is the difference people notice first —
+/// "why does my spreadsheet say these are not equal" is not a question
+/// anybody asks of Excel.
+///
+/// The rule is applied here, at the comparison, rather than by rounding every
+/// stored value: a cell holding 0.30000000000000004 really does hold it, and
+/// flattening it on the way in would lose precision that later arithmetic
+/// still wants. What Excel is saying is that a *difference* below its
+/// resolution is not a difference.
+pub fn agree_to_15_digits(a: f64, b: f64) -> bool {
+    if a == b {
+        return true;
+    }
+    if !a.is_finite() || !b.is_finite() {
+        return false;
+    }
+    // 14 digits after the point is 15 significant.
+    format!("{:.14e}", a) == format!("{:.14e}", b)
 }
 
 fn cmp_text(a: &str, b: &str) -> Ordering {

@@ -34,15 +34,17 @@ id = "number.a-comparison-of-nearly-equal-sums-is-true"
 formula = "=0.1+0.2=0.3"
 expect = "TRUE"
 source = "known"
-known_difference = true
 note = """
-Excel rounds a final result to 15 significant digits before comparing it, so
-0.1+0.2 and 0.3 test equal even though the doubles differ in the last bit.
-Gridline compares the raw doubles and answers FALSE. This is the difference
-people notice first, because "why does my spreadsheet say these aren't equal"
-is a question nobody asks of Excel. Recorded rather than fixed: the rule has
-to be applied at the same point Excel applies it, and guessing that point
-would trade one wrong answer for a subtler one.
+Excel carries 15 significant digits, so 0.1+0.2 and 0.3 test equal even though
+the doubles differ in the last bit. This is the difference people notice
+first, because "why does my spreadsheet say these aren't equal" is a question
+nobody asks of Excel.
+
+Recorded as a difference through P1-P3 because the rule has to be applied at
+the same point Excel applies it. Closed in P4 by applying it at the
+comparison — two numbers that agree to every digit Excel claims to know are
+equal — rather than by rounding every stored value, which would throw away
+precision later arithmetic still wants.
 """
 
 [[case]]
@@ -50,11 +52,11 @@ id = "number.subtracting-nearly-equal-sums-gives-zero"
 formula = "=SUM(0.1,0.2)-0.3"
 expect = "0"
 source = "known"
-known_difference = true
 note = """
-The same rule seen from the other side: Excel snaps a subtraction of nearly
-equal operands to exactly zero rather than leaving 5.55e-17. Gridline leaves
-the residue. Same fix, same reason for not guessing at it now.
+The same rule from the other side: a subtraction of two numbers Excel
+considers equal is exactly zero, not the 5.55e-17 the doubles leave behind.
+Both cases fall out of one rule applied in two places, which is why they were
+recorded as one difference rather than two.
 """
 
 [[case]]
@@ -165,3 +167,37 @@ expect = "-50%"
 source = "known"
 functions = ["TEXT"]
 note = "A single-section code applies to negatives with the sign in front."
+
+[[case]]
+id = "number.a-difference-inside-the-15th-digit-is-still-a-difference"
+formula = "=1.00000000000001=1"
+expect = "FALSE"
+source = "known"
+note = """
+The other side of the resolution rule, and the one that keeps it honest. The
+two differ in the 15th significant digit, which is inside what Excel claims
+to know, so they are not equal. A rule implemented with a loose epsilon
+passes the equality case above and fails this one.
+"""
+
+[[case]]
+id = "number.a-difference-past-the-15th-digit-is-not"
+formula = "=1.0000000000000002=1"
+expect = "TRUE"
+source = "known"
+note = """
+Sixteen digits in, which is past Excel's resolution. The pair with the case
+above pins where the line is rather than that there is one.
+"""
+
+[[case]]
+id = "number.the-rule-does-not-swallow-a-real-small-number"
+formula = "=0.000000000000001-0"
+expect = "0.000000000000001"
+source = "known"
+note = """
+1e-15 is a perfectly good number and subtracting zero from it must leave it
+alone. A near-zero rule written as an absolute threshold rather than a
+relative one would return 0 here, and a column of small measurements would
+quietly become a column of zeroes.
+"""

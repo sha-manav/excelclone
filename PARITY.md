@@ -15,11 +15,11 @@ this file and fails if the result differs from what is committed.
 
 | Measure | Score | |
 | --- | --- | --- |
-| Cell match (settled cases) | **98.4%** | 312 of 317 |
+| Cell match (settled cases) | **99.1%** | 317 of 320 |
 | Function coverage | **100.0%** | 135 of 135 target functions implemented |
 | Functions pinned by a case | **97.0%** | 131 of 135 implemented |
 | Round-trip fidelity | **100.0%** | 2 of 2 workbooks |
-| Recorded differences | 5 | counted as misses above |
+| Recorded differences | 3 | counted as misses above |
 | Open questions | 4 | excluded above |
 
 ## Functions
@@ -182,8 +182,6 @@ against anything but our own opinion.
 | `date.eomonth-refuses-the-phantom-day` | `=EOMONTH(60,1)` | `91` | `#NUM!` | yes |
 | `dyn.textsplit-prefers-the-longer-delimiter` | `=INDEX(TEXTSPLIT("a, b",{", ",","}),1,2)` | `b` | `!refused: formula parse error: unexpected character '{' at offset 23` | yes |
 | `dyn.if-does-not-spill` | `=IF(A1:A2>0,1,0)` | `1` | `#VALUE!` | yes |
-| `number.a-comparison-of-nearly-equal-sums-is-true` | `=0.1+0.2=0.3` | `TRUE` | `FALSE` | yes |
-| `number.subtracting-nearly-equal-sums-gives-zero` | `=SUM(0.1,0.2)-0.3` | `0` | `0.0000000000000000555111512312578` | yes |
 
 A row marked **new** is a regression and fails the build. A recorded one is a
              difference we know about and have not fixed; it lowers the score above, and

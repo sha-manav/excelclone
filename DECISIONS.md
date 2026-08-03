@@ -307,3 +307,8 @@ One-line rationale for every non-obvious choice.
 - **`LET` refuses a reference as a name.** `LET(A1,5,A1)` would shadow the cell for the rest of the formula, and a formula whose `A1` sometimes means the cell is unreadable.
 - **AGGREGATE's two quartile conventions were written as one and the corpus caught it.** 17 is inclusive and 19 exclusive; they differ in where the ends of the data sit, and the first implementation divided by four in both branches. The pair of cases is the point — either one alone passes an implementation that has only one formula.
 - **The exclusive percentile can have no answer, and says so.** With two values it is only defined between 1/3 and 2/3; interpolating past the ends would invent data.
+
+## P4b — Excel's 15 significant digits
+
+- **The rule is applied at the comparison and at subtraction, not by rounding every stored value.** A cell holding `0.30000000000000004` really does hold it, and flattening it on the way in would lose precision later arithmetic still wants. What Excel is saying is narrower: a *difference* below its resolution is not a difference. `=0.1+0.2=0.3` is TRUE and `=SUM(0.1,0.2)-0.3` is 0, which were the two recorded differences, and they were recorded as one because they are one rule seen from two sides.
+- **"Agrees to 15 significant digits", not an epsilon.** An absolute threshold would swallow `1e-15` as zero, and a column of small measurements would quietly become a column of zeroes. Two boundary cases pin where the line is rather than that there is one: a difference in the 15th digit is a difference, one in the 16th is not.

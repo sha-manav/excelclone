@@ -264,11 +264,12 @@ Living checklist. Updated every session.
 
 ## Known gaps carried forward
 
-- Four measured parity differences are recorded rather than fixed, and are in
-  `PARITY.md`: Excel's 15-significant-digit rounding of a final result (which
-  is why `=0.1+0.2=0.3` is TRUE there and FALSE here), General switching to
-  scientific notation for large magnitudes, the negative section of a number
-  format code, and the 1900 leap-year bug.
+- Three measured parity differences are recorded rather than fixed, and are
+  in `PARITY.md`: the 1900 leap-year bug in month arithmetic, array literals
+  (`{"a","b"}`) which the parser does not read, and a scalar function handed
+  a range spilling one result per element the way Microsoft 365 does. The
+  15-significant-digit rule that made `=0.1+0.2=0.3` answer FALSE was closed
+  in P4b.
 
 - A habit written with *relative* references to a fixed table is invisible to
   the miner, because the R1C1 shape differs in every row. That is faithful —
