@@ -5,6 +5,7 @@
 
 pub(crate) mod condagg;
 mod date;
+mod dynamic;
 mod finance;
 mod logic;
 mod lookup;
@@ -58,7 +59,9 @@ pub const IMPLEMENTED: &[&str] = &[
     "SUMPRODUCT",
     "MODE",
     "STDEV",
+    "LET",
     "SUBTOTAL",
+    "AGGREGATE",
     "PMT",
     "FV",
     "PV",
@@ -99,6 +102,13 @@ pub const IMPLEMENTED: &[&str] = &[
     "LOOKUP",
     "OFFSET",
     "INDIRECT",
+    "UNIQUE",
+    "SORT",
+    "SORTBY",
+    "FILTER",
+    "SEQUENCE",
+    "TRANSPOSE",
+    "TEXTSPLIT",
     // Text
     "CONCAT",
     "CONCATENATE",
@@ -157,11 +167,14 @@ pub const IMPLEMENTED: &[&str] = &[
     "YEARFRAC",
 ];
 
-/// The reference-producing functions, asked before the value ones.
+/// The functions that produce something other than a value — a reference or
+/// a block — asked before the value ones.
 ///
-/// Re-exported from `lookup` so `eval_operand` has a single door to knock on
-/// and the list of which functions those are lives beside their code.
-pub use lookup::call_operand;
+/// One door for `eval_operand` to knock on; which functions those are lives
+/// beside their code, in `lookup` and `dynamic` respectively.
+pub fn call_operand(ctx: &EvalCtx, name: &str, args: &[Expr]) -> Option<Operand> {
+    lookup::call_operand(ctx, name, args).or_else(|| dynamic::call_operand(ctx, name, args))
+}
 
 pub fn call(ctx: &EvalCtx, name: &str, args: &[Expr]) -> Value {
     match name {
@@ -200,7 +213,9 @@ pub fn call(ctx: &EvalCtx, name: &str, args: &[Expr]) -> Value {
         "SUMPRODUCT" => math::sumproduct(ctx, args),
         "MODE" => math::mode(ctx, args),
         "STDEV" => math::stdev(ctx, args),
+        "LET" => logic::let_fn(ctx, args),
         "SUBTOTAL" => math::subtotal(ctx, args),
+        "AGGREGATE" => math::aggregate(ctx, args),
         // Finance
         "PMT" => finance::pmt(ctx, args),
         "FV" => finance::fv(ctx, args),
@@ -245,6 +260,15 @@ pub fn call(ctx: &EvalCtx, name: &str, args: &[Expr]) -> Value {
         // that keeps `IMPLEMENTED` honest reads these lines.
         "OFFSET" => reference_as_scalar(ctx, "OFFSET", args),
         "INDIRECT" => reference_as_scalar(ctx, "INDIRECT", args),
+        // Dynamic arrays. These reach `call` only from a position that wants
+        // one value, where a block degrades exactly as a range does.
+        "UNIQUE" => reference_as_scalar(ctx, "UNIQUE", args),
+        "SORT" => reference_as_scalar(ctx, "SORT", args),
+        "SORTBY" => reference_as_scalar(ctx, "SORTBY", args),
+        "FILTER" => reference_as_scalar(ctx, "FILTER", args),
+        "SEQUENCE" => reference_as_scalar(ctx, "SEQUENCE", args),
+        "TRANSPOSE" => reference_as_scalar(ctx, "TRANSPOSE", args),
+        "TEXTSPLIT" => reference_as_scalar(ctx, "TEXTSPLIT", args),
         // Text
         "CONCAT" => text::concat(ctx, args),
         "CONCATENATE" => text::concatenate(ctx, args),
@@ -337,6 +361,21 @@ pub fn gather(ctx: &EvalCtx, args: &[Expr]) -> Vec<Gathered> {
             }),
             Operand::Range { sheet, range } => {
                 for v in ctx.range_values(sheet, range) {
+                    out.push(Gathered {
+                        value: v,
+                        from_range: true,
+                    });
+                }
+            }
+            // A computed block counts as a reference for the same reason a
+            // range does: `AVERAGE(UNIQUE(A1:A3))` over text is #DIV/0!, not
+            // #VALUE!, because the text came from cells rather than the
+            // formula. Empty entries are dropped, as range gathering does.
+            Operand::Array(a) => {
+                for v in a.values {
+                    if v.is_empty() {
+                        continue;
+                    }
                     out.push(Gathered {
                         value: v,
                         from_range: true,

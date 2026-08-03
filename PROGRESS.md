@@ -197,11 +197,15 @@ Living checklist. Updated every session.
       either, and text from outside lands as one batched, single-undo edit.
       An internal paste still carries formulas, decided by comparing the
       clipboard text with what we last put there
-- [ ] Spilling, and the dynamic-array functions behind it
+- [x] Dynamic arrays: operators are element-wise over anything wider than a
+      cell, UNIQUE / SORT / SORTBY / FILTER / SEQUENCE / TRANSPOSE / TEXTSPLIT
+      return blocks, and blocks spill onto the grid with `#SPILL!` when
+      something is in the way
+- [x] AGGREGATE and LET, which finishes the tier-2 target list
 
 ## Notes
 
-- 433 Rust tests, 157 web unit tests, 50 Playwright end-to-end tests; full
+- 446 Rust tests, 157 web unit tests, 51 Playwright end-to-end tests; full
   CI gate (fmt, clippy -D warnings, tests, wasm build, vite build, e2e)
   passes locally.
 - M5 found a bug that had been latent since M2: **xlsx export had never

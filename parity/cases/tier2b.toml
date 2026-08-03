@@ -105,18 +105,15 @@ given = { A1 = "1", A2 = "5", A3 = "9" }
 formula = "=SUMPRODUCT((A1:A3>2)*1)"
 expect = "2"
 source = "known"
-known_difference = true
 functions = ["SUMPRODUCT"]
 note = """
 A comparison against a range yields TRUE/FALSE per cell, and multiplying makes
 them 1 and 0 — the idiom people used for conditional counting before COUNTIFS
 existed, and still use when the condition is too complex for it.
 
-Gridline answers #VALUE!: an operator applied to a range degrades it to a
-scalar, so there is no element-wise result to sum. Making this work means
-array arithmetic, which is the same model change dynamic arrays need and not
-something to bolt onto one function. SUMPRODUCT over plain ranges works; it is
-the computed-array argument that does not.
+Recorded as a difference until P4, when operators became element-wise over
+anything wider than a cell. It is the same model change dynamic arrays need,
+which is why it was not worth bolting onto one function.
 """
 
 [[case]]

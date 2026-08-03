@@ -295,7 +295,8 @@
       "hidden_rows": [],
       "merged": [],
       "name": "Ledger",
-      "row_heights": []
+      "row_heights": [],
+      "spill": {}
     },
     {
       "cells": {
@@ -321,7 +322,8 @@
       "hidden_rows": [],
       "merged": [],
       "name": "Rates",
-      "row_heights": []
+      "row_heights": [],
+      "spill": {}
     }
   ]
 }

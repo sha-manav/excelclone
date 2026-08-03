@@ -271,3 +271,24 @@ test('pasting a block we copied keeps its formulas and moves their references', 
   await clickCell(page, 1, 1)
   await expect(formulaInput(page)).toHaveValue('=A2*2')
 })
+
+test('a dynamic array spills into the cells below and they read back', async ({ page }) => {
+  await clickCell(page, 0, 0)
+  await typeInCell(page, 'b')
+  await typeInCell(page, 'a')
+  await typeInCell(page, 'b')
+
+  await clickCell(page, 0, 2)
+  await typeInCell(page, '=UNIQUE(A1:A3)')
+
+  // C2 holds a value nothing was ever typed into, and it has no formula: the
+  // formula bar is empty there while the grid shows the spilled value.
+  await clickCell(page, 1, 2)
+  await expect(page.locator('.formula-bar__address')).toHaveText('C2')
+  await expect(formulaInput(page)).toHaveValue('a')
+
+  // Typing over a spilled cell breaks the block rather than being ignored.
+  await typeInCell(page, 'mine')
+  await clickCell(page, 0, 2)
+  await expect(formulaInput(page)).toHaveValue('=UNIQUE(A1:A3)')
+})

@@ -92,6 +92,19 @@ pub struct Sheet {
     /// Row heights in pixels, on the same terms.
     #[serde(default)]
     pub row_heights: BTreeMap<u32, f64>,
+    /// Blocks produced by formulas on this sheet, keyed by the cell that
+    /// produced them.
+    ///
+    /// Derived: recalculation rebuilds it, so it is not serialized and a
+    /// workbook read back from disk is recalculated before anyone looks.
+    #[serde(skip)]
+    pub arrays: BTreeMap<CellAddr, crate::eval::Array>,
+    /// Where each spilled value landed: address -> (the anchor that put it
+    /// there, the value). Derived from `arrays` in one deterministic sweep,
+    /// so two paths to the same workbook place spills identically even when
+    /// they evaluated the formulas in different orders.
+    #[serde(skip)]
+    pub spill: BTreeMap<CellAddr, (CellAddr, Value)>,
 }
 
 impl Sheet {
@@ -106,14 +119,26 @@ impl Sheet {
             hidden_rows: Vec::new(),
             col_widths: BTreeMap::new(),
             row_heights: BTreeMap::new(),
+            arrays: BTreeMap::new(),
+            spill: BTreeMap::new(),
         }
     }
 
     pub fn value(&self, addr: CellAddr) -> Value {
-        self.cells
+        if let Some(c) = self.cells.get(&addr) {
+            return c.value().clone();
+        }
+        // Spilled values have no cell of their own. Checked after `cells`
+        // because the anchor is a real cell and holds the first element.
+        self.spill
             .get(&addr)
-            .map(|c| c.value().clone())
+            .map(|(_, v)| v.clone())
             .unwrap_or(Value::Empty)
+    }
+
+    /// The anchor whose block put a value here, if this cell is spilled into.
+    pub fn spill_anchor(&self, addr: CellAddr) -> Option<CellAddr> {
+        self.spill.get(&addr).map(|(a, _)| *a)
     }
 
     /// The bounding box of populated cells, if any.
@@ -122,7 +147,10 @@ impl Sheet {
     /// what CSV export and whole-sheet formula ranges mean. A bold empty
     /// column is not data.
     pub fn used_range(&self) -> Option<RangeAddr> {
-        bounds(self.cells.keys().copied())
+        // Spilled cells are data: they are what the user sees, and leaving
+        // them out would make Ctrl+Down stop at the anchor and CSV export
+        // drop everything below it.
+        bounds(self.cells.keys().copied().chain(self.spill.keys().copied()))
     }
 
     /// The bounding box of everything the grid has to draw — cells, formats
@@ -133,6 +161,7 @@ impl Sheet {
             self.cells
                 .keys()
                 .copied()
+                .chain(self.spill.keys().copied())
                 .chain(self.formats.keys().copied())
                 .chain(self.merged.iter().flat_map(|m| [m.start, m.end])),
         )
@@ -276,6 +305,22 @@ impl Workbook {
                     "hidden_rows": hidden,
                     "col_widths": size_runs(&s.col_widths),
                     "row_heights": size_runs(&s.row_heights),
+                    // Spilled cells are state the user can see and formulas
+                    // can read, so a snapshot that left them out would call
+                    // two different workbooks identical.
+                    "spill": s
+                        .spill
+                        .iter()
+                        .map(|(a, (anchor, v))| {
+                            (
+                                a.to_a1(),
+                                serde_json::json!({
+                                    "from": anchor.to_a1(),
+                                    "value": v.display(),
+                                }),
+                            )
+                        })
+                        .collect::<serde_json::Map<String, serde_json::Value>>(),
                 })
             })
             .collect();

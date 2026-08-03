@@ -1,0 +1,498 @@
+# Dynamic arrays: the functions that return a block, and the arithmetic that
+# makes one.
+#
+# The harness reads one cell, so most of these wrap the block in an aggregate
+# or ask for one element with INDEX. The spilling itself — that the block
+# lands in the cells below and to the right — is an engine invariant and is
+# tested in `crates/engine/tests/spilling.rs`, where the whole grid can be
+# inspected rather than a single value.
+
+# --- Element-wise arithmetic ------------------------------------------------
+
+[[case]]
+id = "dyn.comparison-over-a-range-is-elementwise"
+given = { A1 = "1", A2 = "5", A3 = "9" }
+formula = "=SUM((A1:A3>2)*1)"
+expect = "2"
+source = "known"
+functions = ["SUM"]
+note = """
+Two of the three are over 2. The multiplication turns TRUE/FALSE into 1/0,
+which is the conditional-counting idiom that predates COUNTIFS.
+"""
+
+[[case]]
+id = "dyn.arithmetic-broadcasts-a-scalar"
+given = { A1 = "1", A2 = "2", A3 = "3" }
+formula = "=SUM(A1:A3*2)"
+expect = "12"
+source = "known"
+functions = ["SUM"]
+note = "Each cell doubles, then the block is summed: 2+4+6."
+
+[[case]]
+id = "dyn.mismatched-shapes-pad-with-na"
+given = { A1 = "1", A2 = "2", A3 = "3", B1 = "10", B2 = "20" }
+formula = "=COUNT(A1:A3+B1:B2)"
+expect = "2"
+source = "known"
+functions = ["COUNT"]
+note = """
+Three rows against two: the third has nothing to pair with and becomes #N/A
+rather than being dropped or treated as zero. COUNT sees two numbers.
+"""
+
+[[case]]
+id = "dyn.a-block-in-scalar-position-is-a-value-error"
+given = { A1 = "1", A2 = "2" }
+formula = "=IF(A1:A2*2>0,\"y\",\"n\")"
+expect = "#VALUE!"
+source = "spec"
+functions = ["IF"]
+note = """
+Implicit intersection — Excel's old rule that a range in scalar position means
+the cell on the same row — is not implemented, and IF's condition is a scalar
+position. ECMA-376 leaves the behaviour to the application; #VALUE! is what
+this engine says everywhere else a range lands in scalar position, and saying
+it here too is better than guessing which row was meant.
+
+In Microsoft 365 this spills instead, one result per row. That difference is
+recorded rather than hidden: see `dyn.if-does-not-spill` below.
+"""
+
+# --- UNIQUE -----------------------------------------------------------------
+
+[[case]]
+id = "dyn.unique-keeps-first-appearance-order"
+given = { A1 = "b", A2 = "a", A3 = "b", A4 = "c" }
+formula = "=TEXTJOIN(\",\",TRUE,UNIQUE(A1:A4))"
+expect = "b,a,c"
+source = "known"
+functions = ["UNIQUE", "TEXTJOIN"]
+note = "UNIQUE does not sort. The order is the order the values first appeared."
+
+[[case]]
+id = "dyn.unique-counts-distinct"
+given = { A1 = "1", A2 = "1", A3 = "2" }
+formula = "=COUNTA(UNIQUE(A1:A3))"
+expect = "2"
+source = "known"
+functions = ["UNIQUE", "COUNTA"]
+note = """
+COUNTA(UNIQUE(...)) is how Excel spells what Google Sheets calls COUNTUNIQUE.
+"""
+
+[[case]]
+id = "dyn.unique-exactly-once"
+given = { A1 = "a", A2 = "b", A3 = "a" }
+formula = "=TEXTJOIN(\",\",TRUE,UNIQUE(A1:A3,FALSE,TRUE))"
+expect = "b"
+source = "known"
+functions = ["UNIQUE"]
+note = """
+The third argument asks for the values that appear exactly once, which is a
+different question from one-of-each: `a` appears twice and is excluded
+entirely rather than kept once.
+"""
+
+[[case]]
+id = "dyn.unique-of-nothing-is-a-calc-error"
+given = { A1 = "x" }
+formula = "=UNIQUE(FILTER(A1,FALSE))"
+expect = "#CALC!"
+source = "known"
+functions = ["UNIQUE", "FILTER"]
+note = """
+An empty block is not a value. #CALC! says the calculation produced nothing,
+which is more useful than a blank cell that looks like a working formula.
+"""
+
+# --- SORT and SORTBY --------------------------------------------------------
+
+[[case]]
+id = "dyn.sort-ascending-by-default"
+given = { A1 = "3", A2 = "1", A3 = "2" }
+formula = "=TEXTJOIN(\",\",TRUE,SORT(A1:A3))"
+expect = "1,2,3"
+source = "known"
+functions = ["SORT", "TEXTJOIN"]
+note = "Ascending unless told otherwise, which is the argument's default."
+
+[[case]]
+id = "dyn.sort-descending"
+given = { A1 = "3", A2 = "1", A3 = "2" }
+formula = "=TEXTJOIN(\",\",TRUE,SORT(A1:A3,1,-1))"
+expect = "3,2,1"
+source = "known"
+functions = ["SORT"]
+note = "-1 is descending; anything other than 1 or -1 is #VALUE!."
+
+[[case]]
+id = "dyn.sort-by-the-second-column-moves-whole-rows"
+given = { A1 = "x", B1 = "2", A2 = "y", B2 = "1" }
+formula = "=INDEX(SORT(A1:B2,2),1,1)"
+expect = "y"
+source = "known"
+functions = ["SORT", "INDEX"]
+note = """
+Sorting a two-column block by its second column has to carry the first column
+along, or the rows come apart. `y` has the smaller key, so its row is first.
+"""
+
+[[case]]
+id = "dyn.sortby-uses-a-key-outside-the-block"
+given = { A1 = "x", A2 = "y", B1 = "2", B2 = "1" }
+formula = "=TEXTJOIN(\",\",TRUE,SORTBY(A1:A2,B1:B2))"
+expect = "y,x"
+source = "known"
+functions = ["SORTBY"]
+note = """
+The point of SORTBY over SORT: the key is a separate range and does not have
+to be part of what is being sorted.
+"""
+
+[[case]]
+id = "dyn.sortby-refuses-a-key-of-the-wrong-length"
+given = { A1 = "x", A2 = "y", B1 = "2" }
+formula = "=SORTBY(A1:A2,B1:B1)"
+expect = "#VALUE!"
+source = "known"
+functions = ["SORTBY"]
+note = """
+Two rows and one key. Padding either end would sort by the wrong thing
+silently, which is worse than refusing.
+"""
+
+# --- FILTER -----------------------------------------------------------------
+
+[[case]]
+id = "dyn.filter-keeps-the-rows-the-mask-marks"
+given = { A1 = "1", A2 = "5", A3 = "9" }
+formula = "=SUM(FILTER(A1:A3,A1:A3>2))"
+expect = "14"
+source = "known"
+functions = ["FILTER", "SUM"]
+note = "5 and 9 pass; 1 does not."
+
+[[case]]
+id = "dyn.filter-with-nothing-matching-uses-the-fallback"
+given = { A1 = "1", A2 = "2" }
+formula = "=FILTER(A1:A2,A1:A2>10,\"none\")"
+expect = "none"
+source = "known"
+functions = ["FILTER"]
+note = """
+The third argument is what to show when the filter matches nothing, and it
+exists because #CALC! in a report is alarming where \"none\" is informative.
+"""
+
+[[case]]
+id = "dyn.filter-with-nothing-matching-and-no-fallback"
+given = { A1 = "1", A2 = "2" }
+formula = "=FILTER(A1:A2,A1:A2>10)"
+expect = "#CALC!"
+source = "known"
+functions = ["FILTER"]
+note = "Without a fallback an empty result is #CALC!, not a blank."
+
+# --- SEQUENCE ---------------------------------------------------------------
+
+[[case]]
+id = "dyn.sequence-counts-from-one"
+formula = "=SUM(SEQUENCE(4))"
+expect = "10"
+source = "known"
+functions = ["SEQUENCE", "SUM"]
+note = "1+2+3+4. One column by default."
+
+[[case]]
+id = "dyn.sequence-takes-a-start-and-a-step"
+formula = "=TEXTJOIN(\",\",TRUE,SEQUENCE(3,1,10,5))"
+expect = "10,15,20"
+source = "known"
+functions = ["SEQUENCE"]
+note = "Start at 10, step 5, three of them."
+
+[[case]]
+id = "dyn.sequence-fills-a-rectangle-across-then-down"
+formula = "=INDEX(SEQUENCE(2,3),2,1)"
+expect = "4"
+source = "known"
+functions = ["SEQUENCE", "INDEX"]
+note = """
+Row-major: the first row is 1,2,3 and the second starts at 4. Getting this
+backwards would go unnoticed on a single column, which is why the case uses a
+rectangle.
+"""
+
+[[case]]
+id = "dyn.sequence-refuses-zero-rows"
+formula = "=SEQUENCE(0)"
+expect = "#VALUE!"
+source = "known"
+functions = ["SEQUENCE"]
+note = "A block with no rows is not a block; asking for one is a mistake."
+
+# --- TRANSPOSE --------------------------------------------------------------
+
+[[case]]
+id = "dyn.transpose-turns-a-row-into-a-column"
+given = { A1 = "1", B1 = "2", C1 = "3" }
+formula = "=INDEX(TRANSPOSE(A1:C1),3,1)"
+expect = "3"
+source = "known"
+functions = ["TRANSPOSE", "INDEX"]
+note = """
+A 1x3 becomes a 3x1, so the third element is at row 3 rather than column 3.
+"""
+
+[[case]]
+id = "dyn.transpose-twice-is-the-original"
+given = { A1 = "1", B1 = "2", A2 = "3", B2 = "4" }
+formula = "=INDEX(TRANSPOSE(TRANSPOSE(A1:B2)),1,2)"
+expect = "2"
+source = "known"
+functions = ["TRANSPOSE", "INDEX"]
+note = "The round trip, so a transpose that quietly reshaped would show up."
+
+# --- TEXTSPLIT --------------------------------------------------------------
+
+[[case]]
+id = "dyn.textsplit-on-a-comma"
+formula = "=INDEX(TEXTSPLIT(\"a,b,c\",\",\"),1,2)"
+expect = "b"
+source = "known"
+functions = ["TEXTSPLIT", "INDEX"]
+note = "Splitting on columns gives one row, so the parts are across."
+
+[[case]]
+id = "dyn.textsplit-prefers-the-longer-delimiter"
+formula = "=INDEX(TEXTSPLIT(\"a, b\",{\", \",\",\"}),1,2)"
+expect = "b"
+source = "known"
+functions = ["TEXTSPLIT", "INDEX"]
+known_difference = true
+note = """
+With both `\", \"` and `\",\"` offered, the longer one has to win or the space
+is left on the front of `b`.
+
+Gridline answers #NAME? — the array-literal syntax `{...}` is not parsed, so
+there is no way to hand TEXTSPLIT more than one delimiter from a formula.
+The longest-first rule is implemented and reachable from a range of
+delimiters; only the literal form is missing.
+"""
+
+[[case]]
+id = "dyn.textsplit-pads-a-ragged-split-with-na"
+formula = "=INDEX(TEXTSPLIT(\"a,b\" & CHAR(10) & \"c\",\",\",CHAR(10)),2,2)"
+expect = "#N/A"
+source = "known"
+functions = ["TEXTSPLIT", "INDEX", "CHAR"]
+note = """
+Two rows, the first with two columns and the second with one. A block is a
+rectangle, so the hole is filled — with #N/A rather than an empty string,
+because \"there was nothing here\" and \"there was an empty value here\" are
+different and only one of them is true.
+"""
+
+[[case]]
+id = "dyn.textsplit-can-drop-the-empty-pieces"
+formula = "=COLUMNS(TEXTSPLIT(\"a,,b\",\",\",,TRUE))"
+expect = "2"
+source = "known"
+functions = ["TEXTSPLIT", "COLUMNS"]
+note = """
+`a,,b` is three pieces, one of them empty; ignore_empty drops it, leaving two.
+
+Written expecting #VALUE! — COLUMNS took a reference and a computed block is
+not one — and it turned out to be a two-line gap rather than a design
+decision, so ROWS and COLUMNS now answer from the block's own shape.
+"""
+
+# --- What still differs -----------------------------------------------------
+
+[[case]]
+id = "dyn.if-does-not-spill"
+given = { A1 = "1", A2 = "2" }
+formula = "=IF(A1:A2>0,1,0)"
+expect = "1"
+source = "known"
+known_difference = true
+functions = ["IF"]
+note = """
+In Microsoft 365 a function handed a range where it wanted a scalar is called
+once per element and the results spill; `=IF(A1:A2>0,1,0)` fills two cells
+with 1.
+
+Gridline calls the function once with the range, which lands in scalar
+position and gives #VALUE!. Making this work means lifting *every* scalar
+function over arrays, not writing a spilling IF — the same shape of change as
+element-wise operators, one level up. Recorded rather than special-cased.
+"""
+
+# --- AGGREGATE and LET ------------------------------------------------------
+
+[[case]]
+id = "dyn.aggregate-sums"
+given = { A1 = "1", A2 = "2", A3 = "3" }
+formula = "=AGGREGATE(9,0,A1:A3)"
+expect = "6"
+source = "known"
+functions = ["AGGREGATE"]
+note = "Function 9 is SUM, option 0 ignores nothing."
+
+[[case]]
+id = "dyn.aggregate-ignores-errors-when-asked"
+given = { A1 = "1", A2 = "#N/A", A3 = "3" }
+formula = "=AGGREGATE(9,6,A1:A3)"
+expect = "4"
+source = "known"
+functions = ["AGGREGATE"]
+note = """
+Option 6 is the reason people reach for AGGREGATE at all: a total that
+survives one broken lookup in the column.
+"""
+
+[[case]]
+id = "dyn.aggregate-without-the-option-lets-the-error-through"
+given = { A1 = "1", A2 = "#N/A", A3 = "3" }
+formula = "=AGGREGATE(9,0,A1:A3)"
+expect = "#N/A"
+source = "known"
+functions = ["AGGREGATE"]
+note = """
+The counterpart to the case above. Ignoring errors unconditionally would make
+AGGREGATE hide mistakes it was never asked to hide.
+"""
+
+[[case]]
+id = "dyn.aggregate-large-takes-a-k"
+given = { A1 = "5", A2 = "9", A3 = "1" }
+formula = "=AGGREGATE(14,6,A1:A3,2)"
+expect = "5"
+source = "known"
+functions = ["AGGREGATE"]
+note = """
+Functions 14-19 take their k as a final argument rather than a third one, so
+the same call shape means different things depending on the function number.
+14 is LARGE; the second largest of 5, 9, 1 is 5.
+"""
+
+[[case]]
+id = "dyn.aggregate-refuses-an-unknown-function-number"
+given = { A1 = "1" }
+formula = "=AGGREGATE(99,0,A1)"
+expect = "#VALUE!"
+source = "known"
+functions = ["AGGREGATE"]
+note = "1 to 19; anything else is a typo worth naming."
+
+[[case]]
+id = "dyn.let-binds-a-name"
+formula = "=LET(x,5,x*2)"
+expect = "10"
+source = "known"
+functions = ["LET"]
+note = "The simplest form: one name, one value, one calculation."
+
+[[case]]
+id = "dyn.let-bindings-see-the-earlier-ones"
+formula = "=LET(a,2,b,a*3,a+b)"
+expect = "8"
+source = "known"
+functions = ["LET"]
+note = """
+`b` is defined in terms of `a`, which is what makes LET a sequence of
+bindings rather than a set of them.
+"""
+
+[[case]]
+id = "dyn.let-computes-a-subexpression-once"
+given = { A1 = "4" }
+formula = "=LET(v,A1*A1,v+v)"
+expect = "32"
+source = "known"
+functions = ["LET"]
+note = """
+The point of LET: `A1*A1` appears once in the formula and is evaluated once,
+where writing it twice would evaluate it twice. The answer is the same either
+way — that is what makes it safe — so this case is about the value being
+right, not about the saving.
+"""
+
+[[case]]
+id = "dyn.let-refuses-a-reference-as-a-name"
+given = { A1 = "1" }
+formula = "=LET(A1,5,A1)"
+expect = "#NAME?"
+source = "known"
+functions = ["LET"]
+note = """
+`A1` is a cell, not a name. Binding it would shadow the cell for the rest of
+the formula, and a formula whose `A1` sometimes means the cell and sometimes
+does not is unreadable.
+"""
+
+[[case]]
+id = "dyn.let-needs-an-odd-number-of-arguments"
+formula = "=LET(x,1,y,2)"
+expect = "#VALUE!"
+source = "known"
+functions = ["LET"]
+note = """
+Pairs of name and value, then the calculation. An even count means the last
+pair has no expression to compute, which is almost always a forgotten
+argument rather than an intention.
+"""
+
+[[case]]
+id = "dyn.an-unbound-name-is-still-a-name-error"
+formula = "=LET(x,1,y)"
+expect = "#NAME?"
+source = "known"
+functions = ["LET"]
+note = """
+Names became a parse-time thing when LET arrived. This checks the old
+behaviour survived it: an identifier nothing bound is #NAME?, exactly as
+`=FOO_BAR` was before.
+"""
+
+[[case]]
+id = "dyn.aggregate-quartile-inclusive"
+given = { A1 = "1", A2 = "2", A3 = "3", A4 = "4" }
+formula = "=AGGREGATE(17,0,A1:A4,1)"
+expect = "1.75"
+source = "known"
+functions = ["AGGREGATE"]
+note = """
+QUARTILE.INC spreads the four values over 0..1, so the first quartile sits
+three quarters of the way from 1 to 2. Written before the code, and it caught
+the two quartile conventions being implemented as the same thing.
+"""
+
+[[case]]
+id = "dyn.aggregate-quartile-exclusive"
+given = { A1 = "1", A2 = "2", A3 = "3", A4 = "4" }
+formula = "=AGGREGATE(19,0,A1:A4,1)"
+expect = "1.25"
+source = "known"
+functions = ["AGGREGATE"]
+note = """
+QUARTILE.EXC treats the four as a sample of something larger, so the same
+quartile lands a quarter of the way from 1 to 2 instead of three quarters.
+The pair is the point: an implementation with one formula for both passes
+whichever case it was written against.
+"""
+
+[[case]]
+id = "dyn.aggregate-exclusive-percentile-can-have-no-answer"
+given = { A1 = "1", A2 = "2" }
+formula = "=AGGREGATE(18,0,A1:A2,0.1)"
+expect = "#NUM!"
+source = "known"
+functions = ["AGGREGATE"]
+note = """
+With two values the exclusive convention only answers between 1/3 and 2/3.
+Below that there is no answer, and interpolating off the end of the data would
+invent one.
+"""

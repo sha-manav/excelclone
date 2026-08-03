@@ -120,7 +120,8 @@
       "hidden_rows": [],
       "merged": [],
       "name": "Sheet1",
-      "row_heights": []
+      "row_heights": [],
+      "spill": {}
     }
   ]
 }

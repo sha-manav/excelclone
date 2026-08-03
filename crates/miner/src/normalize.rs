@@ -358,6 +358,11 @@ fn render_r1c1(e: &Expr, row: i64, col: i64) -> String {
         Expr::Text(_) => "\"\"".to_string(),
         Expr::Bool(b) => if *b { "TRUE" } else { "FALSE" }.to_string(),
         Expr::Error(k) => k.code().to_string(),
+        // A LET binding's name is something the user chose, so it is user
+        // content in the same way a string literal is. Two formulas that
+        // differ only in what they called their intermediate are the same
+        // gesture, and the shape has to say so.
+        Expr::Name(_) => "NAME".to_string(),
         Expr::Cell(c) => {
             format!("{}{}", sheet_prefix(&c.sheet), r1c1(&c.r, row, col))
         }

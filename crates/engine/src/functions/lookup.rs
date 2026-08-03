@@ -459,6 +459,9 @@ fn arg_range(ctx: &EvalCtx, e: &Expr) -> Result<RangeAddr, ErrorKind> {
         // A scalar where a reference was wanted: Excel says #VALUE!, and it is
         // worth being loud because `ROWS(3)` is almost always a typo.
         crate::eval::Operand::Scalar(_) => Err(ErrorKind::Value),
+        // A computed block has no addresses at all, so there is nothing to
+        // hand back; ROWS and COLUMNS take the array path instead.
+        crate::eval::Operand::Array(_) => Err(ErrorKind::Value),
     }
 }
 
@@ -494,6 +497,8 @@ fn reference_position(
                 Expr::Cell(c) => of_cell(&c.r.addr()),
                 _ => return Value::Error(ErrorKind::Value),
             },
+            // A block is not anywhere, so it has no row or column.
+            crate::eval::Operand::Array(_) => return Value::Error(ErrorKind::Value),
         },
     };
     // Addresses are 0-based inside the engine and 1-based in the language.
@@ -502,16 +507,26 @@ fn reference_position(
 
 /// ROWS(range) / COLUMNS(range): how many, not which.
 pub fn rows(ctx: &EvalCtx, args: &[Expr]) -> Value {
-    reference_extent(ctx, args, |r| r.end.row - r.start.row + 1)
+    reference_extent(ctx, args, |r| r.end.row - r.start.row + 1, |a| a.rows)
 }
 
 pub fn columns(ctx: &EvalCtx, args: &[Expr]) -> Value {
-    reference_extent(ctx, args, |r| r.end.col - r.start.col + 1)
+    reference_extent(ctx, args, |r| r.end.col - r.start.col + 1, |a| a.cols)
 }
 
-fn reference_extent(ctx: &EvalCtx, args: &[Expr], f: impl Fn(&RangeAddr) -> u32) -> Value {
+fn reference_extent(
+    ctx: &EvalCtx,
+    args: &[Expr],
+    f: impl Fn(&RangeAddr) -> u32,
+    // A computed block has a shape but no addresses, so `ROWS(UNIQUE(A1:A9))`
+    // has to be answered from the block itself.
+    g: impl Fn(&crate::eval::Array) -> u32,
+) -> Value {
     if let Err(k) = expect_args(args, 1, 1) {
         return Value::Error(k);
+    }
+    if let crate::eval::Operand::Array(a) = ctx.eval_operand(&args[0]) {
+        return Value::Number(g(&a) as f64);
     }
     match args[0] {
         // A single cell is a 1x1 range; `arg_range` cannot see that because
@@ -652,6 +667,10 @@ fn vector_values(ctx: &EvalCtx, e: &Expr) -> Result<Vec<Value>, ErrorKind> {
         }
         crate::eval::Operand::Scalar(Value::Error(k)) => Err(k),
         crate::eval::Operand::Scalar(v) => Ok(vec![v]),
+        // A computed block reads as a vector too, so LOOKUP and XMATCH work
+        // over the output of UNIQUE or SORT without a spilled copy on the
+        // grid first.
+        crate::eval::Operand::Array(a) => Ok(a.values),
     }
 }
 
@@ -783,6 +802,8 @@ fn reference_of(ctx: &EvalCtx, e: &Expr) -> Result<(crate::model::SheetId, Range
             }
             _ => Err(ErrorKind::Value),
         },
+        // A block is not a reference and cannot be turned into one.
+        Operand::Array(_) => Err(ErrorKind::Value),
     }
 }
 

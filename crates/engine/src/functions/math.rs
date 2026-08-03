@@ -90,6 +90,12 @@ pub fn countblank(ctx: &EvalCtx, args: &[Expr]) -> Value {
             let blank = v.is_empty() || v == Value::Text(String::new());
             Value::Number(if blank { 1.0 } else { 0.0 })
         }
+        crate::eval::Operand::Array(a) => Value::Number(
+            a.values
+                .iter()
+                .filter(|v| v.is_empty() || **v == Value::Text(String::new()))
+                .count() as f64,
+        ),
     }
 }
 
@@ -490,6 +496,10 @@ pub fn sumproduct(ctx: &EvalCtx, args: &[Expr]) -> Value {
             // A scalar multiplies every row, which is how SUMPRODUCT(A1:A3, 2)
             // behaves.
             crate::eval::Operand::Scalar(v) => columns.push(vec![v]),
+            // A computed block pairs off exactly like a range, which is what
+            // makes `SUMPRODUCT((A1:A3>2)*1)` — the idiom that predates
+            // COUNTIFS — work at all.
+            crate::eval::Operand::Array(a) => columns.push(a.values),
         }
     }
     let len = columns.iter().map(Vec::len).max().unwrap_or(0);
@@ -622,6 +632,21 @@ pub fn subtotal(ctx: &EvalCtx, args: &[Expr]) -> Value {
                     non_empty += 1;
                 }
             }
+            // A computed block has no rows on the sheet, so nothing in it can
+            // be hidden and all of it counts.
+            crate::eval::Operand::Array(a) => {
+                for v in a.values {
+                    match v {
+                        Value::Number(n) => {
+                            visible.push(n);
+                            non_empty += 1;
+                        }
+                        Value::Error(k) => return Value::Error(k),
+                        Value::Empty => {}
+                        _ => non_empty += 1,
+                    }
+                }
+            }
         }
     }
 
@@ -660,4 +685,221 @@ pub fn subtotal(ctx: &EvalCtx, args: &[Expr]) -> Value {
         7 | 8 | 10 | 11 => Value::Error(ErrorKind::Div0),
         _ => Value::Error(ErrorKind::Value),
     }
+}
+
+/// AGGREGATE(function_num, options, ref1, [ref2]...)
+///
+/// SUBTOTAL's larger sibling: nineteen functions instead of eleven, and a
+/// second argument saying what to skip. The one people actually reach for it
+/// for is option 6 — ignore errors — which is what lets a total survive a
+/// column with one #N/A in it.
+///
+/// The array form, `AGGREGATE(14, 6, array, k)`, takes its k as a final
+/// argument; functions 14-19 are the ones that need it.
+pub fn aggregate(ctx: &EvalCtx, args: &[Expr]) -> Value {
+    if args.len() < 3 {
+        return Value::Error(ErrorKind::Value);
+    }
+    let code = match ctx.eval_number(&args[0]) {
+        Ok(n) => n.trunc() as i64,
+        Err(k) => return Value::Error(k),
+    };
+    let options = match ctx.eval_number(&args[1]) {
+        Ok(n) => n.trunc() as i64,
+        Err(k) => return Value::Error(k),
+    };
+    if !(1..=19).contains(&code) || !(0..=7).contains(&options) {
+        return Value::Error(ErrorKind::Value);
+    }
+    // Options 2, 3, 6 and 7 ignore errors; the rest let one through, which is
+    // the whole difference between AGGREGATE and the plain function.
+    let ignore_errors = matches!(options, 2 | 3 | 6 | 7);
+    // Options 1, 3, 5 and 7 ignore hidden rows, as SUBTOTAL always does.
+    let ignore_hidden = matches!(options, 1 | 3 | 5 | 7);
+    // 14-19 take a rank or a quantile as their last argument.
+    let takes_k = (14..=19).contains(&code);
+    let (refs, k) = if takes_k {
+        if args.len() < 4 {
+            return Value::Error(ErrorKind::Value);
+        }
+        let k = match ctx.eval_number(&args[args.len() - 1]) {
+            Ok(n) => n,
+            Err(e) => return Value::Error(e),
+        };
+        (&args[2..args.len() - 1], Some(k))
+    } else {
+        (&args[2..], None)
+    };
+
+    let mut numbers: Vec<f64> = Vec::new();
+    let mut non_empty = 0usize;
+    for a in refs {
+        let hidden = match (ignore_hidden, ctx.eval_operand(a)) {
+            (true, crate::eval::Operand::Range { sheet, range }) => ctx
+                .wb
+                .sheet(sheet)
+                .map(|s| {
+                    (range.start.row..=range.end.row)
+                        .filter(|r| s.hidden_rows.contains(r))
+                        .collect::<Vec<u32>>()
+                })
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        };
+        for g in super::gather(ctx, std::slice::from_ref(a)) {
+            if let Some(e) = g.value.as_error() {
+                if ignore_errors {
+                    continue;
+                }
+                return Value::Error(e);
+            }
+            match g.value {
+                Value::Number(n) => {
+                    numbers.push(n);
+                    non_empty += 1;
+                }
+                Value::Empty => {}
+                _ => non_empty += 1,
+            }
+        }
+        // Hidden rows are dropped after gathering, because `gather` flattens
+        // and loses the addresses. Only whole hidden rows inside a single
+        // range argument are affected, which is the case the option is for.
+        if !hidden.is_empty() {
+            if let crate::eval::Operand::Range { sheet, range } = ctx.eval_operand(a) {
+                for r in hidden {
+                    for c in range.start.col..=range.end.col {
+                        if let Some(Value::Number(n)) =
+                            ctx.wb.sheet(sheet).map(|s| s.value(CellAddr::new(r, c)))
+                        {
+                            if let Some(pos) = numbers.iter().position(|x| *x == n) {
+                                numbers.remove(pos);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let n = numbers.len() as f64;
+    let sum: f64 = numbers.iter().sum();
+    let mean = if n > 0.0 { sum / n } else { 0.0 };
+    let sample_var = || numbers.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / (n - 1.0);
+    let population_var = || numbers.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / n;
+    let mut sorted = numbers.clone();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+    match code {
+        1 if n > 0.0 => Value::Number(mean),
+        2 => Value::Number(n),
+        3 => Value::Number(non_empty as f64),
+        4 if n > 0.0 => Value::Number(sorted[sorted.len() - 1]),
+        5 if n > 0.0 => Value::Number(sorted[0]),
+        6 => Value::Number(if numbers.is_empty() {
+            0.0
+        } else {
+            numbers.iter().product()
+        }),
+        7 if n > 1.0 => Value::Number(sample_var().sqrt()),
+        8 if n > 0.0 => Value::Number(population_var().sqrt()),
+        9 => Value::Number(sum),
+        10 if n > 1.0 => Value::Number(sample_var()),
+        11 if n > 0.0 => Value::Number(population_var()),
+        12 if n > 0.0 => Value::Number(median_of(&sorted)),
+        13 if n > 0.0 => match mode_of(&numbers) {
+            Some(m) => Value::Number(m),
+            None => Value::Error(ErrorKind::NA),
+        },
+        14 | 15 => {
+            let k = k.unwrap_or(0.0).trunc();
+            if k < 1.0 || k > n {
+                return Value::Error(ErrorKind::Num);
+            }
+            let i = k as usize - 1;
+            Value::Number(if code == 14 {
+                sorted[sorted.len() - 1 - i]
+            } else {
+                sorted[i]
+            })
+        }
+        // 16 and 17 are the inclusive percentile and quartile, 18 and 19 the
+        // exclusive ones. A quartile's argument is 0-4 and becomes a
+        // fraction; a percentile's already is one.
+        16..=19 => {
+            let raw = k.unwrap_or(0.0);
+            let q = if code == 17 || code == 19 {
+                if !(0.0..=4.0).contains(&raw) {
+                    return Value::Error(ErrorKind::Num);
+                }
+                raw.trunc() / 4.0
+            } else {
+                raw
+            };
+            if !(0.0..=1.0).contains(&q) || n == 0.0 {
+                return Value::Error(ErrorKind::Num);
+            }
+            let exclusive = code == 18 || code == 19;
+            match percentile_of(&sorted, q, exclusive) {
+                Some(v) => Value::Number(v),
+                None => Value::Error(ErrorKind::Num),
+            }
+        }
+        // Every remaining arm is a function whose inputs were empty.
+        1 | 4 | 5 | 12 | 13 => Value::Error(ErrorKind::Div0),
+        _ => Value::Error(ErrorKind::Div0),
+    }
+}
+
+fn median_of(sorted: &[f64]) -> f64 {
+    let n = sorted.len();
+    if n % 2 == 1 {
+        sorted[n / 2]
+    } else {
+        (sorted[n / 2 - 1] + sorted[n / 2]) / 2.0
+    }
+}
+
+fn mode_of(values: &[f64]) -> Option<f64> {
+    let mut best: Option<(f64, usize)> = None;
+    for v in values {
+        let count = values.iter().filter(|x| *x == v).count();
+        if count > 1 && best.map(|(_, c)| count > c).unwrap_or(true) {
+            best = Some((*v, count));
+        }
+    }
+    best.map(|(v, _)| v)
+}
+
+/// Linear interpolation between the two neighbouring ranks.
+///
+/// The two conventions differ in where they put the ends. *Inclusive* spreads
+/// the data over 0..1, so the 0th and 100th percentiles are the smallest and
+/// largest values. *Exclusive* treats the sample as coming from a larger
+/// population, so a percentile below `1/(n+1)` or above `n/(n+1)` has no
+/// answer at all — None here, `#NUM!` in the cell. Excel ships both because
+/// which one is right depends on what the numbers are.
+fn percentile_of(sorted: &[f64], q: f64, exclusive: bool) -> Option<f64> {
+    let n = sorted.len();
+    if n == 0 {
+        return None;
+    }
+    let pos = if exclusive {
+        let p = q * (n + 1) as f64;
+        if p < 1.0 || p > n as f64 {
+            return None;
+        }
+        p - 1.0
+    } else {
+        if n == 1 {
+            return Some(sorted[0]);
+        }
+        q * (n - 1) as f64
+    };
+    let lo = pos.floor() as usize;
+    let hi = pos.ceil() as usize;
+    if lo == hi {
+        return Some(sorted[lo]);
+    }
+    Some(sorted[lo] + (pos - lo as f64) * (sorted[hi] - sorted[lo]))
 }

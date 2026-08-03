@@ -194,9 +194,25 @@ impl Gridline {
                 styles.push(style);
                 match s.cells.get(&addr) {
                     None => {
-                        values.push(String::new());
-                        kinds.push(KIND_EMPTY);
-                        formulas.push(false);
+                        // A cell with no `Cell` behind it may still be showing
+                        // a value: a dynamic array spilled into it. Reading
+                        // only `cells` here is how a block would compute
+                        // correctly and draw as blank.
+                        match s.spill.get(&addr) {
+                            Some((_, v)) => {
+                                values.push(display_with_format(v, &palette[style as usize]));
+                                kinds.push(kind_of(v));
+                                // Not a formula: there is nothing to open in
+                                // the formula bar, and saying otherwise would
+                                // let the user edit a cell that does not exist.
+                                formulas.push(false);
+                            }
+                            None => {
+                                values.push(String::new());
+                                kinds.push(KIND_EMPTY);
+                                formulas.push(false);
+                            }
+                        }
                     }
                     Some(cell) => {
                         let v = cell.value();
@@ -224,11 +240,21 @@ impl Gridline {
     /// literal as typed.
     #[wasm_bindgen(js_name = cellInput)]
     pub fn cell_input(&self, sheet: &str, row: u32, col: u32) -> String {
-        self.engine
-            .wb
-            .sheet_by_name(sheet)
-            .and_then(|s| s.cells.get(&CellAddr::new(row, col)))
-            .map(|c| c.input())
+        let addr = CellAddr::new(row, col);
+        let Some(s) = self.engine.wb.sheet_by_name(sheet) else {
+            return String::new();
+        };
+        if let Some(cell) = s.cells.get(&addr) {
+            return cell.input();
+        }
+        // A spilled cell has no formula of its own. Excel shows the anchor's,
+        // greyed; this shows the value, because the formula bar here is an
+        // editable field and offering the formula would invite the user to
+        // press Enter and end up with a second copy of it. Typing over the
+        // value breaks the block, which is what Excel does too.
+        s.spill
+            .get(&addr)
+            .map(|(_, v)| v.display())
             .unwrap_or_default()
     }
 

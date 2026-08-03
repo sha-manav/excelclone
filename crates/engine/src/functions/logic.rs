@@ -145,6 +145,8 @@ fn peek(ctx: &EvalCtx, e: &Expr) -> Value {
         // A range where a scalar was wanted: Excel's implicit intersection is
         // out of scope, and #VALUE! is what it reports when that fails.
         crate::eval::Operand::Range { .. } => Value::Error(ErrorKind::Value),
+        crate::eval::Operand::Array(a) if a.is_single() => a.values[0].clone(),
+        crate::eval::Operand::Array(_) => Value::Error(ErrorKind::Value),
     }
 }
 
@@ -206,7 +208,16 @@ pub fn type_of(ctx: &EvalCtx, args: &[Expr]) -> Value {
         return Value::Error(k);
     }
     let code = match ctx.eval_operand(&args[0]) {
+        // 64 is Excel's code for an array, which a reference in this
+        // position also reports as.
         crate::eval::Operand::Range { .. } => 64.0,
+        crate::eval::Operand::Array(a) if !a.is_single() => 64.0,
+        crate::eval::Operand::Array(a) => match a.values[0] {
+            Value::Number(_) | Value::Empty => 1.0,
+            Value::Text(_) => 2.0,
+            Value::Bool(_) => 4.0,
+            Value::Error(_) => 16.0,
+        },
         crate::eval::Operand::Scalar(v) => match v {
             // An empty cell reports as a number, which is consistent with it
             // coercing to 0 everywhere else.
@@ -239,4 +250,37 @@ pub fn isref(ctx: &EvalCtx, args: &[Expr]) -> Value {
         return Value::Bool(is_reference);
     }
     Value::Bool(is_reference)
+}
+
+/// LET(name1, value1, [name2, value2, ...], calculation)
+///
+/// Binds names so an expression can be written once and used several times.
+/// The point is not brevity: a repeated subexpression is evaluated once per
+/// appearance, and `LET` is how a formula that reads the same lookup four
+/// times stops doing the lookup four times.
+///
+/// The names are the odd arguments and are taken from the *expression*, not
+/// from its value — `Expr::Name` exists for exactly this. Each binding sees
+/// the ones before it, which is what makes `LET(a,1,b,a+1,b)` work.
+pub fn let_fn(ctx: &EvalCtx, args: &[Expr]) -> Value {
+    // A name, its value, and eventually the calculation: at least three, and
+    // an odd number of them.
+    if args.len() < 3 || args.len().is_multiple_of(2) {
+        return Value::Error(ErrorKind::Value);
+    }
+    let mut bound: Vec<(String, Value)> = Vec::new();
+    for pair in args[..args.len() - 1].chunks(2) {
+        let Expr::Name(name) = &pair[0] else {
+            // Anything that parsed as a reference, a number or a function is
+            // not a name. Excel says #NAME? and so does this: silently
+            // treating `A1` as a binding would shadow the cell.
+            return Value::Error(ErrorKind::Name);
+        };
+        let value = ctx.with_bindings(&bound).eval_scalar(&pair[1]);
+        if let Some(k) = value.as_error() {
+            return Value::Error(k);
+        }
+        bound.push((name.clone(), value));
+    }
+    ctx.with_bindings(&bound).eval_scalar(&args[args.len() - 1])
 }

@@ -3,8 +3,8 @@
 //! Grammar notes:
 //! - Function names are case-insensitive and uppercased in the AST.
 //! - An identifier followed by `(` is a function call; otherwise we try to
-//!   read it as a cell reference. Unknown bare identifiers parse as a
-//!   `#NAME?` error node (named ranges are not in v1).
+//!   read it as a cell reference. One that is neither becomes `Expr::Name`,
+//!   which `LET` binds and everything else evaluates to `#NAME?`.
 //! - `^` is left-associative (Excel: 2^3^2 = 64).
 //! - Unary minus binds tighter than `^` (Excel: -2^2 = 4).
 //! - `%` is a postfix operator.
@@ -219,8 +219,8 @@ impl<'a> Lexer<'a> {
 
     fn lex_error_literal(&mut self) -> Result<Tok, ParseError> {
         // Longest-match against the known error codes.
-        const CODES: [&str; 7] = [
-            "#DIV/0!", "#VALUE!", "#REF!", "#NAME?", "#N/A", "#NUM!", "#CIRC!",
+        const CODES: [&str; 9] = [
+            "#DIV/0!", "#VALUE!", "#REF!", "#NAME?", "#N/A", "#NUM!", "#CIRC!", "#SPILL!", "#CALC!",
         ];
         let rest = self.rest();
         for code in CODES {
@@ -462,9 +462,15 @@ impl Parser {
         at: usize,
     ) -> Result<Expr, ParseError> {
         let Some(start) = ParsedRef::parse(first) else {
-            // Unknown bare identifier: evaluates to #NAME? (no named ranges in v1).
+            // A bare identifier that is not a reference. It keeps its text
+            // rather than collapsing to #NAME? at parse time, because LET
+            // binds names and the evaluator is the only thing that knows
+            // which ones are in scope. Unbound, it still answers #NAME?.
             let _ = at;
-            return Ok(Expr::Error(ErrorKind::Name));
+            if sheet.is_some() {
+                return Ok(Expr::Error(ErrorKind::Name));
+            }
+            return Ok(Expr::Name(first.to_string()));
         };
         if self.peek() == Some(&Tok::Colon) {
             self.next();
@@ -606,8 +612,13 @@ mod tests {
     }
 
     #[test]
-    fn unknown_name_is_name_error() {
-        assert_eq!(p("FOO_BAR"), Error(crate::value::ErrorKind::Name));
+    fn an_unknown_name_keeps_its_text_and_errors_at_evaluation() {
+        // It used to become #NAME? here. LET binds names, so which ones are
+        // known is not something the parser can decide; the evaluator answers
+        // #NAME? for the ones nothing bound.
+        assert_eq!(p("FOO_BAR"), Expr::Name("FOO_BAR".into()));
+        // Round-tripping matters: the name is what the user typed.
+        assert_eq!(p("FOO_BAR").to_formula(), "FOO_BAR");
     }
 
     #[test]

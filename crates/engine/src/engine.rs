@@ -30,6 +30,10 @@ pub const MAX_FORMAT_CELLS: u64 = 200_000;
 /// reference several deep, and the alternative to a bound is a hang.
 const MAX_DYNAMIC_REFERENCE_PASSES: usize = 3;
 
+/// How many times spilled blocks may be laid out and re-read before the
+/// engine stops. Same bound and the same reasoning as above.
+const MAX_SPILL_PASSES: usize = 4;
+
 /// What a paste carries over from the source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -366,6 +370,10 @@ pub struct Engine {
     pub wb: Workbook,
     deps: DepGraph,
     volatile: HashSet<CellKey>,
+    /// Anchors whose block had nowhere to go at the last placement. Kept so
+    /// re-evaluating one does not flip it back to its first element for a
+    /// pass; see `place_spills`.
+    spill_blocked: HashSet<CellKey>,
     undo_stack: Vec<UndoEntry>,
     redo_stack: Vec<UndoEntry>,
     /// Injected clock for NOW/TODAY so evaluation is replayable; the shell
@@ -379,6 +387,7 @@ impl Engine {
             wb: Workbook::new(),
             deps: DepGraph::default(),
             volatile: HashSet::new(),
+            spill_blocked: HashSet::new(),
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             now_ms: 0,
@@ -1256,6 +1265,32 @@ impl Engine {
     pub fn recalc(&mut self, seeds: Vec<CellKey>) -> Vec<CellKey> {
         let mut changed = self.recalc_pass(seeds);
 
+        // Blocks are laid out after the pass, in one deterministic sweep, and
+        // whatever that moves is a value some other formula may have read.
+        // Bounded like the loop below and for the same reason: a chain of
+        // formulas reading each other's spilled cells settles in a few
+        // rounds, and a sheet that does not settle is one where the
+        // alternative to a bound is a hang.
+        if self.has_spills() {
+            for _ in 0..MAX_SPILL_PASSES {
+                let moved = self.place_spills();
+                if moved.is_empty() {
+                    break;
+                }
+                for k in &moved {
+                    if !changed.contains(k) {
+                        changed.push(*k);
+                    }
+                }
+                let again = self.recalc_pass(moved);
+                for k in again {
+                    if !changed.contains(&k) {
+                        changed.push(k);
+                    }
+                }
+            }
+        }
+
         // A cell holding OFFSET or INDIRECT reads cells the dependency graph
         // never saw — that is what makes it volatile — so one topological pass
         // can evaluate it *before* the value it actually depends on, and leave
@@ -1505,10 +1540,160 @@ impl Engine {
             sheet: key.sheet,
             at: key.addr,
             now_ms: self.now_ms,
+            bindings: &[],
         };
         let ast = ast.clone();
-        let v = ctx.eval_scalar(&ast);
-        self.store_value(key, v)
+        let operand = ctx.eval_operand(&ast);
+        // A block wider than one cell is recorded rather than placed. Where
+        // it lands depends on what every *other* block is doing, so placement
+        // is one deterministic sweep after the pass rather than a race
+        // between formulas.
+        let (value, array) = match operand {
+            crate::eval::Operand::Array(a) if !a.is_single() => {
+                // A block whose last placement was blocked keeps saying so.
+                // Without this the value flips between the first element and
+                // #SPILL! on alternate passes, and whichever pass ran last
+                // wins — which is not a rule anybody could rely on.
+                let head = if self.spill_blocked.contains(&key) {
+                    Value::Error(ErrorKind::Spill)
+                } else {
+                    a.values.first().cloned().unwrap_or(Value::Empty)
+                };
+                (head, Some(a))
+            }
+            other => (ctx.scalar_of(other), None),
+        };
+        if let Some(s) = self.wb.sheet_mut(key.sheet) {
+            match array {
+                Some(a) => s.arrays.insert(key.addr, a),
+                None => s.arrays.remove(&key.addr),
+            };
+        }
+        self.store_value(key, value)
+    }
+
+    /// Place every block on the grid, and report the addresses whose value
+    /// changed as a result.
+    ///
+    /// One sweep over all anchors in address order, on every sheet, clearing
+    /// the overlay first. Deterministic by construction: two workbooks with
+    /// the same blocks get the same layout however their formulas happened to
+    /// be scheduled, which is what the replay invariant needs. Doing it
+    /// inline as each formula evaluated would have made the layout depend on
+    /// the dependency graph.
+    fn place_spills(&mut self) -> Vec<CellKey> {
+        let mut moved = Vec::new();
+        let mut blocked_keys: HashSet<CellKey> = HashSet::new();
+        for sheet in &mut self.wb.sheets {
+            // An anchor that is no longer a formula left its block behind.
+            sheet
+                .arrays
+                .retain(|addr, _| sheet.cells.get(addr).map(|c| c.is_formula()) == Some(true));
+
+            let before = std::mem::take(&mut sheet.spill);
+            let mut blocked: Vec<CellAddr> = Vec::new();
+            let anchors: Vec<(CellAddr, (u32, u32))> = sheet
+                .arrays
+                .iter()
+                .map(|(a, arr)| (*a, (arr.rows, arr.cols)))
+                .collect();
+            for (anchor, (rows, cols)) in anchors {
+                let last_row = anchor.row as u64 + rows as u64 - 1;
+                let last_col = anchor.col as u64 + cols as u64 - 1;
+                let fits = last_row < crate::addr::MAX_ROWS as u64
+                    && last_col < crate::addr::MAX_COLS as u64;
+                let region: Vec<CellAddr> = if fits {
+                    (anchor.row..=last_row as u32)
+                        .flat_map(|r| {
+                            (anchor.col..=last_col as u32).map(move |c| CellAddr::new(r, c))
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                // Anything already in the way stops the whole block: a
+                // half-spilled array would be worse than an error, because
+                // the user could not tell which half was real.
+                let clear = fits
+                    && region.iter().all(|a| {
+                        *a == anchor
+                            || (!sheet.cells.contains_key(a) && !sheet.spill.contains_key(a))
+                    });
+                if !clear {
+                    blocked.push(anchor);
+                    continue;
+                }
+                let arr = &sheet.arrays[&anchor];
+                for (i, a) in region.into_iter().enumerate() {
+                    if a == anchor {
+                        continue;
+                    }
+                    sheet.spill.insert(a, (anchor, arr.values[i].clone()));
+                }
+            }
+
+            for (addr, (_, v)) in &sheet.spill {
+                if before.get(addr).map(|(_, b)| b) != Some(v) {
+                    moved.push(CellKey {
+                        sheet: sheet.id,
+                        addr: *addr,
+                    });
+                }
+            }
+            for addr in before.keys() {
+                if !sheet.spill.contains_key(addr) {
+                    moved.push(CellKey {
+                        sheet: sheet.id,
+                        addr: *addr,
+                    });
+                }
+            }
+
+            // The anchor's value is settled here rather than at evaluation,
+            // because whether the block fits is a fact about the whole sheet.
+            // A blocked one says #SPILL! instead of showing its first element,
+            // which would look like a working formula returning one value.
+            let sid = sheet.id;
+            let anchors: Vec<CellAddr> = sheet.arrays.keys().copied().collect();
+            for anchor in anchors {
+                let is_blocked = blocked.contains(&anchor);
+                if is_blocked {
+                    blocked_keys.insert(CellKey {
+                        sheet: sid,
+                        addr: anchor,
+                    });
+                }
+                let want = if is_blocked {
+                    Value::Error(ErrorKind::Spill)
+                } else {
+                    sheet.arrays[&anchor]
+                        .values
+                        .first()
+                        .cloned()
+                        .unwrap_or(Value::Empty)
+                };
+                if let Some(cell) = sheet.cells.get_mut(&anchor) {
+                    if let CellContent::Formula { cached, .. } = &mut cell.content {
+                        if *cached != want {
+                            *cached = want;
+                            moved.push(CellKey {
+                                sheet: sid,
+                                addr: anchor,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        self.spill_blocked = blocked_keys;
+        moved.sort();
+        moved.dedup();
+        moved
+    }
+
+    /// Whether any formula in the workbook produced a block.
+    fn has_spills(&self) -> bool {
+        self.wb.sheets.iter().any(|s| !s.arrays.is_empty())
     }
 
     fn store_value(&mut self, key: CellKey, v: Value) -> bool {

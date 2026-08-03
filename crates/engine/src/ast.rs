@@ -64,6 +64,10 @@ pub enum Expr {
     Range(RangeRef),
     /// Uppercased function name + args.
     Func(String, Vec<Expr>),
+    /// A bare identifier that is not a reference: a name LET bound, or — once
+    /// defined names exist — one of those. Unbound, it evaluates to #NAME?,
+    /// which is what an unknown identifier used to parse as directly.
+    Name(String),
     Binary(BinOp, Box<Expr>, Box<Expr>),
     Neg(Box<Expr>),
     /// Unary plus is kept so source can round-trip.
@@ -79,6 +83,7 @@ impl Expr {
             Expr::Text(s) => format!("\"{}\"", s.replace('"', "\"\"")),
             Expr::Bool(b) => if *b { "TRUE" } else { "FALSE" }.to_string(),
             Expr::Error(e) => e.code().to_string(),
+            Expr::Name(n) => n.clone(),
             Expr::Cell(c) => format_sheet_prefix(&c.sheet) + &c.r.to_a1(),
             Expr::Range(r) => {
                 format!(
