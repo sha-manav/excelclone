@@ -177,7 +177,7 @@ Living checklist. Updated every session.
 - [ ] Dynamic arrays (UNIQUE, SORT, FILTER, SEQUENCE, TEXTSPLIT) need spilling
       first, which is a model change rather than a function
 
-## P3 — The model changes (in progress)
+## P3-P6 — The model changes
 - [x] Functions can return a reference: `functions::call_operand` is tried
       before the value path, so `SUM(OFFSET(A1,0,0,3,1))` works rather than
       only `OFFSET(A1,1,1)`
@@ -284,12 +284,43 @@ Living checklist. Updated every session.
   formula, and a name is not one. Resolving names while building the graph is
   the fix; until then a workbook that leans on names recalculates fully.
 - Every structural operation triggers a full dependency rebuild and
-  recalculation. Correct but O(all formulas); revisit under P5 performance.
-- The grid ignores merged ranges when painting (the engine models them and
-  they survive round trips). Wire into the renderer in M5.
-- Auto-scroll while drag-selecting past the viewport edge is not implemented.
+  recalculation. Correct but O(all formulas).
+- **Conditional formatting and charts are preserved but cannot be authored.**
+  Both survive a round trip byte-identically — the rules and the chart parts
+  come back exactly as they arrived — but there is no way to create or edit
+  either. Conditional formatting is the nearer of the two: it needs rules on
+  the sheet, evaluation at recalculation, and `<dxf>` records in
+  `xl/styles.xml`, which is a second style collection beside `cellXfs`.
+  Charts are a rendering surface as well as a model and are further out.
+- Freezing more rows than fit in the window is allowed. The engine cannot see
+  the viewport, and the button freezes above the cursor; putting the cursor
+  near the bottom of a long sheet and pressing it leaves almost nothing to
+  scroll. Excel refuses; this does not.
+
+Two entries that stood here for several milestones were struck after checking
+them rather than after fixing them: the grid *does* paint merged ranges (M5)
+and drag-selection *does* auto-scroll past the viewport edge. A stale gap list
+is worse than no gap list, because it is read as current.
 
 ## Resume point
-M0-M4 complete and green. Next: M5 — grid completeness (fill handle polish,
-context menus, formatting toolbar, sort/filter UI, find & replace, and the
-import-warnings drawer).
+
+M0-M7 and the parity track P0-P6 are complete and green: `make ci` passes
+(fmt, clippy -D warnings, 458 Rust tests, the parity report check, `tsc -b`,
+the vite build, 167 web unit tests and 54 Playwright end-to-end tests), and
+`./scripts/demo.sh` runs the whole seeded scenario end to end.
+
+Parity stands at **99.1%** cell match over 320 settled cases, **100%**
+function coverage of the tier-1 and tier-2 target list, and 100% round-trip
+fidelity. Three differences are recorded rather than fixed and four questions
+are open; all seven are in `PARITY.md` with what Gridline currently answers.
+
+Next, in the order they are worth doing:
+
+1. **Conditional formatting.** The largest thing a spreadsheet user expects
+   that this cannot do. See the gap note above for what it needs.
+2. **Resolve defined names while building the dependency graph**, which takes
+   the volatility cost off every formula that uses one.
+3. **Incremental structural recalculation**, the other standing O(all
+   formulas) cost.
+4. **Charts.** A model, an authoring surface and a renderer; the biggest of
+   the four and the least like the rest of the codebase.
