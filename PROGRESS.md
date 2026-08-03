@@ -151,7 +151,7 @@ Living checklist. Updated every session.
 - [x] 52 cases pinning them, including the sign rules Microsoft's own page
       spends a paragraph on and the difference between competition and dense
       ranking
-- [x] Coverage 48.5% → 76.5%; cell match 98.2%; 96.2% of implemented
+- [x] Coverage 48.5% → 81.6%; cell match 98.3%; 96.4% of implemented
       functions pinned
 - [x] The reference family (ROW, COLUMN, ROWS, COLUMNS) — `EvalCtx` now
       carries the cell being evaluated, which nothing else had needed
@@ -159,7 +159,9 @@ Living checklist. Updated every session.
       (`(A1:A3>2)*1`) is a recorded difference, because element-wise operators
       are the same model change dynamic arrays need
 - [x] TIME, HOUR, MINUTE, SECOND, DATEVALUE, EDATE, DAYS
-- [ ] The financial block (PMT, FV, PV, NPV, IRR, RATE, NPER)
+- [x] The financial block (PMT, FV, PV, NPER, RATE, NPV, IRR), with the
+      closed forms computed independently from the documented equation and
+      the two iterative answers verified by substitution
 - [ ] MODE, STDEV, SUBTOTAL, AGGREGATE, XMATCH, LOOKUP, OFFSET, INDIRECT
 - [ ] Dynamic arrays (UNIQUE, SORT, FILTER, SEQUENCE, TEXTSPLIT) need spilling
       first, which is a model change rather than a function

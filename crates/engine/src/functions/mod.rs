@@ -5,6 +5,7 @@
 
 mod condagg;
 mod date;
+mod finance;
 mod logic;
 mod lookup;
 mod math;
@@ -55,6 +56,13 @@ pub const IMPLEMENTED: &[&str] = &[
     "SMALL",
     "RANK",
     "SUMPRODUCT",
+    "PMT",
+    "FV",
+    "PV",
+    "NPER",
+    "RATE",
+    "NPV",
+    "IRR",
     // Logic
     "IF",
     "IFS",
@@ -169,6 +177,14 @@ pub fn call(ctx: &EvalCtx, name: &str, args: &[Expr]) -> Value {
         "SMALL" => math::small(ctx, args),
         "RANK" => math::rank(ctx, args),
         "SUMPRODUCT" => math::sumproduct(ctx, args),
+        // Finance
+        "PMT" => finance::pmt(ctx, args),
+        "FV" => finance::fv(ctx, args),
+        "PV" => finance::pv(ctx, args),
+        "NPER" => finance::nper(ctx, args),
+        "RATE" => finance::rate(ctx, args),
+        "NPV" => finance::npv(ctx, args),
+        "IRR" => finance::irr(ctx, args),
         // Logic
         "IF" => logic::if_fn(ctx, args),
         "IFS" => logic::ifs(ctx, args),

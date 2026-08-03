@@ -15,9 +15,9 @@ this file and fails if the result differs from what is committed.
 
 | Measure | Score | |
 | --- | --- | --- |
-| Cell match (settled cases) | **98.2%** | 220 of 224 |
-| Function coverage | **76.5%** | 104 of 136 target functions implemented |
-| Functions pinned by a case | **96.2%** | 100 of 104 implemented |
+| Cell match (settled cases) | **98.3%** | 230 of 234 |
+| Function coverage | **81.6%** | 111 of 136 target functions implemented |
+| Functions pinned by a case | **96.4%** | 107 of 111 implemented |
 | Round-trip fidelity | **100.0%** | 2 of 2 workbooks |
 | Recorded differences | 4 | counted as misses above |
 | Open questions | 3 | excluded above |
@@ -101,7 +101,7 @@ against anything but our own opinion.
 | `RAND` | yes | — |
 | `RANDBETWEEN` | yes | — |
 
-### Tier 2 — 38 of 70 implemented
+### Tier 2 — 45 of 70 implemented
 
 | Function | Implemented | Pinned |
 | --- | --- | --- |
@@ -157,13 +157,13 @@ against anything but our own opinion.
 | `YEARFRAC` | — | — |
 | `EDATE` | yes | yes |
 | `DAYS` | yes | yes |
-| `PMT` | — | — |
-| `FV` | — | — |
-| `PV` | — | — |
-| `NPV` | — | — |
-| `IRR` | — | — |
-| `RATE` | — | — |
-| `NPER` | — | — |
+| `PMT` | yes | yes |
+| `FV` | yes | yes |
+| `PV` | yes | yes |
+| `NPV` | yes | yes |
+| `IRR` | yes | yes |
+| `RATE` | yes | yes |
+| `NPER` | yes | yes |
 | `CEILING` | yes | yes |
 | `FLOOR` | yes | yes |
 | `MROUND` | yes | yes |
