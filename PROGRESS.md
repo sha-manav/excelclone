@@ -177,9 +177,25 @@ Living checklist. Updated every session.
 - [ ] Dynamic arrays (UNIQUE, SORT, FILTER, SEQUENCE, TEXTSPLIT) need spilling
       first, which is a model change rather than a function
 
+## P3 — The model changes (in progress)
+- [x] Functions can return a reference: `functions::call_operand` is tried
+      before the value path, so `SUM(OFFSET(A1,0,0,3,1))` works rather than
+      only `OFFSET(A1,1,1)`
+- [x] `OFFSET` and `INDIRECT`, volatile because the dependency graph is built
+      from the references *written* in a formula and neither says where it
+      points until it runs
+- [x] The stale-read hazard is fixed, not just documented: a computed
+      reference could be evaluated before the value it actually reads, so the
+      engine now iterates (bounded) when any volatile cell computes its own
+      references. Clock and random functions read nothing and cost no extra
+      passes
+- [ ] Spilling, and the dynamic-array functions behind it
+- [ ] Column widths and row heights in the model
+- [ ] System clipboard bridge
+
 ## Notes
 
-- 412 Rust tests, 140 web unit tests, 44 Playwright end-to-end tests; full
+- 414 Rust tests, 140 web unit tests, 44 Playwright end-to-end tests; full
   CI gate (fmt, clippy -D warnings, tests, wasm build, vite build, e2e)
   passes locally.
 - M5 found a bug that had been latent since M2: **xlsx export had never

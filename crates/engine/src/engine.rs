@@ -22,6 +22,14 @@ use std::collections::{HashMap, HashSet};
 /// have.
 pub const MAX_FORMAT_CELLS: u64 = 200_000;
 
+/// How many extra recalculation passes a sheet using OFFSET or INDIRECT may
+/// take before the engine stops chasing the answer.
+///
+/// Three is enough for any chain a human writes; a sheet that still has not
+/// settled is one where a computed reference points at another computed
+/// reference several deep, and the alternative to a bound is a hang.
+const MAX_DYNAMIC_REFERENCE_PASSES: usize = 3;
+
 /// What a paste carries over from the source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1150,6 +1158,64 @@ impl Engine {
     /// topological order, mark cycles #CIRC!. Returns cells whose computed
     /// value changed.
     pub fn recalc(&mut self, seeds: Vec<CellKey>) -> Vec<CellKey> {
+        let mut changed = self.recalc_pass(seeds);
+
+        // A cell holding OFFSET or INDIRECT reads cells the dependency graph
+        // never saw — that is what makes it volatile — so one topological pass
+        // can evaluate it *before* the value it actually depends on, and leave
+        // it holding a stale answer. Excel settles this by iterating; so does
+        // this, seeded with what moved and bounded so a pathological sheet
+        // cannot spin.
+        //
+        // Only reference-volatile cells need it. A clock or random function
+        // recalculates every pass but reads nothing, so its answer is never
+        // stale and an extra pass would buy nothing but a different random
+        // number.
+        if self.has_dynamic_references() {
+            for _ in 0..MAX_DYNAMIC_REFERENCE_PASSES {
+                let moved: Vec<CellKey> = changed
+                    .iter()
+                    .copied()
+                    .filter(|k| !self.volatile.contains(k))
+                    .collect();
+                if moved.is_empty() {
+                    break;
+                }
+                let again = self.recalc_pass(moved);
+                let settled = again
+                    .iter()
+                    .all(|k| self.volatile.contains(k) && changed.contains(k));
+                for k in again {
+                    if !changed.contains(&k) {
+                        changed.push(k);
+                    }
+                }
+                if settled {
+                    break;
+                }
+            }
+        }
+        changed
+    }
+
+    /// Whether any volatile cell computes its own references.
+    ///
+    /// Scanned rather than tracked: the volatile set is small by nature, and a
+    /// second set to keep in step with it is a second thing to forget.
+    fn has_dynamic_references(&self) -> bool {
+        self.volatile.iter().any(|k| {
+            self.wb
+                .sheet(k.sheet)
+                .and_then(|s| s.cells.get(&k.addr))
+                .map(|c| match &c.content {
+                    CellContent::Formula { ast, .. } => ast.has_dynamic_reference(),
+                    _ => false,
+                })
+                .unwrap_or(false)
+        })
+    }
+
+    fn recalc_pass(&mut self, seeds: Vec<CellKey>) -> Vec<CellKey> {
         // 1. Dirty closure.
         let mut dirty: HashSet<CellKey> = HashSet::new();
         let mut queue: Vec<CellKey> = Vec::new();

@@ -11,7 +11,7 @@
 use super::expect_args;
 use crate::addr::{CellAddr, RangeAddr};
 use crate::ast::Expr;
-use crate::eval::{compare_values, EvalCtx};
+use crate::eval::{compare_values, EvalCtx, Operand};
 use crate::value::{ErrorKind, Value};
 use std::cmp::Ordering;
 
@@ -653,6 +653,142 @@ fn vector_values(ctx: &EvalCtx, e: &Expr) -> Result<Vec<Value>, ErrorKind> {
         crate::eval::Operand::Scalar(Value::Error(k)) => Err(k),
         crate::eval::Operand::Scalar(v) => Ok(vec![v]),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Functions that return a reference
+// ---------------------------------------------------------------------------
+
+/// The reference-producing half of the registry.
+///
+/// `None` means "not one of these", and the caller falls back to the ordinary
+/// value path. Keeping the two apart means `OFFSET` used as a scalar and
+/// `OFFSET` used as a range argument go through the same code and cannot
+/// disagree — the range is produced once, and a scalar context reads its
+/// top-left cell exactly as a written reference would.
+pub fn call_operand(ctx: &EvalCtx, name: &str, args: &[Expr]) -> Option<Operand> {
+    match name {
+        "OFFSET" => Some(offset(ctx, args)),
+        "INDIRECT" => Some(indirect(ctx, args)),
+        _ => None,
+    }
+}
+
+fn err(k: ErrorKind) -> Operand {
+    Operand::Scalar(Value::Error(k))
+}
+
+/// OFFSET(reference, rows, cols, [height], [width]).
+///
+/// VOLATILE, and it has to be: the dependency graph is built from the
+/// references written in the formula, and this one does not say where it
+/// points until it runs.
+fn offset(ctx: &EvalCtx, args: &[Expr]) -> Operand {
+    if args.len() < 3 || args.len() > 5 {
+        return err(ErrorKind::Value);
+    }
+    let (sheet, base) = match reference_of(ctx, &args[0]) {
+        Ok(r) => r,
+        Err(k) => return err(k),
+    };
+    let numbers: Result<Vec<f64>, ErrorKind> =
+        args[1..].iter().map(|a| ctx.eval_number(a)).collect();
+    let numbers = match numbers {
+        Ok(n) => n,
+        Err(k) => return err(k),
+    };
+    let (rows, cols) = (numbers[0].trunc() as i64, numbers[1].trunc() as i64);
+    let height = numbers
+        .get(2)
+        .map(|n| n.trunc() as i64)
+        .unwrap_or((base.end.row - base.start.row) as i64 + 1);
+    let width = numbers
+        .get(3)
+        .map(|n| n.trunc() as i64)
+        .unwrap_or((base.end.col - base.start.col) as i64 + 1);
+    if height <= 0 || width <= 0 {
+        // Excel refuses a zero or negative size rather than returning an empty
+        // reference, which there is no way to represent.
+        return err(ErrorKind::Ref);
+    }
+
+    let top = base.start.row as i64 + rows;
+    let left = base.start.col as i64 + cols;
+    if top < 0 || left < 0 {
+        return err(ErrorKind::Ref);
+    }
+    let (Some(start), Some(end)) = (
+        checked_addr(top, left),
+        checked_addr(top + height - 1, left + width - 1),
+    ) else {
+        // Off the edge of the grid is #REF!, the same answer as deleting the
+        // cells a reference pointed at.
+        return err(ErrorKind::Ref);
+    };
+    Operand::Range {
+        sheet,
+        range: RangeAddr::new(start, end),
+    }
+}
+
+/// INDIRECT(text): the reference a string spells out.
+///
+/// VOLATILE for the same reason as OFFSET, and more so: nothing about the
+/// formula text says which cells this depends on.
+fn indirect(ctx: &EvalCtx, args: &[Expr]) -> Operand {
+    if args.len() != 1 {
+        return err(ErrorKind::Value);
+    }
+    // The second argument (A1 vs R1C1 style) is not supported; R1C1 is not a
+    // syntax this engine reads anywhere, and accepting the flag while ignoring
+    // it would silently return the wrong cells.
+    let text = match ctx.eval_text(&args[0]) {
+        Ok(t) => t,
+        Err(k) => return err(k),
+    };
+    let (sheet_name, body) = match text.rsplit_once('!') {
+        Some((s, rest)) => (Some(s.trim_matches('\'').to_string()), rest.to_string()),
+        None => (None, text.clone()),
+    };
+    let sheet = match ctx.resolve_sheet(&sheet_name) {
+        Ok(s) => s,
+        Err(k) => return err(k),
+    };
+    // A string that is not a reference is #REF!, not #VALUE!: the argument was
+    // fine, the thing it named does not exist.
+    if let Some(range) = RangeAddr::parse_a1(&body) {
+        return Operand::Range { sheet, range };
+    }
+    match CellAddr::parse_a1(&body) {
+        Some(addr) => Operand::Range {
+            sheet,
+            range: RangeAddr::new(addr, addr),
+        },
+        None => err(ErrorKind::Ref),
+    }
+}
+
+/// The range an argument denotes, for functions that take a reference.
+fn reference_of(ctx: &EvalCtx, e: &Expr) -> Result<(crate::model::SheetId, RangeAddr), ErrorKind> {
+    match ctx.eval_operand(e) {
+        Operand::Range { sheet, range } => Ok((sheet, range)),
+        Operand::Scalar(Value::Error(k)) => Err(k),
+        // A lone cell has already degraded to a scalar, so its address comes
+        // from the expression — the same trick ROW and ROWS need.
+        Operand::Scalar(_) => match e {
+            Expr::Cell(c) => {
+                let sheet = ctx.resolve_sheet(&c.sheet)?;
+                let addr = c.r.addr();
+                Ok((sheet, RangeAddr::new(addr, addr)))
+            }
+            _ => Err(ErrorKind::Value),
+        },
+    }
+}
+
+fn checked_addr(row: i64, col: i64) -> Option<CellAddr> {
+    let addr = CellAddr::new(u32::try_from(row).ok()?, u32::try_from(col).ok()?);
+    addr.is_valid().then_some(addr)
 }
 
 #[cfg(test)]

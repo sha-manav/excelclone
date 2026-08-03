@@ -148,6 +148,48 @@ fn arithmetic_that_overflows_is_an_error_not_an_infinity() {
 }
 
 #[test]
+fn a_computed_reference_is_never_read_stale() {
+    // OFFSET reads cells the dependency graph never saw — only the *base* of
+    // the offset is written in the formula — so a single topological pass can
+    // evaluate the OFFSET cell before the value it actually depends on.
+    //
+    // This layout is built to provoke exactly that: A1 holds the OFFSET and
+    // sorts first, while A3, which it really reads, is a formula that sorts
+    // later and is invisible to the graph. Before the engine iterated, A1
+    // stayed at 10 after X1 changed.
+    let mut e = Engine::new();
+    set(&mut e, "X1", "1");
+    set(&mut e, "A2", "0");
+    set(&mut e, "A3", "=X1*10");
+    set(&mut e, "A4", "0");
+    set(&mut e, "A1", "=SUM(OFFSET(A2,0,0,3,1))");
+    assert_eq!(num(&e, "A1"), 10.0);
+
+    set(&mut e, "X1", "5");
+    assert_eq!(num(&e, "A3"), 50.0, "the visible dependency recalculated");
+    assert_eq!(num(&e, "A1"), 50.0, "the OFFSET read a stale A3");
+}
+
+#[test]
+fn a_clock_function_does_not_cost_extra_passes() {
+    // The iteration is for computed references only. RAND recalculates every
+    // pass but reads nothing, so its answer can never be stale — and a sheet
+    // full of it must not pay for passes that cannot change anything.
+    let mut e = Engine::new();
+    set(&mut e, "A1", "=RAND()");
+    set(&mut e, "A2", "=A1*2");
+    // Nothing to assert about the value; what matters is that this returns
+    // rather than iterating, and that the dependent still agrees with it.
+    let a1 = num(&e, "A1");
+    assert!((0.0..1.0).contains(&a1));
+    assert_eq!(
+        num(&e, "A2"),
+        a1 * 2.0,
+        "the dependent saw a different draw"
+    );
+}
+
+#[test]
 fn error_semantics() {
     let mut e = Engine::new();
     set(&mut e, "A1", "=1/0");

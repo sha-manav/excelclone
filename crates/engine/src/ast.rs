@@ -129,11 +129,37 @@ impl Expr {
     pub fn is_volatile(&self) -> bool {
         match self {
             Expr::Func(name, args) => {
-                matches!(name.as_str(), "NOW" | "TODAY" | "RAND" | "RANDBETWEEN")
-                    || args.iter().any(|a| a.is_volatile())
+                // OFFSET and INDIRECT are volatile for a different reason from the
+                // clock functions: the dependency graph is built from the
+                // references written in the formula, and neither of these says
+                // where it points until it runs. Recalculating them every pass
+                // is how Excel solves the same problem.
+                matches!(
+                    name.as_str(),
+                    "NOW" | "TODAY" | "RAND" | "RANDBETWEEN" | "OFFSET" | "INDIRECT"
+                ) || args.iter().any(|a| a.is_volatile())
             }
             Expr::Binary(_, l, r) => l.is_volatile() || r.is_volatile(),
             Expr::Neg(e) | Expr::Pos(e) | Expr::Percent(e) => e.is_volatile(),
+            _ => false,
+        }
+    }
+
+    /// True if the expression computes a reference — `OFFSET` or `INDIRECT`
+    /// — rather than writing one down.
+    ///
+    /// Distinct from [`Expr::is_volatile`], which also covers the clock and
+    /// random functions. Those recalculate every pass but read nothing, so
+    /// their answer cannot be stale; these read cells the dependency graph
+    /// never saw, which is a different problem and needs a different fix.
+    pub fn has_dynamic_reference(&self) -> bool {
+        match self {
+            Expr::Func(name, args) => {
+                matches!(name.as_str(), "OFFSET" | "INDIRECT")
+                    || args.iter().any(|a| a.has_dynamic_reference())
+            }
+            Expr::Binary(_, l, r) => l.has_dynamic_reference() || r.has_dynamic_reference(),
+            Expr::Neg(e) | Expr::Pos(e) | Expr::Percent(e) => e.has_dynamic_reference(),
             _ => false,
         }
     }

@@ -15,9 +15,9 @@ this file and fails if the result differs from what is committed.
 
 | Measure | Score | |
 | --- | --- | --- |
-| Cell match (settled cases) | **98.5%** | 262 of 266 |
-| Function coverage | **91.9%** | 124 of 135 target functions implemented |
-| Functions pinned by a case | **96.8%** | 120 of 124 implemented |
+| Cell match (settled cases) | **98.6%** | 272 of 276 |
+| Function coverage | **93.3%** | 126 of 135 target functions implemented |
+| Functions pinned by a case | **96.8%** | 122 of 126 implemented |
 | Round-trip fidelity | **100.0%** | 2 of 2 workbooks |
 | Recorded differences | 4 | counted as misses above |
 | Open questions | 4 | excluded above |
@@ -101,7 +101,7 @@ against anything but our own opinion.
 | `RAND` | yes | — |
 | `RANDBETWEEN` | yes | — |
 
-### Tier 2 — 58 of 69 implemented
+### Tier 2 — 60 of 69 implemented
 
 | Function | Implemented | Pinned |
 | --- | --- | --- |
@@ -123,8 +123,8 @@ against anything but our own opinion.
 | `TYPE` | yes | yes |
 | `XMATCH` | yes | yes |
 | `LOOKUP` | yes | yes |
-| `OFFSET` | — | — |
-| `INDIRECT` | — | — |
+| `OFFSET` | yes | yes |
+| `INDIRECT` | yes | yes |
 | `ROW` | yes | yes |
 | `COLUMN` | yes | yes |
 | `ROWS` | yes | yes |

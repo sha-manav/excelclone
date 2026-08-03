@@ -97,6 +97,8 @@ pub const IMPLEMENTED: &[&str] = &[
     "COLUMNS",
     "XMATCH",
     "LOOKUP",
+    "OFFSET",
+    "INDIRECT",
     // Text
     "CONCAT",
     "CONCATENATE",
@@ -154,6 +156,12 @@ pub const IMPLEMENTED: &[&str] = &[
     "WORKDAY",
     "YEARFRAC",
 ];
+
+/// The reference-producing functions, asked before the value ones.
+///
+/// Re-exported from `lookup` so `eval_operand` has a single door to knock on
+/// and the list of which functions those are lives beside their code.
+pub use lookup::call_operand;
 
 pub fn call(ctx: &EvalCtx, name: &str, args: &[Expr]) -> Value {
     match name {
@@ -232,6 +240,11 @@ pub fn call(ctx: &EvalCtx, name: &str, args: &[Expr]) -> Value {
         "COLUMNS" => lookup::columns(ctx, args),
         "XMATCH" => lookup::xmatch(ctx, args),
         "LOOKUP" => lookup::lookup(ctx, args),
+        // These two reach here only in a scalar position; `eval_operand`
+        // tries the reference path first. One name per arm, because the test
+        // that keeps `IMPLEMENTED` honest reads these lines.
+        "OFFSET" => reference_as_scalar(ctx, "OFFSET", args),
+        "INDIRECT" => reference_as_scalar(ctx, "INDIRECT", args),
         // Text
         "CONCAT" => text::concat(ctx, args),
         "CONCATENATE" => text::concatenate(ctx, args),
@@ -289,6 +302,15 @@ pub fn call(ctx: &EvalCtx, name: &str, args: &[Expr]) -> Value {
         "WORKDAY" => date::workday(ctx, args),
         "YEARFRAC" => date::yearfrac(ctx, args),
         _ => Value::Error(ErrorKind::Name),
+    }
+}
+
+/// Collapse a reference-returning function to a scalar, for the positions
+/// where a reference is not what the caller can use.
+fn reference_as_scalar(ctx: &EvalCtx, name: &str, args: &[Expr]) -> Value {
+    match call_operand(ctx, name, args) {
+        Some(op) => ctx.scalar_of(op),
+        None => Value::Error(ErrorKind::Name),
     }
 }
 

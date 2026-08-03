@@ -64,7 +64,12 @@ impl<'a> EvalCtx<'a> {
                     range: RangeAddr::new(r.start.addr(), r.end.addr()),
                 },
             },
-            Expr::Func(name, args) => Operand::Scalar(crate::functions::call(self, name, args)),
+            // A few functions produce a *reference* rather than a value, so
+            // `SUM(OFFSET(A1,0,0,3,1))` has a range to sum. They are asked
+            // first and fall back to the ordinary value path, which is what
+            // keeps `OFFSET` usable in both positions.
+            Expr::Func(name, args) => crate::functions::call_operand(self, name, args)
+                .unwrap_or_else(|| Operand::Scalar(crate::functions::call(self, name, args))),
             Expr::Binary(op, l, r) => Operand::Scalar(self.eval_binary(*op, l, r)),
             Expr::Neg(e) => Operand::Scalar(match self.eval_number(e) {
                 Ok(n) => Value::Number(-n),
@@ -80,7 +85,17 @@ impl<'a> EvalCtx<'a> {
 
     /// Evaluate to a scalar; ranges collapse to #VALUE! in v1.
     pub fn eval_scalar(&self, e: &Expr) -> Value {
-        match self.eval_operand(e) {
+        self.scalar_of(self.eval_operand(e))
+    }
+
+    /// Read an operand as a scalar, degrading a one-cell range to its value.
+    ///
+    /// Separate from `eval_scalar` because a reference-returning function has
+    /// an operand in hand already; going back through the expression would
+    /// evaluate it twice, and for a volatile function that is not merely
+    /// wasteful.
+    pub fn scalar_of(&self, op: Operand) -> Value {
+        match op {
             Operand::Scalar(v) => v,
             Operand::Range { sheet, range } => {
                 // Single-cell range degrades gracefully.
