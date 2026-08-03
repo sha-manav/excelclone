@@ -583,6 +583,22 @@ export default function App() {
    * goes where it points, anything else becomes a new name over the current
    * selection.
    */
+  /**
+   * Freeze everything above and to the left of the cursor, or unfreeze when
+   * something already is. One button rather than two, because "freeze" and
+   * "unfreeze" are the same gesture in Excel and the toolbar shows which one
+   * it currently means.
+   */
+  const toggleFreeze = useCallback(() => {
+    const frozen = (activeInfo?.frozen_rows ?? 0) > 0 || (activeInfo?.frozen_cols ?? 0) > 0
+    apply({
+      action: 'freeze_panes',
+      sheet: wb.activeSheet,
+      rows: frozen ? 0 : active.row,
+      cols: frozen ? 0 : active.col,
+    })
+  }, [apply, wb.activeSheet, activeInfo, active])
+
   const handleNameBox = useCallback(
     (text: string) => {
       const asRange = parseRangeA1(text)
@@ -809,6 +825,8 @@ export default function App() {
           onPatch={patchFormat}
           onClearFormatting={clearFormatting}
           onMergeToggle={toggleMerge}
+          frozen={(activeInfo?.frozen_rows ?? 0) > 0 || (activeInfo?.frozen_cols ?? 0) > 0}
+          onFreezeToggle={toggleFreeze}
         />
 
         <div className="toolbar__group">
@@ -885,6 +903,8 @@ export default function App() {
               merged={mergedList}
               paintedRows={activeInfo?.painted_rows ?? 0}
               paintedCols={activeInfo?.painted_cols ?? 0}
+              frozenRows={activeInfo?.frozen_rows ?? 0}
+              frozenCols={activeInfo?.frozen_cols ?? 0}
               highlights={highlights}
               onSelect={wb.select}
               onStartEdit={wb.startEdit}

@@ -324,3 +324,46 @@ test('the name box defines a name and then navigates to it', async ({ page }) =>
   await nameBox.press('Enter')
   await expect(page.locator('.formula-bar__address')).toHaveValue('B7')
 })
+
+test('freezing the top row keeps it on screen while the rest scrolls', async ({ page }) => {
+  const scrollTop = () =>
+    page.evaluate(
+      () => (document.querySelector('[data-testid="grid-scroll"]') as HTMLElement).scrollTop,
+    )
+
+  await clickCell(page, 0, 0)
+  await typeInCell(page, 'header')
+
+  // Freeze the first row: put the cursor in row 2 and press Freeze. The
+  // sheet has to be at the top for the click to land where it looks, which
+  // is what the name box guarantees.
+  await page.getByTestId('name-box').fill('A2')
+  await page.getByTestId('name-box').press('Enter')
+  await page.getByRole('button', { name: 'Freeze panes' }).click()
+  await expect(page.getByRole('button', { name: 'Unfreeze panes' })).toBeVisible()
+
+  await page.evaluate(() => {
+    ;(document.querySelector('[data-testid="grid-scroll"]') as HTMLElement).scrollTop = 600
+  })
+  await page.waitForTimeout(150)
+  expect(await scrollTop(), 'the grid did not scroll, so this proves nothing').toBe(600)
+
+  const box = (await page.locator('canvas').boundingBox())!
+  // The header is still drawn in the first row of the grid...
+  await page.mouse.click(box.x + 46 + 40, box.y + 24 + 12)
+  await expect(page.locator('.formula-bar__address')).toHaveValue('A1')
+  await expect(formulaInput(page)).toHaveValue('header')
+  // ...and selecting it did not drag the sheet back to the top, which a
+  // scroll-into-view that does not know about the band would have done.
+  expect(await scrollTop(), 'selecting a frozen cell scrolled the sheet').toBe(600)
+
+  // Directly below the band is a scrolled row, not row 2.
+  await page.mouse.click(box.x + 46 + 40, box.y + 24 + 24 + 12)
+  await expect(page.locator('.formula-bar__address')).toHaveValue('A27')
+
+  // Unfreezing puts the sheet back to one region: the top row is now whatever
+  // the scroll says it is.
+  await page.getByRole('button', { name: 'Unfreeze panes' }).click()
+  await page.mouse.click(box.x + 46 + 40, box.y + 24 + 12)
+  await expect(page.locator('.formula-bar__address')).toHaveValue('A26')
+})

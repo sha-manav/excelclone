@@ -205,7 +205,7 @@ Living checklist. Updated every session.
 
 ## Notes
 
-- 456 Rust tests, 161 web unit tests, 53 Playwright end-to-end tests; full
+- 458 Rust tests, 167 web unit tests, 54 Playwright end-to-end tests; full
   CI gate (fmt, clippy -D warnings, tests, wasm build, vite build, e2e)
   passes locally.
 - M5 found a bug that had been latent since M2: **xlsx export had never

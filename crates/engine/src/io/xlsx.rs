@@ -87,6 +87,9 @@ struct PreservedSheet {
     /// `customWidth`, verbatim, so regenerating the element does not drop the
     /// column styles and outline levels we do not model.
     col_attrs: BTreeMap<u32, String>,
+    /// Frozen (rows, cols) as found in `<pane>`, so export can tell whether
+    /// the model changed them.
+    frozen: (u32, u32),
 }
 
 /// Every entry of the imported package plus the map from sheet name to
@@ -564,6 +567,7 @@ fn install_sizes(engine: &mut Engine, package: &PreservedPackage) {
         };
         sheet.col_widths = detail.col_widths.clone();
         sheet.row_heights = detail.row_heights.clone();
+        (sheet.frozen_rows, sheet.frozen_cols) = detail.frozen;
     }
 }
 
@@ -752,6 +756,26 @@ fn scan_worksheet(xml: &[u8], features: &mut FeatureFlags) -> Result<PreservedSh
         match event {
             Event::Eof => break,
             Event::Start(e) | Event::Empty(e) => match e.name().local_name().as_ref() {
+                b"pane" => {
+                    // `<pane>` also describes a *split*, which is a different
+                    // feature: the panes scroll independently rather than one
+                    // being held still. Only a freeze is modeled, and a split
+                    // stays in the preserved bytes.
+                    let mut frozen = false;
+                    let (mut x, mut y) = (0.0f64, 0.0f64);
+                    for attr in e.attributes().flatten() {
+                        let value = attr.unescape_value().unwrap_or_default().into_owned();
+                        match attr.key.as_ref() {
+                            b"state" => frozen = value == "frozen" || value == "frozenSplit",
+                            b"xSplit" => x = value.parse().unwrap_or(0.0),
+                            b"ySplit" => y = value.parse().unwrap_or(0.0),
+                            _ => {}
+                        }
+                    }
+                    if frozen {
+                        out.frozen = (y.max(0.0) as u32, x.max(0.0) as u32);
+                    }
+                }
                 b"col" => {
                     let mut min = None;
                     let mut max = None;
@@ -882,6 +906,13 @@ struct SheetSpans {
     merge_cells: Option<ByteSpan<usize>>,
     dimension: Option<ByteSpan<usize>>,
     cols: Option<ByteSpan<usize>>,
+    /// The `<pane>` element inside the first `<sheetView>`, if it has one.
+    pane: Option<ByteSpan<usize>>,
+    /// The first `<sheetView>`: its whole span, and whether it was written as
+    /// an empty element. `<pane>` is that element's first child, so a freeze
+    /// either replaces the existing one or is inserted right after the open
+    /// tag — and an empty `<sheetView/>` has to be opened up first.
+    sheet_view: Option<(ByteSpan<usize>, bool)>,
     /// Where a new `<mergeCells>` element must go to keep schema order.
     merge_insert: Option<usize>,
 }
@@ -929,6 +960,12 @@ fn scan_spans(xml: &[u8]) -> Result<SheetSpans, IoError> {
             Event::Start(e) => {
                 let name = e.name();
                 let local = name.local_name();
+                if local.as_ref() == b"sheetView" && spans.sheet_view.is_none() {
+                    spans.sheet_view = Some((start..end, false));
+                }
+                if local.as_ref() == b"pane" && spans.pane.is_none() {
+                    spans.pane = Some(start..end);
+                }
                 if depth == 1 {
                     match local.as_ref() {
                         b"sheetData" => spans.sheet_data = Some(start..start),
@@ -947,6 +984,12 @@ fn scan_spans(xml: &[u8]) -> Result<SheetSpans, IoError> {
             Event::Empty(e) => {
                 let name = e.name();
                 let local = name.local_name();
+                if local.as_ref() == b"sheetView" && spans.sheet_view.is_none() {
+                    spans.sheet_view = Some((start..end, true));
+                }
+                if local.as_ref() == b"pane" && spans.pane.is_none() {
+                    spans.pane = Some(start..end);
+                }
                 if depth == 1 {
                     match local.as_ref() {
                         b"sheetData" => spans.sheet_data = Some(start..end),
@@ -1213,6 +1256,36 @@ fn patch_sheet_xml(
         }
     }
 
+    // `<pane>` says which rows and columns are held still. Only touched when
+    // the model disagrees with what was read, so a sheet whose panes nobody
+    // moved keeps whatever `<sheetView>` it arrived with — zoom, gridline
+    // settings, saved selection and all.
+    if (sheet.frozen_rows, sheet.frozen_cols) != detail.frozen {
+        let xml = write_pane(sheet.frozen_rows, sheet.frozen_cols);
+        match (spans.pane.clone(), spans.sheet_view.clone()) {
+            (Some(span), _) => edits.push((span, xml)),
+            (None, _) if xml.is_empty() => {}
+            // `<pane>` is `<sheetView>`'s first child, so straight after the
+            // open tag is the only place it can go.
+            (None, Some((span, false))) => edits.push((span.end..span.end, xml)),
+            // An empty `<sheetView/>` has no inside; it has to be opened up.
+            (None, Some((span, true))) => {
+                let open = String::from_utf8_lossy(&original[span.clone()])
+                    .trim_end_matches("/>")
+                    .to_string();
+                edits.push((span, format!("{open}>{xml}</sheetView>")));
+            }
+            // A worksheet with no `<sheetView>` at all is legal and rare;
+            // inventing the whole element is more than a freeze should do.
+            (None, None) => {
+                return Err(IoError::Unrepresentable(format!(
+                    "sheet '{}' has no <sheetView> to freeze panes in",
+                    sheet.name
+                )))
+            }
+        }
+    }
+
     // `<dimension>` is a hint that readers trust; a stale one hides cells we
     // just added.
     if let Some(span) = spans.dimension.clone() {
@@ -1268,6 +1341,35 @@ fn write_merge_cells(ranges: &BTreeSet<String>) -> String {
         out.push_str(&format!("<mergeCell ref=\"{}\"/>", escape_xml(r)));
     }
     out.push_str("</mergeCells>");
+    out
+}
+
+/// The `<pane>` element for a freeze, or nothing when there is none.
+///
+/// `topLeftCell` is the first cell of the scrolling region and `activePane`
+/// names which quadrant the cursor lives in — both derived from the counts
+/// rather than stored, because they are restatements of the same fact and a
+/// stored copy is a copy that can disagree.
+fn write_pane(rows: u32, cols: u32) -> String {
+    if rows == 0 && cols == 0 {
+        return String::new();
+    }
+    let active = match (cols > 0, rows > 0) {
+        (true, true) => "bottomRight",
+        (true, false) => "topRight",
+        _ => "bottomLeft",
+    };
+    let mut out = String::from("<pane");
+    if cols > 0 {
+        out.push_str(&format!(" xSplit=\"{cols}\""));
+    }
+    if rows > 0 {
+        out.push_str(&format!(" ySplit=\"{rows}\""));
+    }
+    out.push_str(&format!(
+        " topLeftCell=\"{}\" activePane=\"{active}\" state=\"frozen\"/>",
+        CellAddr::new(rows, cols).to_a1()
+    ));
     out
 }
 
@@ -1511,6 +1613,12 @@ fn export_fresh(wb: &Workbook) -> Result<Vec<u8>, IoError> {
     for sheet in &wb.sheets {
         let ws = book.add_worksheet();
         ws.set_name(&sheet.name)?;
+
+        if sheet.frozen_rows > 0 || sheet.frozen_cols > 0 {
+            // rust_xlsxwriter takes the first *scrolling* cell, which is the
+            // same fact stated as an address.
+            ws.set_freeze_panes(sheet.frozen_rows, sheet.frozen_cols as u16)?;
+        }
 
         // Widths and heights before anything else, so a sheet that is only
         // resized still writes them: rust_xlsxwriter keeps them whether or not

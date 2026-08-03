@@ -114,6 +114,7 @@ export type Action =
       refers_to: string
     }
   | { action: 'name_delete'; name: string }
+  | { action: 'freeze_panes'; sheet: string; rows: number; cols: number }
   | { action: 'undo' }
   | { action: 'redo' }
 

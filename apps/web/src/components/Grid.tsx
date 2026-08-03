@@ -34,7 +34,9 @@ import {
   clampRowHeight,
   colWidth,
   columnAtX,
-  columnLeft,
+  colViewportX,
+  frozenHeight,
+  frozenWidth,
   createMetrics,
   fillHandleRect,
   fillTarget,
@@ -49,13 +51,13 @@ import {
   resolvedAlign,
   rowAtY,
   rowHeight,
-  rowTop,
+  rowViewportY,
   scrollToInclude,
   selectionAt,
   selectionFocus,
   selectionFrom,
-  totalHeight,
-  totalWidth,
+  scrollableHeight,
+  scrollableWidth,
   usedEdge,
   virtualExtent,
   visibleRange,
@@ -76,6 +78,9 @@ export interface GridProps {
   /** Extent to make scrollable: includes cells that carry only formatting. */
   paintedRows: number
   paintedCols: number
+  /** Rows and columns held still while the rest of the sheet scrolls. */
+  frozenRows: number
+  frozenCols: number
   onSelect(sel: Selection): void
   /** `initial` set means typing replaced the cell rather than opening it. */
   onStartEdit(addr: Addr, initial?: string): void
@@ -210,6 +215,8 @@ export function Grid(props: GridProps): JSX.Element {
     merged,
     paintedRows,
     paintedCols,
+    frozenRows,
+    frozenCols,
     highlights,
     onSelect,
     onStartEdit,
@@ -277,8 +284,20 @@ export function Grid(props: GridProps): JSX.Element {
       hiddenRows: hiddenSet,
       rowCount: extent.rows,
       colCount: extent.cols,
+      frozenRows,
+      frozenCols,
     })
-  }, [colWidths, rowHeights, hiddenSet, usedRows, usedCols, paintedRows, paintedCols])
+  }, [
+    colWidths,
+    rowHeights,
+    hiddenSet,
+    usedRows,
+    usedCols,
+    paintedRows,
+    paintedCols,
+    frozenRows,
+    frozenCols,
+  ])
 
   // Everything the imperative layer (paint, window drag listeners, keyboard)
   // needs, refreshed every render so those handlers can stay identity-stable
@@ -304,7 +323,7 @@ export function Grid(props: GridProps): JSX.Element {
   const latestRef = useRef<Latest>(latest)
   latestRef.current = latest
 
-  const cacheRef = useRef<{ key: string; vp: Viewport | null }>({ key: '', vp: null })
+  const cacheRef = useRef<{ key: string; panes: Viewport[] }>({ key: '', panes: [] })
   const dragRef = useRef<Drag | null>(null)
   const fillPreviewRef = useRef<Range | null>(null)
   const rafRef = useRef(0)
@@ -347,35 +366,74 @@ export function Grid(props: GridProps): JSX.Element {
     ctx.fillRect(0, 0, cssW, cssH)
 
     const vis = visibleRange(scrollTop, scrollLeft, cssW, cssH, m)
-    const nRows = vis.lastRow - vis.firstRow + 1
-    const nCols = vis.lastCol - vis.firstCol + 1
+
+    // What to paint, in order: the frozen band first and then the scrolling
+    // region. A *list* rather than a range because the two are not adjacent
+    // in the sheet — scrolled down, row 1 sits directly above row 900 — and
+    // every loop below indexes this rather than counting from a first row.
+    const rowsAt: number[] = []
+    for (let r = 0; r < m.frozenRows; r++) rowsAt.push(r)
+    for (let r = vis.firstRow; r <= vis.lastRow; r++) rowsAt.push(r)
+    const colsAt: number[] = []
+    for (let c = 0; c < m.frozenCols; c++) colsAt.push(c)
+    for (let c = vis.firstCol; c <= vis.lastCol; c++) colsAt.push(c)
+    const nRows = rowsAt.length
+    const nCols = colsAt.length
     if (nRows <= 0 || nCols <= 0) return
 
-    // Per-frame edge tables: one allocation each, never one per cell.
+    // Per-frame edge tables: one allocation each, never one per cell. Each
+    // entry is asked for its own position rather than accumulated from the
+    // one before, because the step from the last frozen row to the first
+    // scrolling row is not that row's height.
     const xs = new Array<number>(nCols + 1)
-    xs[0] = hw + columnLeft(m, vis.firstCol) - scrollLeft
-    for (let i = 0; i < nCols; i++) xs[i + 1] = xs[i] + colWidth(m, vis.firstCol + i)
+    for (let i = 0; i < nCols; i++) xs[i] = colViewportX(m, colsAt[i], scrollLeft)
+    xs[nCols] = xs[nCols - 1] + colWidth(m, colsAt[nCols - 1])
     const ys = new Array<number>(nRows + 1)
-    ys[0] = hh + rowTop(m, vis.firstRow) - scrollTop
-    for (let i = 0; i < nRows; i++) ys[i + 1] = ys[i] + rowHeight(m, vis.firstRow + i)
+    for (let i = 0; i < nRows; i++) ys[i] = rowViewportY(m, rowsAt[i], scrollTop)
+    ys[nRows] = ys[nRows - 1] + rowHeight(m, rowsAt[nRows - 1])
 
-    // One engine call per repaint, cached so plain scrolling inside the
-    // overscan band does not re-cross the wasm boundary.
-    const r0 = Math.max(0, vis.firstRow - OVERSCAN)
-    const c0 = Math.max(0, vis.firstCol - OVERSCAN)
-    const rows = Math.min(m.rowCount, vis.lastRow + OVERSCAN + 1) - r0
-    const cols = Math.min(m.colCount, vis.lastCol + OVERSCAN + 1) - c0
-    const key = `${L.sheet}|${L.version}|${r0}|${c0}|${rows}|${cols}`
+    // Engine calls per repaint, cached so plain scrolling inside the overscan
+    // band does not re-cross the wasm boundary. One rectangle when nothing is
+    // frozen; up to four — the quadrants — when something is, because the
+    // frozen band and the scrolling region are far apart and one rectangle
+    // spanning both would fetch every row in between.
+    const rowBands: [number, number][] = [[vis.firstRow, vis.lastRow]]
+    if (m.frozenRows > 0) rowBands.unshift([0, m.frozenRows - 1])
+    const colBands: [number, number][] = [[vis.firstCol, vis.lastCol]]
+    if (m.frozenCols > 0) colBands.unshift([0, m.frozenCols - 1])
+    const wanted: [number, number, number, number][] = []
+    for (const [ra, rb] of rowBands) {
+      for (const [ca, cb] of colBands) {
+        const r0 = Math.max(0, ra - OVERSCAN)
+        const c0 = Math.max(0, ca - OVERSCAN)
+        const rows = Math.min(m.rowCount, rb + OVERSCAN + 1) - r0
+        const cols = Math.min(m.colCount, cb + OVERSCAN + 1) - c0
+        if (rows > 0 && cols > 0) wanted.push([r0, c0, rows, cols])
+      }
+    }
+    const key = `${L.sheet}|${L.version}|${wanted.map((w) => w.join(':')).join('|')}`
     if (cacheRef.current.key !== key) {
       cacheRef.current = {
         key,
-        vp:
-          L.sheetExists && rows > 0 && cols > 0
-            ? L.engine.viewport(L.sheet, r0, c0, rows, cols)
-            : null,
+        panes: L.sheetExists
+          ? wanted.map(([r0, c0, rows, cols]) =>
+              L.engine.viewport(L.sheet, r0, c0, rows, cols),
+            )
+          : [],
       }
     }
-    const vp = cacheRef.current.vp
+    const panes = cacheRef.current.panes
+    /** The viewport holding a cell and its index in it, or null. */
+    const lookup = (row: number, col: number): [Viewport, number] | null => {
+      for (const p of panes) {
+        const vr = row - p.row0
+        const vc = col - p.col0
+        if (vr >= 0 && vr < p.rows && vc >= 0 && vc < p.cols) {
+          return [p, vr * p.cols + vc]
+        }
+      }
+      return null
+    }
 
     const selRect = rangeRect(m, L.selection.range, scrollTop, scrollLeft)
     const multi =
@@ -389,13 +447,10 @@ export function Grid(props: GridProps): JSX.Element {
 
     // The palette entry for a visible cell; index 0 is always the default.
     const formatAt = (ri: number, ci: number): CellFormat => {
-      if (!vp) return EMPTY_CELL_FORMAT
-      const vrow = vis.firstRow + ri - vp.row0
-      const vcol = vis.firstCol + ci - vp.col0
-      if (vrow < 0 || vrow >= vp.rows || vcol < 0 || vcol >= vp.cols) {
-        return EMPTY_CELL_FORMAT
-      }
-      return vp.palette[vp.styles[vrow * vp.cols + vcol]] ?? EMPTY_CELL_FORMAT
+      const found = lookup(rowsAt[ri], colsAt[ci])
+      if (!found) return EMPTY_CELL_FORMAT
+      const [p, idx] = found
+      return p.palette[p.styles[idx]] ?? EMPTY_CELL_FORMAT
     }
 
     // Fills go down first, under the gridlines, exactly as in Excel.
@@ -434,17 +489,18 @@ export function Grid(props: GridProps): JSX.Element {
       ? []
       : L.merges.ranges.filter(
           (r) =>
-            r.end.row >= vis.firstRow &&
-            r.start.row <= vis.lastRow &&
-            r.end.col >= vis.firstCol &&
-            r.start.col <= vis.lastCol,
+            r.end.row >= rowsAt[0] &&
+            r.start.row <= rowsAt[nRows - 1] &&
+            r.end.col >= colsAt[0] &&
+            r.start.col <= colsAt[nCols - 1],
         )
     for (const mr of mergesToPaint) {
       const rect = rangeRect(m, mr, scrollTop, scrollLeft)
       if (rect.w <= 0 || rect.h <= 0) continue
-      const anchorFill = L.merges.isEmpty
-        ? undefined
-        : formatAt(mr.start.row - vis.firstRow, mr.start.col - vis.firstCol).fill_color
+      const anchor = lookup(mr.start.row, mr.start.col)
+      const anchorFill = anchor
+        ? (anchor[0].palette[anchor[0].styles[anchor[1]]] ?? EMPTY_CELL_FORMAT).fill_color
+        : undefined
       ctx.fillStyle = anchorFill ?? COLOR_BG
       ctx.fillRect(rect.x, rect.y, rect.w, rect.h)
       ctx.strokeStyle = COLOR_GRID
@@ -469,7 +525,7 @@ export function Grid(props: GridProps): JSX.Element {
       ctx.fillRect(selRect.x, selRect.y, selRect.w, selRect.h)
     }
 
-    if (vp) {
+    if (panes.length > 0) {
       ctx.font = CELL_FONT
       ctx.textBaseline = 'middle'
       ctx.textAlign = 'left'
@@ -481,18 +537,16 @@ export function Grid(props: GridProps): JSX.Element {
         const h = ys[ri + 1] - ys[ri]
         if (h <= 0) continue
         if (ys[ri] > cssH || ys[ri + 1] < hh) continue
-        const vrow = vis.firstRow + ri - vp.row0
-        if (vrow < 0 || vrow >= vp.rows) continue
         const midY = ys[ri] + h / 2
-        const row = vis.firstRow + ri
+        const row = rowsAt[ri]
 
         for (let ci = 0; ci < nCols; ci++) {
-          const vcol = vis.firstCol + ci - vp.col0
-          if (vcol < 0 || vcol >= vp.cols) continue
-          const idx = vrow * vp.cols + vcol
+          const col = colsAt[ci]
+          const found = lookup(row, col)
+          if (!found) continue
+          const [vp, idx] = found
           const text = vp.values[idx]
           if (!text) continue
-          const col = vis.firstCol + ci
 
           // Text belongs to the merge's anchor and spans the whole block; a
           // covered cell holds no value, but a stale one must not surface.
@@ -646,7 +700,7 @@ export function Grid(props: GridProps): JSX.Element {
     ctx.clip()
     ctx.fillStyle = COLOR_HEADER_ACTIVE
     for (let ci = 0; ci < nCols; ci++) {
-      const col = vis.firstCol + ci
+      const col = colsAt[ci]
       if (col < selR.start.col || col > selR.end.col) continue
       ctx.fillRect(xs[ci], 0, xs[ci + 1] - xs[ci], hh)
     }
@@ -1307,6 +1361,7 @@ export function Grid(props: GridProps): JSX.Element {
     >
       <div
         ref={scrollRef}
+        data-testid="grid-scroll"
         onScroll={invalidate}
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
@@ -1316,8 +1371,10 @@ export function Grid(props: GridProps): JSX.Element {
       >
         <div
           style={{
-            width: metrics.headerWidth + totalWidth(metrics),
-            height: metrics.headerHeight + totalHeight(metrics),
+            // The frozen band is always on screen, so it is not part of what
+            // there is to scroll through.
+            width: metrics.headerWidth + frozenWidth(metrics) + scrollableWidth(metrics),
+            height: metrics.headerHeight + frozenHeight(metrics) + scrollableHeight(metrics),
           }}
         />
       </div>

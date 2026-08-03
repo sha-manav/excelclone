@@ -70,6 +70,8 @@ export interface SheetInfo {
   /** Non-default sizes in pixels, as `[index, pixels]` pairs. */
   col_widths: [number, number][]
   row_heights: [number, number][]
+  frozen_rows: number
+  frozen_cols: number
 }
 
 /** One cell a routine would change, as the sandbox reports it. */

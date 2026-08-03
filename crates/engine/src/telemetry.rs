@@ -71,6 +71,7 @@ pub const ACTION_VOCABULARY: &[&str] = &[
     "col.resize",
     "name.define",
     "name.delete",
+    "panes.freeze",
     "sort.apply",
     "filter.apply",
     "filter.clear",
@@ -351,6 +352,13 @@ pub fn describe(action: &Action, mode: PrivacyMode, salt: &str) -> (String, Json
             "refers_to": refers_to,
         }),
         Action::NameDelete { name } => json!({ "name": redact_label(name, mode, salt) }),
+        // Which rows and columns are held still is layout, not content.
+        Action::FreezePanes { sheet, rows, cols } => json!({
+            "sheet": redact_label(sheet, mode, salt),
+            "rows": rows,
+            "cols": cols,
+            "kind": if *rows == 0 && *cols == 0 { "unfreeze" } else { "freeze" },
+        }),
         Action::Undo | Action::Redo => json!({}),
     };
     (name, payload)
@@ -389,6 +397,7 @@ pub fn action_name(action: &Action) -> &'static str {
             crate::refs::Axis::Col => "col.resize",
             crate::refs::Axis::Row => "row.resize",
         },
+        Action::FreezePanes { .. } => "panes.freeze",
         Action::NameDefine { .. } => "name.define",
         Action::NameDelete { .. } => "name.delete",
         Action::Undo => "undo",

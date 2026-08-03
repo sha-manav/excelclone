@@ -92,6 +92,15 @@ pub struct Sheet {
     /// Row heights in pixels, on the same terms.
     #[serde(default)]
     pub row_heights: BTreeMap<u32, f64>,
+    /// Rows and columns held still while the rest of the sheet scrolls.
+    ///
+    /// View state, like `hidden_rows` — it changes nothing about any value —
+    /// but it is something the user *did*, so it lives on the single mutation
+    /// path and is written to the file rather than kept in the browser.
+    #[serde(default)]
+    pub frozen_rows: u32,
+    #[serde(default)]
+    pub frozen_cols: u32,
     /// Blocks produced by formulas on this sheet, keyed by the cell that
     /// produced them.
     ///
@@ -119,6 +128,8 @@ impl Sheet {
             hidden_rows: Vec::new(),
             col_widths: BTreeMap::new(),
             row_heights: BTreeMap::new(),
+            frozen_rows: 0,
+            frozen_cols: 0,
             arrays: BTreeMap::new(),
             spill: BTreeMap::new(),
         }
@@ -314,6 +325,7 @@ impl Workbook {
                     "formats": formats,
                     "merged": merged,
                     "hidden_rows": hidden,
+                    "frozen": [s.frozen_rows, s.frozen_cols],
                     "col_widths": size_runs(&s.col_widths),
                     "row_heights": size_runs(&s.row_heights),
                     // Spilled cells are state the user can see and formulas

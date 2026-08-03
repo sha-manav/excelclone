@@ -22,9 +22,17 @@ export interface FormatToolbarProps {
   /** True when the selection covers more than one cell. */
   hasRange: boolean
   merged: boolean
+  /** Whether the active sheet has anything frozen right now. */
+  frozen: boolean
   onPatch(patches: FormatPatch[]): void
   onClearFormatting(): void
   onMergeToggle(): void
+  /**
+   * Freeze up to the active cell, or unfreeze when something already is —
+   * Excel's rule: everything above and to the left of the cursor is held
+   * still, so the gesture is "put the cursor below the headers and press it".
+   */
+  onFreezeToggle(): void
 }
 
 /** Number formats offered by name, so the user never types a format code. */
@@ -50,7 +58,9 @@ const SWATCHES = [
 ]
 
 export function FormatToolbar(props: FormatToolbarProps): JSX.Element {
-  const { active, hasRange, merged, onPatch, onClearFormatting, onMergeToggle } = props
+  const { active, hasRange, merged, frozen, onPatch, onClearFormatting, onMergeToggle } =
+    props
+  const { onFreezeToggle } = props
   const [open, setOpen] = useState<'font' | 'fill' | null>(null)
 
   const align = (value: HAlign) =>
@@ -161,6 +171,19 @@ export function FormatToolbar(props: FormatToolbarProps): JSX.Element {
         onClick={onMergeToggle}
       >
         Merge
+      </button>
+      <button
+        aria-label={frozen ? 'Unfreeze panes' : 'Freeze panes'}
+        aria-pressed={frozen}
+        className={frozen ? 'is-on' : undefined}
+        title={
+          frozen
+            ? 'Unfreeze the panes'
+            : 'Hold every row above and column left of the selection still'
+        }
+        onClick={onFreezeToggle}
+      >
+        Freeze
       </button>
       <button
         aria-label="Clear formatting"

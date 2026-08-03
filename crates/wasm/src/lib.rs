@@ -84,6 +84,8 @@ struct SheetInfo {
     /// object would key them by string and the grid wants numbers.
     col_widths: Vec<(u32, f64)>,
     row_heights: Vec<(u32, f64)>,
+    frozen_rows: u32,
+    frozen_cols: u32,
 }
 
 #[derive(Serialize)]
@@ -301,6 +303,8 @@ impl Gridline {
                     merged: s.merged.iter().map(|m| m.to_a1()).collect(),
                     col_widths: s.col_widths.iter().map(|(i, px)| (*i, *px)).collect(),
                     row_heights: s.row_heights.iter().map(|(i, px)| (*i, *px)).collect(),
+                    frozen_rows: s.frozen_rows,
+                    frozen_cols: s.frozen_cols,
                 }
             })
             .collect();

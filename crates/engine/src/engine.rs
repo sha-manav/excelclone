@@ -183,6 +183,14 @@ pub enum Action {
         count: u32,
         size: Option<f64>,
     },
+    /// Hold the first `rows` rows and `cols` columns still while the rest of
+    /// the sheet scrolls. Zero and zero unfreezes, which is how "unfreeze
+    /// panes" is expressed without a second action.
+    FreezePanes {
+        sheet: String,
+        rows: u32,
+        cols: u32,
+    },
     /// Define a workbook-level name, or redefine one. `refers_to` is an A1
     /// range as xlsx spells it — usually sheet-qualified and absolute.
     NameDefine {
@@ -301,6 +309,11 @@ pub enum Event {
     Redone {
         label: String,
     },
+    PanesFrozen {
+        sheet: String,
+        rows: u32,
+        cols: u32,
+    },
     NameDefined {
         name: String,
         refers_to: String,
@@ -363,6 +376,8 @@ pub enum UndoState {
     /// and copying it means an autofit over a selection undoes as one map
     /// swap instead of a list of per-column patches.
     Sizes(SheetId, Axis, BTreeMap<u32, f64>),
+    /// A sheet's frozen row and column counts, before the change.
+    Frozen(SheetId, (u32, u32)),
     /// The whole name table. A handful of entries at most, and swapping it
     /// wholesale means a redefinition and a deletion undo the same way.
     Names(BTreeMap<String, String>),
@@ -378,6 +393,7 @@ impl UndoState {
             UndoState::Formats(_)
             | UndoState::Sheets(_)
             | UndoState::Sizes(..)
+            | UndoState::Frozen(..)
             | UndoState::Names(_) => 0,
         }
     }
@@ -533,6 +549,7 @@ impl Engine {
                 count,
                 size,
             } => self.resize(sheet, *axis, *at, *count, *size),
+            Action::FreezePanes { sheet, rows, cols } => self.freeze_panes(sheet, *rows, *cols),
             Action::NameDefine { name, refers_to } => self.name_define(name, refers_to),
             Action::NameDelete { name } => self.name_delete(name),
             Action::Undo | Action::Redo => unreachable!("handled in apply"),
@@ -586,6 +603,15 @@ impl Engine {
             UndoState::Sheets(sheets) => {
                 let replaced = std::mem::replace(&mut self.wb.sheets, sheets);
                 UndoState::Sheets(replaced)
+            }
+            UndoState::Frozen(sid, (rows, cols)) => {
+                let Some(sheet) = self.wb.sheet_mut(sid) else {
+                    return UndoState::Frozen(sid, (rows, cols));
+                };
+                let before = (sheet.frozen_rows, sheet.frozen_cols);
+                sheet.frozen_rows = rows;
+                sheet.frozen_cols = cols;
+                UndoState::Frozen(sid, before)
             }
             UndoState::Names(names) => {
                 UndoState::Names(std::mem::replace(&mut self.wb.names, names))
@@ -1118,6 +1144,36 @@ impl Engine {
         self.rebuild_deps_and_recalc_all();
         Ok(vec![Event::SheetDeleted {
             name: name.to_string(),
+        }])
+    }
+
+    /// Freeze or unfreeze the top-left panes of a sheet.
+    fn freeze_panes(
+        &mut self,
+        sheet: &str,
+        rows: u32,
+        cols: u32,
+    ) -> Result<Vec<Event>, ApplyError> {
+        if rows >= crate::addr::MAX_ROWS || cols >= crate::addr::MAX_COLS {
+            return Err(ApplyError::Invalid(
+                "cannot freeze the whole sheet: there would be nothing left to \
+                 scroll"
+                    .into(),
+            ));
+        }
+        let sid = self.sheet_id(sheet)?;
+        let s = self.wb.sheet_mut(sid).expect("sheet exists");
+        if (s.frozen_rows, s.frozen_cols) == (rows, cols) {
+            return Ok(Vec::new());
+        }
+        let before = (s.frozen_rows, s.frozen_cols);
+        s.frozen_rows = rows;
+        s.frozen_cols = cols;
+        self.push_undo("freeze panes", UndoState::Frozen(sid, before));
+        Ok(vec![Event::PanesFrozen {
+            sheet: sheet.to_string(),
+            rows,
+            cols,
         }])
     }
 

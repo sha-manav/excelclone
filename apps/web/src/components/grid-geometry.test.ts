@@ -18,7 +18,12 @@ import {
   hitTest,
   isRowHidden,
   lastVisibleRow,
+  colViewportX,
+  frozenHeight,
+  frozenWidth,
   MergeMap,
+  rowViewportY,
+  scrollableHeight,
   moveAddr,
   moveWithMerges,
   nextVisibleRow,
@@ -627,5 +632,69 @@ describe('text helpers', () => {
   it('clamps column widths to the minimum', () => {
     expect(clampColWidth(4)).toBe(24)
     expect(clampColWidth(120.4)).toBe(120)
+  })
+})
+
+describe('frozen panes', () => {
+  // Two header rows and one label column held still. Default sizes: 24px
+  // rows, 100px columns.
+  const frozen = createMetrics({ frozenRows: 2, frozenCols: 1, rowCount: 500 })
+
+  it('measures the band from the sizes of the rows in it', () => {
+    expect(frozenHeight(frozen)).toBe(48)
+    expect(frozenWidth(frozen)).toBe(100)
+    // Nothing frozen is a band of zero, which is what makes every formula
+    // here degrade to the unfrozen one rather than needing a branch.
+    expect(frozenHeight(plain)).toBe(0)
+    expect(frozenWidth(plain)).toBe(0)
+  })
+
+  it('holds the frozen rows still while the rest scrolls', () => {
+    // Row 0 is where it always is, however far down the sheet has gone.
+    expect(rowViewportY(frozen, 0, 0)).toBe(HH)
+    expect(rowViewportY(frozen, 0, 1000)).toBe(HH)
+    expect(rowViewportY(frozen, 1, 1000)).toBe(HH + 24)
+    // ...and the first scrolling row sits immediately under the band.
+    expect(rowViewportY(frozen, 2, 0)).toBe(HH + 48)
+    // Scrolled by exactly one row, row 2 has gone and row 3 is at the top of
+    // the scrolling region.
+    expect(rowViewportY(frozen, 3, 24)).toBe(HH + 48)
+  })
+
+  it('holds the frozen columns still too', () => {
+    expect(colViewportX(frozen, 0, 900)).toBe(HW)
+    expect(colViewportX(frozen, 1, 0)).toBe(HW + 100)
+    expect(colViewportX(frozen, 2, 100)).toBe(HW + 100)
+  })
+
+  it('starts the visible range past the band and leaves room for it', () => {
+    const vis = visibleRange(0, 0, HW + 400, HH + 120, frozen)
+    // 120px of content, 48 of it frozen: three scrolling rows fit, starting
+    // at the first one that is not frozen.
+    expect(vis.firstRow).toBe(2)
+    expect(vis.lastRow).toBe(4)
+    expect(vis.firstCol).toBe(1)
+  })
+
+  it('hit tests through the band rather than past it', () => {
+    // 10px below the header is inside the frozen band and is row 0 however
+    // far the sheet is scrolled — this is the case that made clicking a
+    // scrolled cell land on the wrong row before the band existed.
+    expect(hitTest(HW + 10, HH + 10, 1000, 0, frozen)).toEqual({
+      kind: 'cell',
+      row: 0,
+      col: 0,
+    })
+    // Just below the band, with the sheet scrolled by two rows: row 4.
+    expect(hitTest(HW + 150, HH + 50, 48, 0, frozen)).toEqual({
+      kind: 'cell',
+      row: 4,
+      col: 1,
+    })
+  })
+
+  it('takes the band out of what there is to scroll through', () => {
+    expect(scrollableHeight(frozen)).toBe(totalHeight(frozen) - 48)
+    expect(scrollableHeight(plain)).toBe(totalHeight(plain))
   })
 })

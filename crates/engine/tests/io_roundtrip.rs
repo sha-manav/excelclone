@@ -839,3 +839,70 @@ fn a_sheet_wide_column_run_does_not_explode_the_file() {
         xml.len()
     );
 }
+
+#[test]
+fn frozen_panes_survive_a_round_trip_and_undo_takes_them_back() {
+    let mut e = Engine::new();
+    set(&mut e, "Sheet1", "A1", "header");
+    e.apply(&Action::FreezePanes {
+        sheet: "Sheet1".into(),
+        rows: 1,
+        cols: 2,
+    })
+    .unwrap();
+
+    let bytes = xlsx::export(&e.wb).expect("export");
+    let back = xlsx::import(&bytes).expect("import");
+    let sheet = back.engine.wb.sheet_by_name("Sheet1").unwrap();
+    assert_eq!((sheet.frozen_rows, sheet.frozen_cols), (1, 2));
+
+    e.apply(&Action::Undo).unwrap();
+    let sheet = e.wb.sheet_by_name("Sheet1").unwrap();
+    assert_eq!((sheet.frozen_rows, sheet.frozen_cols), (0, 0));
+}
+
+#[test]
+fn freezing_an_imported_sheet_leaves_the_rest_of_its_sheet_view_alone() {
+    // `<sheetView>` also carries zoom, gridline settings and the saved
+    // selection. A freeze must patch the pane, not regenerate the element.
+    let sheet_xml = SHEET_XML.replace(
+        r#"<sheetViews><sheetView workbookViewId="0"/></sheetViews>"#,
+        r#"<sheetViews><sheetView showGridLines="0" zoomScale="85" workbookViewId="0">"#
+            .to_string()
+            .as_str(),
+    ) + "";
+    let sheet_xml = sheet_xml.replace(
+        r#"workbookViewId="0">"#,
+        r#"workbookViewId="0"><selection activeCell="B7" sqref="B7"/></sheetView></sheetViews>"#,
+    );
+    let mut e = xlsx::import(&handmade_xlsx(&sheet_xml))
+        .expect("import")
+        .engine;
+    e.apply(&Action::FreezePanes {
+        sheet: "Books".into(),
+        rows: 2,
+        cols: 0,
+    })
+    .unwrap();
+
+    let saved = xlsx::export(&e.wb).expect("export");
+    let xml = String::from_utf8(part_of(&saved, "xl/worksheets/sheet1.xml")).unwrap();
+    assert!(xml.contains(r#"ySplit="2""#), "{xml}");
+    assert!(xml.contains(r#"state="frozen""#), "{xml}");
+    assert!(xml.contains(r#"topLeftCell="A3""#), "{xml}");
+    for keep in [r#"showGridLines="0""#, r#"zoomScale="85""#, r#"sqref="B7""#] {
+        assert!(xml.contains(keep), "lost {keep} from\n{xml}");
+    }
+
+    // Unfreezing removes the element rather than writing a zero split.
+    e.apply(&Action::FreezePanes {
+        sheet: "Books".into(),
+        rows: 0,
+        cols: 0,
+    })
+    .unwrap();
+    let saved = xlsx::export(&e.wb).expect("export");
+    let xml = String::from_utf8(part_of(&saved, "xl/worksheets/sheet1.xml")).unwrap();
+    assert!(!xml.contains("<pane"), "{xml}");
+    assert!(xml.contains(r#"zoomScale="85""#), "{xml}");
+}

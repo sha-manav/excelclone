@@ -113,6 +113,7 @@ complete by construction.
 | `sheet.delete` | `name` | |
 | `name.define` | `name`, `refers_to` | A workbook-level defined name. The name is hashed under `structural`; where it points is structure, not content. |
 | `name.delete` | `name` | |
+| `panes.freeze` | `rows`, `cols`, `kind` | How many rows and columns are held still while the rest scrolls; `kind` is `freeze` or `unfreeze`. Layout, so nothing here is hashed. |
 | `format.apply` | `range`, `cells`, `kind`, `attributes`, `patches` | Bold, italic, colours, borders, number format, alignment, merge/unmerge. `kind` is `style`, `clear`, `merge` or `unmerge`. `attributes` names the properties changed; `patches` carries their values. A colour or a format code describes presentation rather than content, so neither is hashed. |
 | `find.replace` | `scope`, `range`, `find`, `replace`, `match_case`, `whole_cell` | Search and replacement terms are hashed under `structural`. |
 

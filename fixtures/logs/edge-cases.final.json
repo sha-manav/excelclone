@@ -109,6 +109,10 @@
           "italic": true
         }
       },
+      "frozen": [
+        0,
+        0
+      ],
       "hidden_rows": [],
       "merged": [],
       "name": "Sheet1",

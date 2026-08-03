@@ -44,6 +44,9 @@ export interface GridMetrics {
   /** Exclusive bounds of the scrollable virtual extent. */
   readonly rowCount: number
   readonly colCount: number
+  /** Rows and columns held still while the rest of the sheet scrolls. */
+  readonly frozenRows: number
+  readonly frozenCols: number
 }
 
 export interface MetricsInit {
@@ -56,6 +59,8 @@ export interface MetricsInit {
   headerHeight?: number
   rowCount?: number
   colCount?: number
+  frozenRows?: number
+  frozenCols?: number
 }
 
 const EMPTY_SIZES: ReadonlyMap<number, number> = new Map()
@@ -71,6 +76,8 @@ export function createMetrics(init: MetricsInit = {}): GridMetrics {
     headerHeight: init.headerHeight ?? HEADER_HEIGHT,
     rowCount: init.rowCount ?? EXTENT_ROW_PAD,
     colCount: init.colCount ?? EXTENT_COL_PAD,
+    frozenRows: init.frozenRows ?? 0,
+    frozenCols: init.frozenCols ?? 0,
   }
 }
 
@@ -138,10 +145,52 @@ export function rowTop(m: GridMetrics, row: number): number {
   return y
 }
 
+/* ----------------------------------------------------------------- frozen */
+
+/**
+ * Height of the frozen band, in content pixels.
+ *
+ * The frozen rows are drawn where they are and never move; everything below
+ * them scrolls in the space that is left. Every viewport coordinate in this
+ * file is one of those two cases, which is why they go through
+ * {@link rowViewportY} and {@link colViewportX} rather than subtracting a
+ * scroll offset directly.
+ */
+export function frozenHeight(m: GridMetrics): number {
+  return rowTop(m, m.frozenRows)
+}
+
+export function frozenWidth(m: GridMetrics): number {
+  return columnLeft(m, m.frozenCols)
+}
+
+/** Viewport y of a row's top edge. Frozen rows ignore the scroll. */
+export function rowViewportY(m: GridMetrics, row: number, scrollTop: number): number {
+  if (row < m.frozenRows) return m.headerHeight + rowTop(m, row)
+  return m.headerHeight + frozenHeight(m) + (rowTop(m, row) - frozenHeight(m)) - scrollTop
+}
+
+export function colViewportX(m: GridMetrics, col: number, scrollLeft: number): number {
+  if (col < m.frozenCols) return m.headerWidth + columnLeft(m, col)
+  return m.headerWidth + frozenWidth(m) + (columnLeft(m, col) - frozenWidth(m)) - scrollLeft
+}
+
 export function totalWidth(m: GridMetrics): number {
   let w = m.colCount * m.defaultColWidth
   for (const [c, cw] of m.colWidths) if (c < m.colCount) w += cw - m.defaultColWidth
   return w
+}
+
+/**
+ * The scrollable extent, which excludes the frozen band: those rows are
+ * always on screen, so scrolling past them is not a thing the user can do.
+ */
+export function scrollableHeight(m: GridMetrics): number {
+  return Math.max(0, totalHeight(m) - frozenHeight(m))
+}
+
+export function scrollableWidth(m: GridMetrics): number {
+  return Math.max(0, totalWidth(m) - frozenWidth(m))
 }
 
 export function totalHeight(m: GridMetrics): number {
@@ -224,15 +273,19 @@ export function visibleRange(
   viewportHeight: number,
   m: GridMetrics,
 ): VisibleRange {
-  const contentW = viewportWidth - m.headerWidth
-  const contentH = viewportHeight - m.headerHeight
-  const firstRow = rowAtY(m, Math.max(0, scrollTop))
-  const firstCol = columnAtX(m, Math.max(0, scrollLeft))
+  // The frozen band eats into the space the scrolling region has, and the
+  // scrolling region starts at the first row past it rather than at zero.
+  const fh = frozenHeight(m)
+  const fw = frozenWidth(m)
+  const contentW = viewportWidth - m.headerWidth - fw
+  const contentH = viewportHeight - m.headerHeight - fh
+  const firstRow = Math.max(m.frozenRows, rowAtY(m, fh + Math.max(0, scrollTop)))
+  const firstCol = Math.max(m.frozenCols, columnAtX(m, fw + Math.max(0, scrollLeft)))
   if (contentW <= 0 || contentH <= 0) {
     return { firstRow, lastRow: firstRow - 1, firstCol, lastCol: firstCol - 1 }
   }
-  const lastRow = Math.max(firstRow, rowAtY(m, scrollTop + contentH - 1))
-  const lastCol = Math.max(firstCol, columnAtX(m, scrollLeft + contentW - 1))
+  const lastRow = Math.max(firstRow, rowAtY(m, fh + scrollTop + contentH - 1))
+  const lastCol = Math.max(firstCol, columnAtX(m, fw + scrollLeft + contentW - 1))
   return { firstRow, lastRow, firstCol, lastCol }
 }
 
@@ -264,7 +317,7 @@ export function hitTest(
   if (inColHeader && inRowHeader) return { kind: 'corner' }
 
   if (inColHeader) {
-    const cx = x - m.headerWidth + scrollLeft
+    const cx = contentX(m, x, scrollLeft)
     const col = columnAtX(m, cx)
     const left = columnLeft(m, col)
     // A border belongs to the column on its left, so the strip just inside the
@@ -275,7 +328,7 @@ export function hitTest(
   }
 
   if (inRowHeader) {
-    const cy = y - m.headerHeight + scrollTop
+    const cy = contentY(m, y, scrollTop)
     const row = rowAtY(m, cy)
     const top = rowTop(m, row)
     // Mirror of the column rule: the strip just inside the top edge of row N
@@ -292,9 +345,31 @@ export function hitTest(
 
   return {
     kind: 'cell',
-    row: rowAtY(m, y - m.headerHeight + scrollTop),
-    col: columnAtX(m, x - m.headerWidth + scrollLeft),
+    row: rowAtY(m, contentY(m, y, scrollTop)),
+    col: columnAtX(m, contentX(m, x, scrollLeft)),
   }
+}
+
+/**
+ * Viewport y back to content y, honouring the frozen band: a point inside it
+ * is where it looks, and a point below it is offset by the scroll.
+ *
+ * The inverse of {@link rowViewportY}, and the reason hit testing keeps
+ * working when rows are frozen — without it, clicking a scrolled cell landed
+ * on whatever row happened to be that far down the unscrolled sheet.
+ */
+export function contentY(m: GridMetrics, y: number, scrollTop: number): number {
+  const local = y - m.headerHeight
+  const fh = frozenHeight(m)
+  if (local < fh) return Math.max(0, local)
+  return local + scrollTop
+}
+
+export function contentX(m: GridMetrics, x: number, scrollLeft: number): number {
+  const local = x - m.headerWidth
+  const fw = frozenWidth(m)
+  if (local < fw) return Math.max(0, local)
+  return local + scrollLeft
 }
 
 export interface Rect {
@@ -313,8 +388,8 @@ export function cellRect(
   scrollLeft: number,
 ): Rect {
   return {
-    x: m.headerWidth + columnLeft(m, col) - scrollLeft,
-    y: m.headerHeight + rowTop(m, row) - scrollTop,
+    x: colViewportX(m, col, scrollLeft),
+    y: rowViewportY(m, row, scrollTop),
     w: colWidth(m, col),
     h: rowHeight(m, row),
   }
@@ -414,19 +489,26 @@ export function scrollToInclude(
   viewportHeight: number,
   m: GridMetrics,
 ): ScrollOffsets {
-  const contentW = viewportWidth - m.headerWidth
-  const contentH = viewportHeight - m.headerHeight
+  // A frozen cell is on screen by definition, so scrolling to reach it would
+  // move the sheet under the user for no reason — and selecting a frozen
+  // header would snap the whole sheet back to the top.
+  const fh = frozenHeight(m)
+  const fw = frozenWidth(m)
+  const contentW = viewportWidth - m.headerWidth - fw
+  const contentH = viewportHeight - m.headerHeight - fh
   let top = scrollTop
   let left = scrollLeft
 
-  if (contentW > 0) {
-    const x = columnLeft(m, col)
+  if (contentW > 0 && col >= m.frozenCols) {
+    // Positions are measured from the start of the scrolling region, which is
+    // where a scroll offset of zero puts you.
+    const x = columnLeft(m, col) - fw
     const w = colWidth(m, col)
     if (x < left) left = x
     else if (x + w > left + contentW) left = x + w - contentW
   }
-  if (contentH > 0) {
-    const y = rowTop(m, row)
+  if (contentH > 0 && row >= m.frozenRows) {
+    const y = rowTop(m, row) - fh
     const h = rowHeight(m, row)
     if (y < top) top = y
     else if (y + h > top + contentH) top = y + h - contentH

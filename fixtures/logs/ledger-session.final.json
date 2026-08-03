@@ -292,6 +292,10 @@
           }
         }
       },
+      "frozen": [
+        0,
+        0
+      ],
       "hidden_rows": [],
       "merged": [],
       "name": "Ledger",
@@ -319,6 +323,10 @@
       },
       "col_widths": [],
       "formats": {},
+      "frozen": [
+        0,
+        0
+      ],
       "hidden_rows": [],
       "merged": [],
       "name": "Rates",

@@ -741,6 +741,10 @@
           "fill_color": "#f5f5f5"
         }
       },
+      "frozen": [
+        0,
+        0
+      ],
       "hidden_rows": [],
       "merged": [],
       "name": "Ledger",
@@ -795,6 +799,10 @@
           "bold": true
         }
       },
+      "frozen": [
+        0,
+        0
+      ],
       "hidden_rows": [],
       "merged": [],
       "name": "Rates",
