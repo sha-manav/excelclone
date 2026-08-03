@@ -301,6 +301,20 @@ describe('hitTest', () => {
     expect(hitTest(5, HH + 30, 0, 0, filtered)).toEqual({ kind: 'row-header', row: 3 })
   })
 
+  it('reports a row border from either side and attributes it to the row above', () => {
+    expect(hitTest(5, HH + 22, 0, 0, plain)).toEqual({ kind: 'row-border', row: 0 })
+    expect(hitTest(5, HH + 26, 0, 0, plain)).toEqual({ kind: 'row-border', row: 0 })
+    // The top edge of row 1 is not a border anyone can drag.
+    expect(hitTest(5, HH + 1, 0, 0, plain)).toEqual({ kind: 'row-header', row: 0 })
+  })
+
+  it('does not offer a border for a row a filter has hidden', () => {
+    // Rows 1 and 2 are hidden in `filtered`, so every pixel they would have
+    // occupied belongs to row 3 — and the border there resizes row 3, not the
+    // invisible row 2, which the user cannot see to judge.
+    expect(hitTest(5, HH + 25, 0, 0, filtered)).toEqual({ kind: 'row-header', row: 3 })
+  })
+
   it('respects a custom tolerance', () => {
     expect(hitTest(HW + 90, 5, 0, 0, plain, 12)).toEqual({ kind: 'col-border', col: 0 })
     expect(hitTest(HW + 90, 5, 0, 0, plain, 2)).toEqual({ kind: 'col-header', col: 0 })

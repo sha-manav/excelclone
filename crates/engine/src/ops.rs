@@ -388,6 +388,24 @@ impl Engine {
         }
         s.formats = moved_formats;
 
+        // A column's width belongs to the column, so it travels with it:
+        // inserting in front of a widened column and finding the width left
+        // behind on its neighbour is the sort of thing that makes a sheet
+        // subtly wrong in a way nobody can point at.
+        let bound = match axis {
+            Axis::Row => crate::addr::MAX_ROWS,
+            Axis::Col => crate::addr::MAX_COLS,
+        };
+        let sizes = match axis {
+            Axis::Row => &mut s.row_heights,
+            Axis::Col => &mut s.col_widths,
+        };
+        *sizes = std::mem::take(sizes)
+            .into_iter()
+            .filter_map(|(i, px)| Some((shift.map_index(i)?, px)))
+            .filter(|(i, _)| *i < bound)
+            .collect();
+
         // Merged regions move with their cells; fully-deleted ones vanish.
         s.merged = s
             .merged

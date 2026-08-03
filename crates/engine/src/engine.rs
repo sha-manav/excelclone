@@ -11,7 +11,7 @@ use crate::parser::parse_formula;
 use crate::refs::Axis;
 use crate::value::{ErrorKind, Value};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// The most cells one formatting action may touch.
 ///
@@ -166,6 +166,19 @@ pub enum Action {
     SheetDelete {
         name: String,
     },
+    /// Resize columns or rows. `size` is in pixels; `None` restores the
+    /// default, which is how a "reset width" gesture is expressed without a
+    /// second action.
+    Resize {
+        sheet: String,
+        axis: Axis,
+        /// First index, then how many. A drag resizes one; a multi-column
+        /// selection resizes the run, and autofit resizes each to its own
+        /// width, which arrives as several of these in one batch.
+        at: u32,
+        count: u32,
+        size: Option<f64>,
+    },
     Undo,
     Redo,
 }
@@ -275,6 +288,14 @@ pub enum Event {
     Redone {
         label: String,
     },
+    Resized {
+        sheet: String,
+        axis: Axis,
+        at: u32,
+        count: u32,
+        /// None when the run went back to the default size.
+        size: Option<f64>,
+    },
     /// Cells whose computed value changed due to recalculation (derived
     /// state; informational for the UI, not required for replay).
     Recalced {
@@ -315,6 +336,11 @@ pub enum UndoState {
     /// formatting undoes as one step.
     Compound(Vec<UndoState>),
     Sheets(Vec<Sheet>),
+    /// The whole width (or height) map for one sheet. Small enough to copy
+    /// wholesale — a sheet has at most a few hundred non-default entries —
+    /// and copying it means an autofit over a selection undoes as one map
+    /// swap instead of a list of per-column patches.
+    Sizes(SheetId, Axis, BTreeMap<u32, f64>),
 }
 
 impl UndoState {
@@ -324,7 +350,7 @@ impl UndoState {
         match self {
             UndoState::Cells(c) => c.len() as u32,
             UndoState::Compound(parts) => parts.iter().map(|p| p.cell_count()).sum(),
-            UndoState::Formats(_) | UndoState::Sheets(_) => 0,
+            UndoState::Formats(_) | UndoState::Sheets(_) | UndoState::Sizes(..) => 0,
         }
     }
 }
@@ -467,6 +493,13 @@ impl Engine {
             Action::SheetAdd { name } => self.sheet_add(name),
             Action::SheetRename { from, to } => self.sheet_rename(from, to),
             Action::SheetDelete { name } => self.sheet_delete(name),
+            Action::Resize {
+                sheet,
+                axis,
+                at,
+                count,
+                size,
+            } => self.resize(sheet, *axis, *at, *count, *size),
             Action::Undo | Action::Redo => unreachable!("handled in apply"),
         }
     }
@@ -518,6 +551,16 @@ impl Engine {
             UndoState::Sheets(sheets) => {
                 let replaced = std::mem::replace(&mut self.wb.sheets, sheets);
                 UndoState::Sheets(replaced)
+            }
+            UndoState::Sizes(sid, axis, sizes) => {
+                let Some(sheet) = self.wb.sheet_mut(sid) else {
+                    return UndoState::Sizes(sid, axis, sizes);
+                };
+                let map = match axis {
+                    Axis::Col => &mut sheet.col_widths,
+                    Axis::Row => &mut sheet.row_heights,
+                };
+                UndoState::Sizes(sid, axis, std::mem::replace(map, sizes))
             }
         }
     }
@@ -1037,6 +1080,59 @@ impl Engine {
         self.rebuild_deps_and_recalc_all();
         Ok(vec![Event::SheetDeleted {
             name: name.to_string(),
+        }])
+    }
+
+    /// Set or clear a run of column widths or row heights.
+    fn resize(
+        &mut self,
+        sheet: &str,
+        axis: Axis,
+        at: u32,
+        count: u32,
+        mut size: Option<f64>,
+    ) -> Result<Vec<Event>, ApplyError> {
+        let sid = self.sheet_id(sheet)?;
+        if let Some(px) = size {
+            // A non-positive width is a hidden column in Excel, which is a
+            // different feature; refusing is better than silently rounding it
+            // up to something visible.
+            if !(px.is_finite() && px > 0.0) {
+                return Err(ApplyError::Invalid(format!("size {px} is not a width")));
+            }
+            // Whole pixels. Half a pixel is not a width the grid can draw or
+            // the file can hold, and keeping one in the model would mean a
+            // size that quietly changes the first time the workbook is saved.
+            size = Some(px.round());
+        }
+        let s = self.wb.sheet_mut(sid).expect("sheet exists");
+        let map = match axis {
+            Axis::Col => &mut s.col_widths,
+            Axis::Row => &mut s.row_heights,
+        };
+        let before = map.clone();
+        for i in at..at.saturating_add(count.max(1)) {
+            match size {
+                Some(px) => {
+                    map.insert(i, px);
+                }
+                // Removing the entry *is* the default, so a reset leaves no
+                // trace in the model or in the exported file.
+                None => {
+                    map.remove(&i);
+                }
+            }
+        }
+        if *map == before {
+            return Ok(Vec::new());
+        }
+        self.push_undo("resize", UndoState::Sizes(sid, axis, before));
+        Ok(vec![Event::Resized {
+            sheet: sheet.to_string(),
+            axis,
+            at,
+            count: count.max(1),
+            size,
         }])
     }
 

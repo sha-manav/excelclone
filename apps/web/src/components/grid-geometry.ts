@@ -22,6 +22,7 @@ export const DEFAULT_ROW_HEIGHT = 24
 export const HEADER_WIDTH = 46
 export const HEADER_HEIGHT = 24
 export const MIN_COL_WIDTH = 24
+export const MIN_ROW_HEIGHT = 12
 /** Half-width of the draggable strip straddling a column-header border. */
 export const RESIZE_HANDLE_PX = 4
 export const FILL_HANDLE_PX = 7
@@ -243,6 +244,8 @@ export type GridHit =
   /** The border on the *right* edge of `col`; dragging it resizes `col`. */
   | { kind: 'col-border'; col: number }
   | { kind: 'row-header'; row: number }
+  /** The border on the *bottom* edge of `row`; dragging it resizes `row`. */
+  | { kind: 'row-border'; row: number }
   | { kind: 'cell'; row: number; col: number }
 
 /**
@@ -272,7 +275,19 @@ export function hitTest(
   }
 
   if (inRowHeader) {
-    return { kind: 'row-header', row: rowAtY(m, y - m.headerHeight + scrollTop) }
+    const cy = y - m.headerHeight + scrollTop
+    const row = rowAtY(m, cy)
+    const top = rowTop(m, row)
+    // Mirror of the column rule: the strip just inside the top edge of row N
+    // resizes row N-1. A hidden row has no height, so its border is the one
+    // above it and dragging there would resize something invisible.
+    if (row > 0 && cy - top <= tolerance && !isRowHidden(m, row - 1)) {
+      return { kind: 'row-border', row: row - 1 }
+    }
+    if (!isRowHidden(m, row) && top + rowHeight(m, row) - cy <= tolerance) {
+      return { kind: 'row-border', row }
+    }
+    return { kind: 'row-header', row }
   }
 
   return {
@@ -696,4 +711,8 @@ export function overflowHashes(available: number, hashWidth: number): string {
 
 export function clampColWidth(w: number): number {
   return Math.max(MIN_COL_WIDTH, Math.round(w))
+}
+
+export function clampRowHeight(h: number): number {
+  return Math.max(MIN_ROW_HEIGHT, Math.round(h))
 }

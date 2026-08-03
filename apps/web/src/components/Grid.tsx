@@ -23,7 +23,7 @@ import type {
 import { KIND_ERROR, KIND_NUMBER } from '../engine/bridge'
 import type { CellFormat, EngineHandle, Viewport } from '../engine/bridge'
 import { colLetters, range as mkRange, rangeContains } from '../engine/actions'
-import type { Addr, Range } from '../engine/actions'
+import type { Addr, Axis, Range } from '../engine/actions'
 import type { EditState, MoveDirection, Selection } from '../state/useWorkbook'
 import {
   MergeMap,
@@ -31,6 +31,7 @@ import {
   autoscrollDelta,
   cellRect,
   clampColWidth,
+  clampRowHeight,
   colWidth,
   columnAtX,
   columnLeft,
@@ -83,7 +84,13 @@ export interface GridProps {
   onEditValueChange(value: string): void
   onFill(source: Range, target: Range): void
   onContextMenu(addr: Addr, clientX: number, clientY: number): void
-  onAutofitColumn(col: number): void
+  /**
+   * A finished resize gesture. Sizes live in the engine, not here, so this is
+   * how a drag becomes a fact: the grid previews the width while the pointer
+   * is down and then hands the final number over to be applied, recorded and
+   * saved like any other edit.
+   */
+  onResize(axis: Axis, at: number, count: number, size: number | null): void
   /** Ranges to wash, used by find to show where the matches are. */
   highlights?: readonly Range[]
 }
@@ -161,7 +168,8 @@ function fillDownTarget(L: Latest): Range | null {
 type Drag =
   | { kind: 'select'; anchor: Addr; last: Addr }
   | { kind: 'fill'; source: Range; target: Range }
-  | { kind: 'resize'; col: number; startX: number; startWidth: number }
+  | { kind: 'resize'; col: number; startX: number; startWidth: number; width: number }
+  | { kind: 'resize-row'; row: number; startY: number; startHeight: number; height: number }
 
 interface Latest {
   engine: EngineHandle
@@ -180,7 +188,7 @@ interface Latest {
   onFill(source: Range, target: Range): void
   onStartEdit(addr: Addr, initial?: string): void
   onContextMenu(addr: Addr, clientX: number, clientY: number): void
-  onAutofitColumn(col: number): void
+  onResize(axis: Axis, at: number, count: number, size: number | null): void
 }
 
 const EMPTY_HIGHLIGHTS: readonly Range[] = []
@@ -210,7 +218,7 @@ export function Grid(props: GridProps): JSX.Element {
     onEditValueChange,
     onFill,
     onContextMenu,
-    onAutofitColumn,
+    onResize,
   } = props
 
   const containerRef = useRef<HTMLDivElement>(null)
@@ -218,8 +226,11 @@ export function Grid(props: GridProps): JSX.Element {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
 
-  const [colWidths, setColWidths] = useState<ReadonlyMap<number, number>>(() => new Map())
-  const [rowHeights] = useState<ReadonlyMap<number, number>>(() => new Map())
+  // Sizes live in the engine. This holds only the width being dragged right
+  // now, so the column follows the pointer without a round trip per pixel;
+  // it is cleared the moment the real resize lands.
+  const [preview, setPreview] = useState<{ col: number; width: number } | null>(null)
+  const [rowPreview, setRowPreview] = useState<{ row: number; height: number } | null>(null)
 
   const sheetInfo = useMemo(() => {
     // `version` is never read here; it is the only signal that the used range
@@ -234,6 +245,17 @@ export function Grid(props: GridProps): JSX.Element {
   // its viewport throws, and the throw lands inside a requestAnimationFrame
   // callback where nothing can catch it.
   const sheetExists = sheetInfo !== null
+
+  const colWidths = useMemo(() => {
+    const m = new Map(sheetInfo?.col_widths ?? [])
+    if (preview) m.set(preview.col, preview.width)
+    return m
+  }, [sheetInfo, preview])
+  const rowHeights = useMemo(() => {
+    const m = new Map(sheetInfo?.row_heights ?? [])
+    if (rowPreview) m.set(rowPreview.row, rowPreview.height)
+    return m
+  }, [sheetInfo, rowPreview])
 
   const hiddenSet = useMemo(() => new Set(hiddenRows), [hiddenRows])
   const mergedKey = merged.join('|')
@@ -277,7 +299,7 @@ export function Grid(props: GridProps): JSX.Element {
     onFill,
     onStartEdit,
     onContextMenu,
-    onAutofitColumn,
+    onResize,
   }
   const latestRef = useRef<Latest>(latest)
   latestRef.current = latest
@@ -757,7 +779,7 @@ export function Grid(props: GridProps): JSX.Element {
   const applyDragAt = useCallback(
     (clientX: number, clientY: number) => {
       const d = dragRef.current
-      if (!d || d.kind === 'resize') return
+      if (!d || d.kind === 'resize' || d.kind === 'resize-row') return
       const L = latestRef.current
       const m = L.metrics
       const p = pointOf(clientX, clientY)
@@ -822,12 +844,19 @@ export function Grid(props: GridProps): JSX.Element {
 
       if (d.kind === 'resize') {
         const width = clampColWidth(d.startWidth + (e.clientX - d.startX))
-        setColWidths((prev) => {
-          if (prev.get(d.col) === width) return prev
-          const next = new Map(prev)
-          next.set(d.col, width)
-          return next
-        })
+        d.width = width
+        setPreview((prev) =>
+          prev && prev.col === d.col && prev.width === width ? prev : { col: d.col, width },
+        )
+        return
+      }
+
+      if (d.kind === 'resize-row') {
+        const height = clampRowHeight(d.startHeight + (e.clientY - d.startY))
+        d.height = height
+        setRowPreview((prev) =>
+          prev && prev.row === d.row && prev.height === height ? prev : { row: d.row, height },
+        )
         return
       }
 
@@ -862,6 +891,22 @@ export function Grid(props: GridProps): JSX.Element {
     if (d && d.kind === 'fill') {
       fillPreviewRef.current = null
       if (!sameRange(d.target, d.source)) latestRef.current.onFill(d.source, d.target)
+      invalidate()
+    }
+    if (d && d.kind === 'resize') {
+      // A drag that ended where it started is not a resize, and recording one
+      // would put a no-op on the undo stack and in the capture log.
+      if (d.width !== d.startWidth) {
+        latestRef.current.onResize('col', d.col, 1, d.width)
+      }
+      setPreview(null)
+      invalidate()
+    }
+    if (d && d.kind === 'resize-row') {
+      if (d.height !== d.startHeight) {
+        latestRef.current.onResize('row', d.row, 1, d.height)
+      }
+      setRowPreview(null)
       invalidate()
     }
   }, [handleDragMove, invalidate, stopAutoscroll])
@@ -924,6 +969,7 @@ export function Grid(props: GridProps): JSX.Element {
             col: hit.col,
             startX: e.clientX,
             startWidth: colWidth(m, hit.col),
+            width: colWidth(m, hit.col),
           })
           return
         case 'col-header':
@@ -933,6 +979,15 @@ export function Grid(props: GridProps): JSX.Element {
               { row: firstVisibleRow(m), col: hit.col },
               { row: lastVisibleRow(m), col: hit.col },
             ),
+          })
+          return
+        case 'row-border':
+          beginDrag({
+            kind: 'resize-row',
+            row: hit.row,
+            startY: e.clientY,
+            startHeight: rowHeight(m, hit.row),
+            height: rowHeight(m, hit.row),
           })
           return
         case 'row-header':
@@ -983,7 +1038,13 @@ export function Grid(props: GridProps): JSX.Element {
           1,
         )
       el.style.cursor =
-        hit.kind === 'col-border' ? 'col-resize' : onHandle ? 'crosshair' : 'cell'
+        hit.kind === 'col-border'
+          ? 'col-resize'
+          : hit.kind === 'row-border'
+            ? 'row-resize'
+            : onHandle
+              ? 'crosshair'
+              : 'cell'
     },
     [pointOf],
   )
@@ -1013,13 +1074,7 @@ export function Grid(props: GridProps): JSX.Element {
     }
     ctx.font = CELL_FONT
     const width = clampColWidth(widest + CELL_PAD * 2 + 2)
-    setColWidths((prev) => {
-      if (prev.get(col) === width) return prev
-      const next = new Map(prev)
-      next.set(col, width)
-      return next
-    })
-    L.onAutofitColumn(col)
+    L.onResize('col', col, 1, width)
   }, [])
 
   const handleDoubleClick = useCallback(

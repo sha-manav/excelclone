@@ -189,13 +189,16 @@ Living checklist. Updated every session.
       engine now iterates (bounded) when any volatile cell computes its own
       references. Clock and random functions read nothing and cost no extra
       passes
+- [x] Column widths and row heights live in the engine, not in React state:
+      `Action::Resize` records them, undo takes them back, insert and delete
+      shift them, and they are written to and read from `<cols>` and
+      `<row ht=…>`. Row borders are draggable too, which they never were
 - [ ] Spilling, and the dynamic-array functions behind it
-- [ ] Column widths and row heights in the model
 - [ ] System clipboard bridge
 
 ## Notes
 
-- 414 Rust tests, 140 web unit tests, 44 Playwright end-to-end tests; full
+- 433 Rust tests, 142 web unit tests, 46 Playwright end-to-end tests; full
   CI gate (fmt, clippy -D warnings, tests, wasm build, vite build, e2e)
   passes locally.
 - M5 found a bug that had been latent since M2: **xlsx export had never

@@ -103,6 +103,8 @@ complete by construction.
 | `row.delete` | `at`, `count` | References to deleted rows become `#REF!`. |
 | `col.insert` | `at`, `count` | |
 | `col.delete` | `at`, `count` | |
+| `row.resize` | `at`, `count`, `size`, `kind` | `size` is pixels, or absent when the run went back to the default; `kind` is `set` or `default`. Presentation, so nothing here is hashed. |
+| `col.resize` | `at`, `count`, `size`, `kind` | As above, for column widths. |
 | `sort.apply` | `range`, `keys` (column + direction), `has_header` | |
 | `filter.apply` | `range`, `column`, `hidden` | Value filters hide rows; no cell values change. Allowed-value lists are hashed under `structural`. |
 | `filter.clear` | `sheet` | |

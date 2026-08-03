@@ -67,6 +67,8 @@ pub const ACTION_VOCABULARY: &[&str] = &[
     "row.delete",
     "col.insert",
     "col.delete",
+    "row.resize",
+    "col.resize",
     "sort.apply",
     "filter.apply",
     "filter.clear",
@@ -322,6 +324,23 @@ pub fn describe(action: &Action, mode: PrivacyMode, salt: &str) -> (String, Json
             "to": redact_label(to, mode, salt),
         }),
         Action::SheetDelete { name } => json!({ "name": redact_label(name, mode, salt) }),
+        // A size is presentation, like a format: nothing about the pixel
+        // count reveals what the column contains, and the miner needs the
+        // number to tell "widened to 200" apart from "reset to default".
+        Action::Resize {
+            sheet,
+            axis,
+            at,
+            count,
+            size,
+        } => json!({
+            "sheet": redact_label(sheet, mode, salt),
+            "axis": if matches!(axis, crate::refs::Axis::Col) { "col" } else { "row" },
+            "at": at,
+            "count": count,
+            "size": size,
+            "kind": if size.is_some() { "set" } else { "default" },
+        }),
         Action::Undo | Action::Redo => json!({}),
     };
     (name, payload)
@@ -356,6 +375,10 @@ pub fn action_name(action: &Action) -> &'static str {
         Action::SheetAdd { .. } => "sheet.add",
         Action::SheetRename { .. } => "sheet.rename",
         Action::SheetDelete { .. } => "sheet.delete",
+        Action::Resize { axis, .. } => match axis {
+            crate::refs::Axis::Col => "col.resize",
+            crate::refs::Axis::Row => "row.resize",
+        },
         Action::Undo => "undo",
         Action::Redo => "redo",
     }

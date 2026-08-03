@@ -25,6 +25,7 @@
 use crate::addr::{CellAddr, RangeAddr};
 use crate::engine::{Action, Engine, SortKey};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 /// A step the routine cannot perform because its value was redacted.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -171,6 +172,27 @@ pub fn rebase(a: &Action, dr: i64, dc: i64) -> Option<Action> {
             sheet,
             range: shift_range(range)?,
         },
+        // A resize moves with the axis it names, the same way an insert does.
+        Action::Resize {
+            sheet,
+            axis,
+            at,
+            count,
+            size,
+        } => Action::Resize {
+            sheet,
+            at: shift_index(
+                at,
+                if axis == crate::refs::Axis::Row {
+                    dr
+                } else {
+                    dc
+                },
+            )?,
+            axis,
+            count,
+            size,
+        },
         other => other,
     })
 }
@@ -245,6 +267,19 @@ pub fn retarget_sheet(a: Action, sheet: &str) -> Action {
             patches,
         },
         Action::FormatClear { range, .. } => Action::FormatClear { sheet: s, range },
+        Action::Resize {
+            axis,
+            at,
+            count,
+            size,
+            ..
+        } => Action::Resize {
+            sheet: s,
+            axis,
+            at,
+            count,
+            size,
+        },
         other => other,
     }
 }
@@ -383,6 +418,75 @@ fn diff_formats(before: &serde_json::Value, after: &serde_json::Value) -> Vec<Ce
                 before: describe_format(b),
                 after: describe_format(a),
             });
+        }
+    }
+    out.extend(diff_sizes(before, after));
+    out
+}
+
+/// Width and height differences, reported alongside the formatting ones.
+///
+/// A resize changes no cell, so a routine that only widens a column would
+/// otherwise preview as "nothing would change" and have Run disabled — the
+/// same way a routine that only bolds a header once did.
+fn diff_sizes(before: &serde_json::Value, after: &serde_json::Value) -> Vec<CellChange> {
+    let mut out = Vec::new();
+    let runs = |v: &serde_json::Value, sheet: &str, key: &str| -> BTreeMap<u32, f64> {
+        let mut m = BTreeMap::new();
+        let Some(sheets) = v["sheets"].as_array() else {
+            return m;
+        };
+        let Some(s) = sheets.iter().find(|s| s["name"].as_str() == Some(sheet)) else {
+            return m;
+        };
+        for run in s[key].as_array().into_iter().flatten() {
+            let (Some(a), Some(b), Some(px)) = (run[0].as_u64(), run[1].as_u64(), run[2].as_f64())
+            else {
+                continue;
+            };
+            for i in a..=b {
+                m.insert(i as u32, px);
+            }
+        }
+        m
+    };
+    let names: Vec<String> = after["sheets"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|s| s["name"].as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    for name in names {
+        for (key, label, unit) in [
+            ("col_widths", "column", "wide"),
+            ("row_heights", "row", "tall"),
+        ] {
+            let b = runs(before, &name, key);
+            let a = runs(after, &name, key);
+            let mut indices: Vec<u32> = b.keys().chain(a.keys()).copied().collect();
+            indices.sort_unstable();
+            indices.dedup();
+            for i in indices {
+                if b.get(&i) == a.get(&i) {
+                    continue;
+                }
+                let say = |px: Option<&f64>| match px {
+                    Some(px) => format!("{}px {unit}", crate::io::sizes::fmt_num(*px)),
+                    None => "default".to_string(),
+                };
+                out.push(CellChange {
+                    sheet: name.clone(),
+                    addr: if key == "col_widths" {
+                        format!("{label} {}", crate::addr::col_letters(i))
+                    } else {
+                        format!("{label} {}", i + 1)
+                    },
+                    before: say(b.get(&i)),
+                    after: say(a.get(&i)),
+                });
+            }
         }
     }
     out

@@ -67,6 +67,7 @@
           "value": "ISSUED"
         }
       },
+      "col_widths": [],
       "formats": {
         "I4": {
           "font_color": "#b3261e"
@@ -110,7 +111,8 @@
       },
       "hidden_rows": [],
       "merged": [],
-      "name": "Sheet1"
+      "name": "Sheet1",
+      "row_heights": []
     }
   ]
 }

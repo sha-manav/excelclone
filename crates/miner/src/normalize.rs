@@ -49,6 +49,13 @@ pub enum Token {
     RowDelete,
     ColInsert,
     ColDelete,
+    /// A width or height change. Coarse on purpose: the size lives in the
+    /// payload and reaches the rebuilt action from there, the same way a
+    /// literal's text does. Two people widening a column to different pixel
+    /// counts are making the same gesture.
+    Resize {
+        col: bool,
+    },
     Sort {
         keys: usize,
         has_header: bool,
@@ -89,6 +96,7 @@ impl fmt::Display for Token {
             Token::RowDelete => write!(f, "row.delete"),
             Token::ColInsert => write!(f, "col.insert"),
             Token::ColDelete => write!(f, "col.delete"),
+            Token::Resize { col } => write!(f, "resize:{}", if *col { "col" } else { "row" }),
             Token::Sort { keys, has_header } => write!(f, "sort:{keys}:{has_header}"),
             Token::FilterApply => write!(f, "filter.apply"),
             Token::FilterClear => write!(f, "filter.clear"),
@@ -117,6 +125,9 @@ impl Token {
             Token::Paste { .. } => 2.0,
             Token::Fill { .. } => 2.5,
             Token::RowInsert | Token::RowDelete | Token::ColInsert | Token::ColDelete => 2.5,
+            // Dragging a border to a particular width is slower than a menu
+            // command and usually takes a second try.
+            Token::Resize { .. } => 3.5,
             Token::Sort { keys, .. } => 6.0 + 2.0 * (*keys as f64),
             Token::FilterApply => 6.0,
             Token::FilterClear => 1.5,
@@ -195,6 +206,8 @@ fn tokens_for(e: &EventEnvelope) -> Vec<Token> {
         "row.delete" => vec![Token::RowDelete],
         "col.insert" => vec![Token::ColInsert],
         "col.delete" => vec![Token::ColDelete],
+        "col.resize" => vec![Token::Resize { col: true }],
+        "row.resize" => vec![Token::Resize { col: false }],
         "sort.apply" => vec![Token::Sort {
             keys: p["keys"].as_array().map(|a| a.len()).unwrap_or(1),
             has_header: p["has_header"].as_bool().unwrap_or(false),

@@ -115,10 +115,12 @@
           "value": "50"
         }
       },
+      "col_widths": [],
       "formats": {},
       "hidden_rows": [],
       "merged": [],
-      "name": "Sheet1"
+      "name": "Sheet1",
+      "row_heights": []
     }
   ]
 }

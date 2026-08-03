@@ -107,6 +107,7 @@
           "value": "#N/A"
         }
       },
+      "col_widths": [],
       "formats": {
         "A1": {
           "align": "center",
@@ -293,7 +294,8 @@
       },
       "hidden_rows": [],
       "merged": [],
-      "name": "Ledger"
+      "name": "Ledger",
+      "row_heights": []
     },
     {
       "cells": {
@@ -314,10 +316,12 @@
           "value": "750"
         }
       },
+      "col_widths": [],
       "formats": {},
       "hidden_rows": [],
       "merged": [],
-      "name": "Rates"
+      "name": "Rates",
+      "row_heights": []
     }
   ]
 }

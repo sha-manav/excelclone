@@ -15,7 +15,8 @@ use crate::ast::{CellRef, Expr, RangeRef};
 use crate::model::SheetId;
 use crate::value::ErrorKind;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Axis {
     Row,
     Col,

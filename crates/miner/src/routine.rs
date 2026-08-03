@@ -206,6 +206,20 @@ pub fn rebuild(event: &serde_json::Value) -> Rebuilt {
                 },
             })
         }
+        "col.resize" | "row.resize" => Rebuilt::Action(Action::Resize {
+            sheet: sheet(),
+            axis: if action == "col.resize" {
+                engine::Axis::Col
+            } else {
+                engine::Axis::Row
+            },
+            at: p["at"].as_u64().unwrap_or(0) as u32,
+            count: p["count"].as_u64().unwrap_or(1) as u32,
+            // Absent means the gesture restored the default, which is a
+            // different action from "resize to zero" and has to survive the
+            // round trip through JSON as such.
+            size: p["size"].as_f64(),
+        }),
         "sort.apply" => {
             let Some(range) = range_of("range") else {
                 return Rebuilt::Skip;
@@ -633,6 +647,53 @@ mod tests {
         assert!(preview.errors.is_empty());
         // The real engine is untouched.
         assert_eq!(engine.value_at("Sheet1", "E1"), engine::Value::Empty);
+    }
+
+    #[test]
+    fn a_dry_run_of_a_resize_says_something_changed() {
+        // A resize touches no cell. Reporting "nothing would change" would
+        // disable Run on a routine that works — the same fault the format
+        // preview once had, in a new place.
+        let engine = engine_with(&[("A1", "1")]);
+        let r = Routine {
+            actions: vec![Action::Resize {
+                sheet: "Sheet1".into(),
+                axis: engine::Axis::Col,
+                at: 1,
+                count: 1,
+                size: Some(180.0),
+            }],
+            anchor: "B1".into(),
+            ..synthesize(
+                &scored(
+                    vec![Token::Resize { col: true }],
+                    vec![Occurrence { start: 0, end: 1 }],
+                ),
+                &[step(0)],
+                &[edit_event("B1", json!("1"), false)],
+            )
+            .unwrap()
+        };
+
+        let preview = dry_run(&engine, &r, "Sheet1", CellAddr::parse_a1("D1").unwrap());
+        assert!(preview.changes.is_empty(), "{:?}", preview.changes);
+        assert_eq!(
+            preview.format_changes,
+            vec![CellChange {
+                sheet: "Sheet1".into(),
+                // Anchored at B and run at D, so it is column D that widens.
+                addr: "column D".into(),
+                before: "default".into(),
+                after: "180px wide".into(),
+            }]
+        );
+        // And the real engine still has its default width.
+        assert!(engine
+            .wb
+            .sheet_by_name("Sheet1")
+            .unwrap()
+            .col_widths
+            .is_empty());
     }
 
     #[test]

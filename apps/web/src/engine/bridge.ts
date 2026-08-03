@@ -67,6 +67,9 @@ export interface SheetInfo {
   painted_cols: number
   hidden_rows: number[]
   merged: string[]
+  /** Non-default sizes in pixels, as `[index, pixels]` pairs. */
+  col_widths: [number, number][]
+  row_heights: [number, number][]
 }
 
 /** One cell a routine would change, as the sandbox reports it. */

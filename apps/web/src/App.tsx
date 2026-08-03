@@ -24,6 +24,7 @@ import {
   rangeRows,
   singleRange,
   type Addr,
+  type Axis,
   type FormatPatch,
   type Range,
   type SortKey,
@@ -471,6 +472,13 @@ export default function App() {
     [apply, wb.activeSheet],
   )
 
+  const handleResize = useCallback(
+    (axis: Axis, at: number, count: number, size: number | null) => {
+      apply({ action: 'resize', sheet: wb.activeSheet, axis, at, count, size })
+    },
+    [apply, wb.activeSheet],
+  )
+
   const handleContextMenu = useCallback((addr: Addr, x: number, y: number) => {
     setMenu({ addr, x, y })
   }, [])
@@ -754,7 +762,7 @@ export default function App() {
               onEditValueChange={wb.updateEdit}
               onFill={handleFill}
               onContextMenu={handleContextMenu}
-              onAutofitColumn={() => {}}
+              onResize={handleResize}
             />
           )}
         </div>

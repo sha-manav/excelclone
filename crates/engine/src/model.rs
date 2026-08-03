@@ -81,6 +81,17 @@ pub struct Sheet {
     /// Rows hidden by the active filter, ascending. View state only.
     #[serde(default)]
     pub hidden_rows: Vec<u32>,
+    /// Column widths in pixels, for the columns that are not the default.
+    ///
+    /// In the model rather than in the grid's React state, because a width is
+    /// something the user *did*: it has to survive a save, and it has to be
+    /// visible to the capture pipeline. Only non-default entries are stored,
+    /// so an untouched sheet carries none.
+    #[serde(default)]
+    pub col_widths: BTreeMap<u32, f64>,
+    /// Row heights in pixels, on the same terms.
+    #[serde(default)]
+    pub row_heights: BTreeMap<u32, f64>,
 }
 
 impl Sheet {
@@ -93,6 +104,8 @@ impl Sheet {
             merged: Vec::new(),
             filter: None,
             hidden_rows: Vec::new(),
+            col_widths: BTreeMap::new(),
+            row_heights: BTreeMap::new(),
         }
     }
 
@@ -252,15 +265,34 @@ impl Workbook {
                 merged.sort();
                 let mut hidden = s.hidden_rows.clone();
                 hidden.sort_unstable();
+                // Sizes as runs rather than one entry per index. A file
+                // saying "every column is 90 wide" imports as sixteen
+                // thousand entries, and a snapshot is meant to be read.
                 serde_json::json!({
                     "name": s.name,
                     "cells": cells,
                     "formats": formats,
                     "merged": merged,
                     "hidden_rows": hidden,
+                    "col_widths": size_runs(&s.col_widths),
+                    "row_heights": size_runs(&s.row_heights),
                 })
             })
             .collect();
         serde_json::json!({ "sheets": sheets })
     }
+}
+
+/// Collapse a size map into `[first, last, pixels]` runs.
+fn size_runs(sizes: &BTreeMap<u32, f64>) -> Vec<serde_json::Value> {
+    let mut runs: Vec<(u32, u32, f64)> = Vec::new();
+    for (&i, &px) in sizes {
+        match runs.last_mut() {
+            Some((_, end, size)) if *end + 1 == i && *size == px => *end = i,
+            _ => runs.push((i, i, px)),
+        }
+    }
+    runs.into_iter()
+        .map(|(a, b, px)| serde_json::json!([a, b, px]))
+        .collect()
 }

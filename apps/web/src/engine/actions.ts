@@ -30,6 +30,8 @@ export interface FilterSpec {
   allowed: string[]
 }
 
+export type Axis = 'row' | 'col'
+
 export type HAlign = 'left' | 'center' | 'right'
 export type BorderPreset = 'all' | 'outline' | 'none'
 
@@ -96,6 +98,15 @@ export type Action =
   | { action: 'sheet_add'; name: string }
   | { action: 'sheet_rename'; from: string; to: string }
   | { action: 'sheet_delete'; name: string }
+  | {
+      action: 'resize'
+      sheet: string
+      axis: Axis
+      at: number
+      count: number
+      /** Pixels, or null to go back to the default width or height. */
+      size: number | null
+    }
   | { action: 'undo' }
   | { action: 'redo' }
 

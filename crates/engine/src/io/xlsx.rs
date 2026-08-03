@@ -24,6 +24,7 @@ use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
 use super::package;
+use super::sizes;
 use super::styles::{StyleAdditions, StyleSheet};
 use super::{apply_cell, install_sheets};
 // Re-exported so callers can spell them `xlsx::ImportResult` too.
@@ -77,6 +78,15 @@ struct PreservedSheet {
     /// Merge ranges as found on import, so export can tell whether the model
     /// changed them.
     merged: BTreeSet<String>,
+    /// Column widths and row heights as found on import, in pixels, on the
+    /// same terms as `merged`: export compares them with the model and leaves
+    /// the original bytes alone when nothing moved.
+    col_widths: BTreeMap<u32, f64>,
+    row_heights: BTreeMap<u32, f64>,
+    /// Attributes of each `<col>` other than `min`/`max`/`width`/
+    /// `customWidth`, verbatim, so regenerating the element does not drop the
+    /// column styles and outline levels we do not model.
+    col_attrs: BTreeMap<u32, String>,
 }
 
 /// Every entry of the imported package plus the map from sheet name to
@@ -343,6 +353,7 @@ pub fn import(bytes: &[u8]) -> Result<ImportResult, IoError> {
     }
 
     install_formats(&mut engine, &package);
+    install_sizes(&mut engine, &package);
     engine.wb.preserved = Some(package);
     // Opening a file is a starting point, not an edit.
     engine.clear_history();
@@ -431,6 +442,25 @@ fn install_formats(engine: &mut Engine, package: &PreservedPackage) {
                     .insert(*addr, id);
             }
         }
+    }
+}
+
+/// Populate `Sheet::col_widths` and `Sheet::row_heights` from the original
+/// `<cols>` and `<row ht=…>`.
+///
+/// Written straight into the model for the same reason as the formats: the
+/// widths a file arrives with are not a gesture the user made in this session,
+/// and replaying them as `Resize` actions would put them on the undo stack.
+fn install_sizes(engine: &mut Engine, package: &PreservedPackage) {
+    for (sid, part) in &package.sheet_parts {
+        let Some(detail) = package.sheets.get(part) else {
+            continue;
+        };
+        let Some(sheet) = engine.wb.sheet_mut(*sid) else {
+            continue;
+        };
+        sheet.col_widths = detail.col_widths.clone();
+        sheet.row_heights = detail.row_heights.clone();
     }
 }
 
@@ -619,11 +649,63 @@ fn scan_worksheet(xml: &[u8], features: &mut FeatureFlags) -> Result<PreservedSh
         match event {
             Event::Eof => break,
             Event::Start(e) | Event::Empty(e) => match e.name().local_name().as_ref() {
+                b"col" => {
+                    let mut min = None;
+                    let mut max = None;
+                    let mut width = None;
+                    // Everything else the element carries — style, hidden,
+                    // outlineLevel, bestFit, collapsed. Not modeled, but
+                    // regenerating `<cols>` must not be how they get lost.
+                    let mut rest = String::new();
+                    for attr in e.attributes().flatten() {
+                        let value = attr.unescape_value().unwrap_or_default().into_owned();
+                        match attr.key.as_ref() {
+                            b"min" => min = value.parse::<u32>().ok(),
+                            b"max" => max = value.parse::<u32>().ok(),
+                            b"width" => width = value.parse::<f64>().ok(),
+                            b"customWidth" => {}
+                            key => {
+                                rest.push_str(&format!(
+                                    " {}=\"{}\"",
+                                    String::from_utf8_lossy(key),
+                                    String::from_utf8_lossy(attr.value.as_ref())
+                                ));
+                            }
+                        }
+                    }
+                    let Some(min) = min else { continue };
+                    // One element covers a run, and `max="16384"` — the whole
+                    // sheet — is common. Expanding it costs a couple of
+                    // hundred kilobytes at the very worst, and export
+                    // coalesces the runs back, which is a better trade than a
+                    // cap that would silently drop the width of every column
+                    // past it.
+                    let max = max.unwrap_or(min).min(crate::addr::MAX_COLS);
+                    for c in min..=max {
+                        let i = c.saturating_sub(1);
+                        if let Some(w) = width {
+                            out.col_widths.insert(i, sizes::chars_to_px(w));
+                        }
+                        if !rest.is_empty() {
+                            out.col_attrs.insert(i, rest.clone());
+                        }
+                    }
+                }
                 b"row" => {
                     col = 0;
                     let mut attrs = String::new();
+                    // Attribute order is not guaranteed, so the height is held
+                    // until `r` has certainly been seen.
+                    let mut height = None;
                     for attr in e.attributes().flatten() {
                         let key = String::from_utf8_lossy(attr.key.as_ref()).into_owned();
+                        if key == "ht" {
+                            height = attr
+                                .unescape_value()
+                                .ok()
+                                .and_then(|v| v.parse::<f64>().ok())
+                                .map(sizes::points_to_px);
+                        }
                         // `r` and `spans` are regenerated; everything else
                         // (heights, hidden, outline level) is carried over.
                         if key == "r" {
@@ -647,6 +729,9 @@ fn scan_worksheet(xml: &[u8], features: &mut FeatureFlags) -> Result<PreservedSh
                     let attrs = attrs.trim_end().to_string();
                     if !attrs.is_empty() {
                         out.row_attrs.insert(row, attrs);
+                    }
+                    if let Some(px) = height.filter(|px| *px > 0.0) {
+                        out.row_heights.insert(row, px);
                     }
                 }
                 b"c" => {
@@ -693,6 +778,7 @@ struct SheetSpans {
     sheet_data: Option<ByteSpan<usize>>,
     merge_cells: Option<ByteSpan<usize>>,
     dimension: Option<ByteSpan<usize>>,
+    cols: Option<ByteSpan<usize>>,
     /// Where a new `<mergeCells>` element must go to keep schema order.
     merge_insert: Option<usize>,
 }
@@ -745,6 +831,7 @@ fn scan_spans(xml: &[u8]) -> Result<SheetSpans, IoError> {
                         b"sheetData" => spans.sheet_data = Some(start..start),
                         b"mergeCells" => spans.merge_cells = Some(start..start),
                         b"dimension" => spans.dimension = Some(start..start),
+                        b"cols" => spans.cols = Some(start..start),
                         other => {
                             if spans.merge_insert.is_none() && AFTER_MERGE_CELLS.contains(&other) {
                                 spans.merge_insert = Some(start);
@@ -762,6 +849,7 @@ fn scan_spans(xml: &[u8]) -> Result<SheetSpans, IoError> {
                         b"sheetData" => spans.sheet_data = Some(start..end),
                         b"mergeCells" => spans.merge_cells = Some(start..end),
                         b"dimension" => spans.dimension = Some(start..end),
+                        b"cols" => spans.cols = Some(start..end),
                         other => {
                             if spans.merge_insert.is_none() && AFTER_MERGE_CELLS.contains(&other) {
                                 spans.merge_insert = Some(start);
@@ -786,6 +874,11 @@ fn scan_spans(xml: &[u8]) -> Result<SheetSpans, IoError> {
                     }
                     b"dimension" if depth == 1 => {
                         if let Some(s) = &mut spans.dimension {
+                            s.end = end;
+                        }
+                    }
+                    b"cols" if depth == 1 => {
+                        if let Some(s) = &mut spans.cols {
                             s.end = end;
                         }
                     }
@@ -978,6 +1071,7 @@ fn patch_sheet_xml(
         )));
     };
 
+    let sheet_data_start = sheet_data.start;
     let mut edits: Vec<(ByteSpan<usize>, String)> =
         vec![(sheet_data, write_sheet_data(sheet, detail, style_attrs))];
 
@@ -994,6 +1088,20 @@ fn patch_sheet_xml(
                     sheet.name
                 )))
             }
+        }
+    }
+
+    // `<cols>` is left exactly as it was unless a width actually moved. The
+    // element carries styles and outline levels we do not model, so
+    // regenerating it unconditionally would throw those away on every save.
+    if sheet.col_widths != detail.col_widths {
+        let xml = write_cols(&sheet.col_widths, &detail.col_attrs);
+        match spans.cols.clone() {
+            Some(span) => edits.push((span, xml)),
+            // The schema puts `<cols>` immediately before `<sheetData>`, so
+            // that offset is the one place a new one can go.
+            None if xml.is_empty() => {}
+            None => edits.push((sheet_data_start..sheet_data_start, xml)),
         }
     }
 
@@ -1055,6 +1163,91 @@ fn write_merge_cells(ranges: &BTreeSet<String>) -> String {
     out
 }
 
+/// Generate `<cols>` from the model, coalescing equal adjacent widths.
+///
+/// Coalescing is not cosmetic: a file that arrived saying "columns 1 to 16384
+/// are 90 pixels" imports as sixteen thousand entries, and writing them back
+/// one element apiece would turn a 200-byte element into half a megabyte.
+fn write_cols(widths: &BTreeMap<u32, f64>, attrs: &BTreeMap<u32, String>) -> String {
+    let columns: BTreeSet<u32> = widths.keys().chain(attrs.keys()).copied().collect();
+    if columns.is_empty() {
+        return String::new();
+    }
+    // Runs are keyed by everything the element will say, not by width alone:
+    // two adjacent columns of the same width but different styles are two
+    // elements, and merging them would move a style onto a column that never
+    // had one.
+    type Run<'a> = (u32, u32, Option<f64>, Option<&'a String>);
+    let mut runs: Vec<Run> = Vec::new();
+    for col in columns {
+        let px = widths.get(&col).copied();
+        let rest = attrs.get(&col);
+        match runs.last_mut() {
+            Some((_, end, w, a)) if *end + 1 == col && *w == px && *a == rest => *end = col,
+            _ => runs.push((col, col, px, rest)),
+        }
+    }
+    let mut out = String::from("<cols>");
+    for (start, end, px, rest) in runs {
+        let width = px
+            .map(|px| {
+                format!(
+                    " width=\"{}\" customWidth=\"1\"",
+                    sizes::fmt_num(sizes::px_to_chars(px))
+                )
+            })
+            .unwrap_or_default();
+        out.push_str(&format!(
+            "<col min=\"{}\" max=\"{}\"{}{}/>",
+            start + 1,
+            end + 1,
+            width,
+            rest.map(|s| s.as_str()).unwrap_or_default()
+        ));
+    }
+    out.push_str("</cols>");
+    out
+}
+
+/// The `<row>` attributes to write: the original ones, with `ht` and
+/// `customHeight` replaced from the model when the model disagrees.
+///
+/// Leaving them alone when it agrees is what keeps an untouched round trip
+/// exact — `ht="14.4"` is not something our pixel arithmetic can reproduce
+/// digit for digit, and a save should not silently renumber every row of a
+/// file the user only opened.
+fn row_attrs_for(row: u32, sheet: &Sheet, detail: &PreservedSheet) -> String {
+    let modeled = sheet.row_heights.get(&row);
+    if modeled == detail.row_heights.get(&row) {
+        return detail
+            .row_attrs
+            .get(&row)
+            .map(|a| format!(" {}", a))
+            .unwrap_or_default();
+    }
+    let kept: Vec<&str> = detail
+        .row_attrs
+        .get(&row)
+        .map(|a| {
+            a.split_whitespace()
+                .filter(|kv| !kv.starts_with("ht=") && !kv.starts_with("customHeight="))
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut out = String::new();
+    for kv in kept {
+        out.push(' ');
+        out.push_str(kv);
+    }
+    if let Some(px) = modeled {
+        out.push_str(&format!(
+            " ht=\"{}\" customHeight=\"1\"",
+            sizes::fmt_num(sizes::px_to_points(*px))
+        ));
+    }
+    out
+}
+
 /// Generate `<sheetData>` from the model, re-attaching each cell's original
 /// style index and each row's original attributes. Rows and cells that carry
 /// only formatting are emitted empty so that formatting is not lost.
@@ -1075,7 +1268,7 @@ fn write_sheet_data(
             .entry(addr.col)
             .or_insert(None);
     }
-    for row in detail.row_attrs.keys() {
+    for row in detail.row_attrs.keys().chain(sheet.row_heights.keys()) {
         rows.entry(*row).or_default();
     }
     if rows.is_empty() {
@@ -1084,11 +1277,7 @@ fn write_sheet_data(
 
     let mut out = String::from("<sheetData>");
     for (r, cells) in rows {
-        let attrs = detail
-            .row_attrs
-            .get(&r)
-            .map(|a| format!(" {}", a))
-            .unwrap_or_default();
+        let attrs = row_attrs_for(r, sheet, detail);
         if cells.is_empty() {
             out.push_str(&format!("<row r=\"{}\"{}/>", r + 1, attrs));
             continue;
@@ -1208,6 +1397,26 @@ fn export_fresh(wb: &Workbook) -> Result<Vec<u8>, IoError> {
     for sheet in &wb.sheets {
         let ws = book.add_worksheet();
         ws.set_name(&sheet.name)?;
+
+        // Widths and heights before anything else, so a sheet that is only
+        // resized still writes them: rust_xlsxwriter keeps them whether or not
+        // the column holds a cell.
+        //
+        // In pixels rather than characters, because `set_column_width` takes
+        // the count *without* the padding Excel adds and then adds it back —
+        // handing it the attribute value would make every column five pixels
+        // wider on each save.
+        for (&col, &px) in &sheet.col_widths {
+            let writer_px = sizes::px_to_writer_px(px) as i64;
+            if let (Ok(c), Ok(w)) = (u16::try_from(col), u16::try_from(writer_px)) {
+                ws.set_column_width_pixels(c, w)?;
+            }
+        }
+        for (&row, &px) in &sheet.row_heights {
+            if let Ok(h) = u16::try_from(px.round() as i64) {
+                ws.set_row_height_pixels(row, h)?;
+            }
+        }
 
         // merge_range fills the whole range with blanks, so it must run before
         // the values that land inside it.

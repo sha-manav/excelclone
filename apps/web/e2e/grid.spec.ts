@@ -162,3 +162,49 @@ test('a bad formula surfaces an error instead of failing silently', async ({
   await typeInCell(page, '=1+')
   await expect(page.locator('.error-toast')).toBeVisible()
 })
+
+test('a column resize moves the columns and comes back with undo', async ({ page }) => {
+  const canvas = page.locator('canvas')
+  const box = await canvas.boundingBox()
+  if (!box) throw new Error('canvas has no box')
+  const HEADER_W = 46
+  const HEADER_H = 24
+  const COL_W = 100
+
+  // Drag the A/B border 100px to the right, so column A is 200 wide.
+  const border = { x: box.x + HEADER_W + COL_W, y: box.y + HEADER_H / 2 }
+  await page.mouse.move(border.x, border.y)
+  await page.mouse.down()
+  await page.mouse.move(border.x + 100, border.y, { steps: 10 })
+  await page.mouse.up()
+
+  // The proof is where the columns now are, not what the canvas looks like:
+  // 250px from the left edge was column C and is now column B.
+  await page.mouse.click(box.x + HEADER_W + 250, box.y + HEADER_H + 12)
+  await expect(page.locator('.formula-bar__address')).toHaveText('B1')
+
+  // A resize is an action like any other, so Ctrl+Z has to take it back.
+  await page.keyboard.press('Control+z')
+  await page.mouse.click(box.x + HEADER_W + 250, box.y + HEADER_H + 12)
+  await expect(page.locator('.formula-bar__address')).toHaveText('C1')
+})
+
+test('a row resize moves the rows', async ({ page }) => {
+  const canvas = page.locator('canvas')
+  const box = await canvas.boundingBox()
+  if (!box) throw new Error('canvas has no box')
+  const HEADER_W = 46
+  const HEADER_H = 24
+  const ROW_H = 24
+
+  // Drag the 1/2 border down 24px, so row 1 is 48 tall.
+  const border = { x: box.x + HEADER_W / 2, y: box.y + HEADER_H + ROW_H }
+  await page.mouse.move(border.x, border.y)
+  await page.mouse.down()
+  await page.mouse.move(border.x, border.y + 24, { steps: 10 })
+  await page.mouse.up()
+
+  // 60px down used to be row 3 and is now row 2.
+  await page.mouse.click(box.x + HEADER_W + 40, box.y + HEADER_H + 60)
+  await expect(page.locator('.formula-bar__address')).toHaveText('A2')
+})

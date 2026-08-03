@@ -631,3 +631,211 @@ fn a_package_with_no_style_sheet_can_still_be_formatted() {
         .format_id(CellAddr::parse_a1("A5").unwrap())
         .is_none());
 }
+
+// ---------------------------------------------------------------------------
+// Column widths and row heights
+// ---------------------------------------------------------------------------
+
+fn resize(e: &mut Engine, axis: engine::Axis, at: u32, count: u32, size: Option<f64>) {
+    e.apply(&Action::Resize {
+        sheet: "Sheet1".into(),
+        axis,
+        at,
+        count,
+        size,
+    })
+    .unwrap();
+}
+
+#[test]
+fn sizes_survive_a_round_trip_through_a_generated_file() {
+    let mut e = Engine::new();
+    set(&mut e, "Sheet1", "A1", "wide");
+    resize(&mut e, engine::Axis::Col, 0, 1, Some(180.0));
+    resize(&mut e, engine::Axis::Row, 4, 1, Some(48.0));
+
+    let bytes = xlsx::export(&e.wb).expect("export");
+    let back = xlsx::import(&bytes).expect("import");
+    let sheet = back.engine.wb.sheet_by_name("Sheet1").unwrap();
+    assert_eq!(sheet.col_widths.get(&0), Some(&180.0));
+    assert_eq!(sheet.row_heights.get(&4), Some(&48.0));
+    // Row 5 exists in the file only because it is tall; it must not have
+    // acquired a cell on the way.
+    assert!(!sheet.cells.contains_key(&CellAddr::parse_a1("A5").unwrap()));
+}
+
+#[test]
+fn no_width_drifts_by_a_pixel_on_save() {
+    // One width proves the plumbing; a spread proves the arithmetic. The
+    // generated-file path goes through a different writer from the preserved
+    // one and has its own idea of what a "pixel" is, so it gets its own sweep.
+    let mut e = Engine::new();
+    set(&mut e, "Sheet1", "A1", "x");
+    let widths: Vec<f64> = (0..40).map(|i| 24.0 + i as f64 * 12.0).collect();
+    for (i, px) in widths.iter().enumerate() {
+        resize(&mut e, engine::Axis::Col, i as u32, 1, Some(*px));
+        resize(&mut e, engine::Axis::Row, i as u32, 1, Some(px / 4.0));
+    }
+
+    // Twice, because a conversion can be wrong in a way one pass hides.
+    let mut wb = e.wb.clone();
+    for pass in 1..=2 {
+        let bytes = xlsx::export(&wb).expect("export");
+        wb = xlsx::import(&bytes).expect("import").engine.wb;
+        let sheet = wb.sheet_by_name("Sheet1").unwrap();
+        for (i, px) in widths.iter().enumerate() {
+            assert_eq!(
+                sheet.col_widths.get(&(i as u32)),
+                Some(px),
+                "column {i} drifted on pass {pass}"
+            );
+            assert_eq!(
+                sheet.row_heights.get(&(i as u32)),
+                Some(&(px / 4.0)),
+                "row {i} drifted on pass {pass}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_width_read_from_a_file_is_the_width_written_back() {
+    // The interesting case is a file we did not write: `width="24.5"` is not a
+    // number our pixel arithmetic produces, and an open-and-save must not
+    // quietly renumber it.
+    let original = handmade_xlsx(SHEET_XML);
+    let mut e = xlsx::import(&original).expect("import").engine;
+    assert_eq!(
+        e.wb.sheet_by_name("Books").unwrap().col_widths.get(&0),
+        Some(&176.0),
+        "the <cols> width did not reach the model"
+    );
+    assert_eq!(
+        e.wb.sheet_by_name("Books").unwrap().row_heights.get(&1),
+        Some(&42.0),
+        "31.5pt is 42px"
+    );
+
+    // Editing a cell is not editing a width.
+    set(&mut e, "Books", "A1", "changed");
+    let saved = xlsx::export(&e.wb).expect("export");
+    let xml = String::from_utf8(part_of(&saved, "xl/worksheets/sheet1.xml")).unwrap();
+    assert!(
+        xml.contains("<col min=\"1\" max=\"1\" width=\"24.5\" customWidth=\"1\"/>"),
+        "the original width was rewritten:\n{xml}"
+    );
+    assert!(
+        xml.contains("ht=\"31.5\" customHeight=\"1\""),
+        "the original height was rewritten:\n{xml}"
+    );
+}
+
+#[test]
+fn resizing_an_imported_sheet_rewrites_only_what_moved() {
+    let original = handmade_xlsx(SHEET_XML);
+    let mut e = xlsx::import(&original).expect("import").engine;
+    e.apply(&Action::Resize {
+        sheet: "Books".into(),
+        axis: engine::Axis::Col,
+        at: 2,
+        count: 1,
+        size: Some(300.0),
+    })
+    .unwrap();
+    e.apply(&Action::Resize {
+        sheet: "Books".into(),
+        axis: engine::Axis::Row,
+        at: 0,
+        count: 1,
+        size: Some(60.0),
+    })
+    .unwrap();
+
+    let saved = xlsx::export(&e.wb).expect("export");
+    let xml = String::from_utf8(part_of(&saved, "xl/worksheets/sheet1.xml")).unwrap();
+    assert!(xml.contains("<col min=\"3\" max=\"3\""), "{xml}");
+    assert!(xml.contains("ht=\"45\" customHeight=\"1\""), "{xml}");
+    // Row 2's height was not part of the gesture and keeps its exact text.
+    assert!(xml.contains("ht=\"31.5\" customHeight=\"1\""), "{xml}");
+
+    // Reopening gives back every size, including column 1's, which the
+    // regenerated <cols> had to carry over.
+    let back = xlsx::import(&saved).expect("reimport");
+    let sheet = back.engine.wb.sheet_by_name("Books").unwrap();
+    assert_eq!(sheet.col_widths.get(&0), Some(&176.0));
+    assert_eq!(sheet.col_widths.get(&2), Some(&300.0));
+    assert_eq!(sheet.row_heights.get(&0), Some(&60.0));
+    assert_eq!(sheet.row_heights.get(&1), Some(&42.0));
+}
+
+#[test]
+fn regenerating_cols_keeps_the_attributes_we_do_not_model() {
+    // A column style, an outline level and a hidden column. None of them is
+    // in the model, and rewriting <cols> for an unrelated resize must not be
+    // how they disappear.
+    let sheet_xml = SHEET_XML.replace(
+        r#"<col min="1" max="1" width="24.5" customWidth="1"/>"#,
+        r#"<col min="1" max="1" width="24.5" customWidth="1" style="2"/><col min="4" max="4" hidden="1" outlineLevel="1"/>"#,
+    );
+    let mut e = xlsx::import(&handmade_xlsx(&sheet_xml))
+        .expect("import")
+        .engine;
+    e.apply(&Action::Resize {
+        sheet: "Books".into(),
+        axis: engine::Axis::Col,
+        at: 1,
+        count: 1,
+        size: Some(140.0),
+    })
+    .unwrap();
+
+    let saved = xlsx::export(&e.wb).expect("export");
+    let xml = String::from_utf8(part_of(&saved, "xl/worksheets/sheet1.xml")).unwrap();
+    assert!(
+        xml.contains(r#"style="2""#),
+        "the column style was dropped:\n{xml}"
+    );
+    assert!(
+        xml.contains(r#"<col min="4" max="4" hidden="1" outlineLevel="1"/>"#),
+        "the hidden column lost its attributes:\n{xml}"
+    );
+    // ...and column D, which has no width at all, did not acquire one.
+    assert!(!xml.contains(r#"min="4" max="4" width="#), "{xml}");
+}
+
+#[test]
+fn a_sheet_wide_column_run_does_not_explode_the_file() {
+    let sheet_xml = SHEET_XML.replace(
+        r#"<col min="1" max="1" width="24.5" customWidth="1"/>"#,
+        r#"<col min="1" max="16384" width="12" customWidth="1"/>"#,
+    );
+    let mut e = xlsx::import(&handmade_xlsx(&sheet_xml))
+        .expect("import")
+        .engine;
+    assert_eq!(
+        e.wb.sheet_by_name("Books").unwrap().col_widths.len(),
+        16_384
+    );
+    // Now move one column, forcing the whole element to be regenerated.
+    e.apply(&Action::Resize {
+        sheet: "Books".into(),
+        axis: engine::Axis::Col,
+        at: 0,
+        count: 1,
+        size: Some(200.0),
+    })
+    .unwrap();
+    let saved = xlsx::export(&e.wb).expect("export");
+    let xml = String::from_utf8(part_of(&saved, "xl/worksheets/sheet1.xml")).unwrap();
+    assert!(
+        xml.contains(r#"<col min="2" max="16384""#),
+        "the run was not coalesced:\n{}",
+        &xml[..xml.len().min(2000)]
+    );
+    assert!(
+        xml.len() < 20_000,
+        "regenerated <cols> is {} bytes; the run was written out one column \
+         at a time",
+        xml.len()
+    );
+}

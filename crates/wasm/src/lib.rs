@@ -79,6 +79,11 @@ struct SheetInfo {
     painted_cols: u32,
     hidden_rows: Vec<u32>,
     merged: Vec<String>,
+    /// Non-default column widths and row heights in pixels, as
+    /// `[index, pixels]` pairs. Pairs rather than an object because a JSON
+    /// object would key them by string and the grid wants numbers.
+    col_widths: Vec<(u32, f64)>,
+    row_heights: Vec<(u32, f64)>,
 }
 
 #[derive(Serialize)]
@@ -255,6 +260,8 @@ impl Gridline {
                     painted_cols: painted.map(|r| r.end.col + 1).unwrap_or(0),
                     hidden_rows: s.hidden_rows.clone(),
                     merged: s.merged.iter().map(|m| m.to_a1()).collect(),
+                    col_widths: s.col_widths.iter().map(|(i, px)| (*i, *px)).collect(),
+                    row_heights: s.row_heights.iter().map(|(i, px)| (*i, *px)).collect(),
                 }
             })
             .collect();
