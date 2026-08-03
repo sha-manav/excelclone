@@ -55,17 +55,17 @@ test.beforeEach(async ({ page }) => {
 test('grid renders with headers and sheet tabs', async ({ page }) => {
   await expect(page.locator('canvas')).toBeVisible()
   await expect(page.locator('.sheet-tab', { hasText: 'Sheet1' })).toBeVisible()
-  await expect(page.locator('.formula-bar__address')).toHaveText('A1')
+  await expect(page.locator('.formula-bar__address')).toHaveValue('A1')
 })
 
 test('typing a value stores it and moves down', async ({ page }) => {
   await clickCell(page, 0, 0)
   await typeInCell(page, '42')
   // Enter moved the selection to A2.
-  await expect(page.locator('.formula-bar__address')).toHaveText('A2')
+  await expect(page.locator('.formula-bar__address')).toHaveValue('A2')
   // Re-select A1 and confirm the engine kept the value.
   await clickCell(page, 0, 0)
-  await expect(page.locator('.formula-bar__address')).toHaveText('A1')
+  await expect(page.locator('.formula-bar__address')).toHaveValue('A1')
   await expect(formulaInput(page)).toHaveValue('42')
 })
 
@@ -87,7 +87,7 @@ test('formulas recalculate live', async ({ page }) => {
   await expect(formulaInput(page)).toHaveValue('=SUM(A1:A2)')
   // Read the computed value straight off the engine via the rendered canvas
   // check below; the address label proves selection is where we think.
-  await expect(page.locator('.formula-bar__address')).toHaveText('B1')
+  await expect(page.locator('.formula-bar__address')).toHaveValue('B1')
 })
 
 test('undo and redo walk the history', async ({ page }) => {
@@ -138,13 +138,13 @@ test('cross-sheet formulas resolve', async ({ page }) => {
 test('keyboard navigation moves the selection', async ({ page }) => {
   await clickCell(page, 0, 0)
   await page.keyboard.press('ArrowRight')
-  await expect(page.locator('.formula-bar__address')).toHaveText('B1')
+  await expect(page.locator('.formula-bar__address')).toHaveValue('B1')
   await page.keyboard.press('ArrowDown')
-  await expect(page.locator('.formula-bar__address')).toHaveText('B2')
+  await expect(page.locator('.formula-bar__address')).toHaveValue('B2')
   await page.keyboard.press('Tab')
-  await expect(page.locator('.formula-bar__address')).toHaveText('C2')
+  await expect(page.locator('.formula-bar__address')).toHaveValue('C2')
   await page.keyboard.press('ControlOrMeta+Home')
-  await expect(page.locator('.formula-bar__address')).toHaveText('A1')
+  await expect(page.locator('.formula-bar__address')).toHaveValue('A1')
 })
 
 test('delete clears the selected range', async ({ page }) => {
@@ -181,12 +181,12 @@ test('a column resize moves the columns and comes back with undo', async ({ page
   // The proof is where the columns now are, not what the canvas looks like:
   // 250px from the left edge was column C and is now column B.
   await page.mouse.click(box.x + HEADER_W + 250, box.y + HEADER_H + 12)
-  await expect(page.locator('.formula-bar__address')).toHaveText('B1')
+  await expect(page.locator('.formula-bar__address')).toHaveValue('B1')
 
   // A resize is an action like any other, so Ctrl+Z has to take it back.
   await page.keyboard.press('Control+z')
   await page.mouse.click(box.x + HEADER_W + 250, box.y + HEADER_H + 12)
-  await expect(page.locator('.formula-bar__address')).toHaveText('C1')
+  await expect(page.locator('.formula-bar__address')).toHaveValue('C1')
 })
 
 test('a row resize moves the rows', async ({ page }) => {
@@ -206,7 +206,7 @@ test('a row resize moves the rows', async ({ page }) => {
 
   // 60px down used to be row 3 and is now row 2.
   await page.mouse.click(box.x + HEADER_W + 40, box.y + HEADER_H + 60)
-  await expect(page.locator('.formula-bar__address')).toHaveText('A2')
+  await expect(page.locator('.formula-bar__address')).toHaveValue('A2')
 })
 
 test('copying puts tab-separated text on the system clipboard', async ({ page, context }) => {
@@ -284,11 +284,43 @@ test('a dynamic array spills into the cells below and they read back', async ({ 
   // C2 holds a value nothing was ever typed into, and it has no formula: the
   // formula bar is empty there while the grid shows the spilled value.
   await clickCell(page, 1, 2)
-  await expect(page.locator('.formula-bar__address')).toHaveText('C2')
+  await expect(page.locator('.formula-bar__address')).toHaveValue('C2')
   await expect(formulaInput(page)).toHaveValue('a')
 
   // Typing over a spilled cell breaks the block rather than being ignored.
   await typeInCell(page, 'mine')
   await clickCell(page, 0, 2)
   await expect(formulaInput(page)).toHaveValue('=UNIQUE(A1:A3)')
+})
+
+test('the name box defines a name and then navigates to it', async ({ page }) => {
+  const nameBox = page.getByTestId('name-box')
+
+  await clickCell(page, 0, 0)
+  await typeInCell(page, '10')
+  await typeInCell(page, '20')
+
+  // Select A1:A2 and name it.
+  await clickCell(page, 0, 0)
+  await page.keyboard.down('Shift')
+  await clickCell(page, 1, 0)
+  await page.keyboard.up('Shift')
+  await nameBox.fill('Amounts')
+  await nameBox.press('Enter')
+
+  // The name is usable in a formula...
+  await clickCell(page, 0, 2)
+  await typeInCell(page, '=SUM(Amounts)')
+  await clickCell(page, 0, 2)
+  await expect(formulaInput(page)).toHaveValue('=SUM(Amounts)')
+
+  // ...and typing it into the box goes there.
+  await nameBox.fill('Amounts')
+  await nameBox.press('Enter')
+  await expect(page.locator('.formula-bar__address')).toHaveValue('A1')
+
+  // An address still navigates, which is what the box did before it had names.
+  await nameBox.fill('B7')
+  await nameBox.press('Enter')
+  await expect(page.locator('.formula-bar__address')).toHaveValue('B7')
 })

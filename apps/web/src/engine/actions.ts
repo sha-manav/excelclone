@@ -107,6 +107,13 @@ export type Action =
       /** Pixels, or null to go back to the default width or height. */
       size: number | null
     }
+  | {
+      action: 'name_define'
+      name: string
+      /** An A1 range as xlsx spells it, usually sheet-qualified and absolute. */
+      refers_to: string
+    }
+  | { action: 'name_delete'; name: string }
   | { action: 'undo' }
   | { action: 'redo' }
 

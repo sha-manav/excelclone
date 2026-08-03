@@ -69,6 +69,8 @@ pub const ACTION_VOCABULARY: &[&str] = &[
     "col.delete",
     "row.resize",
     "col.resize",
+    "name.define",
+    "name.delete",
     "sort.apply",
     "filter.apply",
     "filter.clear",
@@ -341,6 +343,14 @@ pub fn describe(action: &Action, mode: PrivacyMode, salt: &str) -> (String, Json
             "size": size,
             "kind": if size.is_some() { "set" } else { "default" },
         }),
+        // A name is something the user chose, so it is hashed like a sheet
+        // name. Where it points is structure, not content, and the miner
+        // needs it to rebuild the action.
+        Action::NameDefine { name, refers_to } => json!({
+            "name": redact_label(name, mode, salt),
+            "refers_to": refers_to,
+        }),
+        Action::NameDelete { name } => json!({ "name": redact_label(name, mode, salt) }),
         Action::Undo | Action::Redo => json!({}),
     };
     (name, payload)
@@ -379,6 +389,8 @@ pub fn action_name(action: &Action) -> &'static str {
             crate::refs::Axis::Col => "col.resize",
             crate::refs::Axis::Row => "row.resize",
         },
+        Action::NameDefine { .. } => "name.define",
+        Action::NameDelete { .. } => "name.delete",
         Action::Undo => "undo",
         Action::Redo => "redo",
     }

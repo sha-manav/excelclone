@@ -183,6 +183,15 @@ pub enum Action {
         count: u32,
         size: Option<f64>,
     },
+    /// Define a workbook-level name, or redefine one. `refers_to` is an A1
+    /// range as xlsx spells it — usually sheet-qualified and absolute.
+    NameDefine {
+        name: String,
+        refers_to: String,
+    },
+    NameDelete {
+        name: String,
+    },
     Undo,
     Redo,
 }
@@ -292,6 +301,15 @@ pub enum Event {
     Redone {
         label: String,
     },
+    NameDefined {
+        name: String,
+        refers_to: String,
+        /// What it meant before, when this replaced an existing definition.
+        prev: Option<String>,
+    },
+    NameDeleted {
+        name: String,
+    },
     Resized {
         sheet: String,
         axis: Axis,
@@ -345,6 +363,9 @@ pub enum UndoState {
     /// and copying it means an autofit over a selection undoes as one map
     /// swap instead of a list of per-column patches.
     Sizes(SheetId, Axis, BTreeMap<u32, f64>),
+    /// The whole name table. A handful of entries at most, and swapping it
+    /// wholesale means a redefinition and a deletion undo the same way.
+    Names(BTreeMap<String, String>),
 }
 
 impl UndoState {
@@ -354,7 +375,10 @@ impl UndoState {
         match self {
             UndoState::Cells(c) => c.len() as u32,
             UndoState::Compound(parts) => parts.iter().map(|p| p.cell_count()).sum(),
-            UndoState::Formats(_) | UndoState::Sheets(_) | UndoState::Sizes(..) => 0,
+            UndoState::Formats(_)
+            | UndoState::Sheets(_)
+            | UndoState::Sizes(..)
+            | UndoState::Names(_) => 0,
         }
     }
 }
@@ -509,6 +533,8 @@ impl Engine {
                 count,
                 size,
             } => self.resize(sheet, *axis, *at, *count, *size),
+            Action::NameDefine { name, refers_to } => self.name_define(name, refers_to),
+            Action::NameDelete { name } => self.name_delete(name),
             Action::Undo | Action::Redo => unreachable!("handled in apply"),
         }
     }
@@ -560,6 +586,9 @@ impl Engine {
             UndoState::Sheets(sheets) => {
                 let replaced = std::mem::replace(&mut self.wb.sheets, sheets);
                 UndoState::Sheets(replaced)
+            }
+            UndoState::Names(names) => {
+                UndoState::Names(std::mem::replace(&mut self.wb.names, names))
             }
             UndoState::Sizes(sid, axis, sizes) => {
                 let Some(sheet) = self.wb.sheet_mut(sid) else {
@@ -1092,6 +1121,54 @@ impl Engine {
         }])
     }
 
+    /// Define or redefine a workbook name.
+    fn name_define(&mut self, name: &str, refers_to: &str) -> Result<Vec<Event>, ApplyError> {
+        let key = name.trim().to_ascii_uppercase();
+        if !is_valid_name(&key) {
+            return Err(ApplyError::Invalid(format!(
+                "'{name}' is not a usable name: names start with a letter or \
+                 underscore, contain no spaces, and must not look like a cell \
+                 address"
+            )));
+        }
+        // Parsed here rather than at evaluation so a typo is refused when it
+        // is made, not silently every time the name is used.
+        let body = refers_to.strip_prefix('=').unwrap_or(refers_to);
+        // A definition that parses to nothing but an error — `Sheet1!$A$`,
+        // say — is a typo the parser is willing to tolerate as an error node.
+        // Storing it would mean the name silently answers #REF! forever.
+        if matches!(parse_formula(body)?, Expr::Error(_)) {
+            return Err(ApplyError::Invalid(format!(
+                "'{refers_to}' is not something a name can refer to"
+            )));
+        }
+        let before = self.wb.names.clone();
+        let prev = self.wb.names.insert(key.clone(), refers_to.to_string());
+        if prev.as_deref() == Some(refers_to) {
+            return Ok(Vec::new());
+        }
+        self.push_undo("define name", UndoState::Names(before));
+        self.rebuild_deps_and_recalc_all();
+        Ok(vec![Event::NameDefined {
+            name: key,
+            refers_to: refers_to.to_string(),
+            prev,
+        }])
+    }
+
+    fn name_delete(&mut self, name: &str) -> Result<Vec<Event>, ApplyError> {
+        let key = name.trim().to_ascii_uppercase();
+        let before = self.wb.names.clone();
+        if self.wb.names.remove(&key).is_none() {
+            return Err(ApplyError::Invalid(format!("no name '{name}'")));
+        }
+        self.push_undo("delete name", UndoState::Names(before));
+        // Formulas using it now say #NAME?, which is the right answer and the
+        // reason deleting a name is worth an undo entry.
+        self.rebuild_deps_and_recalc_all();
+        Ok(vec![Event::NameDeleted { name: key }])
+    }
+
     /// Set or clear a run of column widths or row heights.
     fn resize(
         &mut self,
@@ -1178,6 +1255,27 @@ impl Engine {
                 }
             }
         }
+        // Defined names point at sheets too. A name left saying `Sales!$A$1`
+        // after Sales was deleted is the stale `<definedName>` the handoff
+        // notes recorded as a known gap; now that names are modeled it is
+        // rewritten like any other reference.
+        let names = std::mem::take(&mut self.wb.names);
+        self.wb.names = names
+            .into_iter()
+            .map(|(name, refers_to)| {
+                let body = refers_to.strip_prefix('=').unwrap_or(&refers_to);
+                let Ok(ast) = parse_formula(body) else {
+                    return (name, refers_to);
+                };
+                let mut changed = false;
+                let new_ast = rewrite_sheet_in_expr(&ast, from, to, &mut changed);
+                if changed {
+                    (name, new_ast.to_formula())
+                } else {
+                    (name, refers_to)
+                }
+            })
+            .collect();
     }
 
     fn prev_input(&self, key: CellKey) -> Option<String> {
@@ -1541,6 +1639,7 @@ impl Engine {
             at: key.addr,
             now_ms: self.now_ms,
             bindings: &[],
+            name_depth: 0,
         };
         let ast = ast.clone();
         let operand = ctx.eval_operand(&ast);
@@ -1958,4 +2057,33 @@ fn cyclic_nodes(nodes: &[CellKey], edges: &HashMap<CellKey, Vec<CellKey>>) -> Ha
         }
     }
     cyclic
+}
+
+/// Whether a string can be a defined name.
+///
+/// Excel's rules, minus the ones that need locale data: it must not be
+/// readable as a cell address (or `R`/`C`, which are R1C1 shorthand), must
+/// start with a letter, underscore or backslash, and must contain no spaces
+/// or operators. The address rule is the one that matters — a name spelled
+/// `A1` would shadow the cell everywhere and there would be no way to say
+/// which was meant.
+fn is_valid_name(name: &str) -> bool {
+    if name.is_empty() || name.len() > 255 {
+        return false;
+    }
+    let mut chars = name.chars();
+    let first = chars.next().unwrap();
+    if !(first.is_alphabetic() || first == '_' || first == '\\') {
+        return false;
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '_' || c == '.' || c == '\\')
+    {
+        return false;
+    }
+    if name == "R" || name == "C" {
+        return false;
+    }
+    CellAddr::parse_a1(name).is_none()
 }

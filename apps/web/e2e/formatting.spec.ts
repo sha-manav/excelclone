@@ -204,7 +204,7 @@ test('merging paints one block and selecting it selects the whole range', async 
   // Clicking the covered part of the block selects the block, not C1.
   await clickCell(page, 0, 2)
   await expect(page.locator('.toolbar__status')).toHaveText('A1:C1')
-  await expect(page.locator('.formula-bar__address')).toHaveText('A1')
+  await expect(page.locator('.formula-bar__address')).toHaveValue('A1')
 
   await page.getByRole('button', { name: 'Unmerge cells' }).click()
   await expect
@@ -426,7 +426,8 @@ test('double-clicking a column border sizes it to its contents', async ({ page }
   // that boundary, so it has to be checked before and after.
   const at250 = async () => {
     await page.mouse.click(box.x + HEADER_W + 250, box.y + HEADER_H + ROW_H / 2)
-    return page.locator('.formula-bar__address').textContent()
+    // The name box is an input now, so its address is a value, not text.
+    return page.locator('.formula-bar__address').inputValue()
   }
   expect(await at250()).toBe('C1')
 

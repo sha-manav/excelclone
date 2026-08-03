@@ -222,6 +222,11 @@ export class EngineHandle {
     return this.inner.sheets() as SheetInfo[]
   }
 
+  /** Every defined name, as `[name, refersTo]` pairs. */
+  definedNames(): [string, string][] {
+    return this.inner.definedNames() as [string, string][]
+  }
+
   columnValues(sheet: string, rangeA1: string, col: number): string[] {
     return this.inner.columnValues(sheet, rangeA1, col) as string[]
   }

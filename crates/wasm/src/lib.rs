@@ -268,6 +268,19 @@ impl Gridline {
             .unwrap_or_default()
     }
 
+    /// Every defined name, as `[name, refers_to]` pairs in name order.
+    #[wasm_bindgen(js_name = definedNames)]
+    pub fn defined_names(&self) -> Result<JsValue, JsValue> {
+        let pairs: Vec<(String, String)> = self
+            .engine
+            .wb
+            .names
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        to_js(&pairs)
+    }
+
     /// Names, extents, hidden rows and merges for every sheet.
     pub fn sheets(&self) -> Result<JsValue, JsValue> {
         let infos: Vec<SheetInfo> = self

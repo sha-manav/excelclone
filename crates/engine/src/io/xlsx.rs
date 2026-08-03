@@ -103,6 +103,12 @@ pub struct PreservedPackage {
     sheet_parts: Vec<(SheetId, String)>,
     /// Part name -> detail captured from the original sheet XML.
     sheets: HashMap<String, PreservedSheet>,
+    /// Defined names as imported: the modeled ones by uppercase name, and the
+    /// raw XML of everything else — sheet-scoped names and the `_xlnm.`
+    /// built-ins like print areas, which have to be written back untouched
+    /// when the element is regenerated.
+    defined_names: BTreeMap<String, String>,
+    other_defined_names: Vec<String>,
     /// `xl/styles.xml`, parsed down to the formatting we model, so export can
     /// tell an untouched cell (write its original `s` back) from an edited one
     /// (append a new `<xf>`).
@@ -163,6 +169,8 @@ impl PreservedPackage {
             entries,
             sheet_parts: Vec::new(),
             sheets: HashMap::new(),
+            defined_names: BTreeMap::new(),
+            other_defined_names: Vec::new(),
             styles: StyleSheet::default(),
         })
     }
@@ -352,6 +360,12 @@ pub fn import(bytes: &[u8]) -> Result<ImportResult, IoError> {
         }
     }
 
+    if let Some(bytes) = package.part(package::WORKBOOK_PART).map(|b| b.to_vec()) {
+        let (modeled, other) = scan_defined_names(&bytes)?;
+        package.defined_names = modeled.clone();
+        package.other_defined_names = other;
+        engine.wb.names = modeled;
+    }
     install_formats(&mut engine, &package);
     install_sizes(&mut engine, &package);
     engine.wb.preserved = Some(package);
@@ -443,6 +457,95 @@ fn install_formats(engine: &mut Engine, package: &PreservedPackage) {
             }
         }
     }
+}
+
+/// Read `<definedNames>` out of `xl/workbook.xml`.
+///
+/// Only workbook-scoped, non-built-in names are modeled. A name with a
+/// `localSheetId` is scoped to one sheet and a `_xlnm.` name is a print area
+/// or a filter range; both are kept as raw XML so regenerating the element
+/// does not delete them.
+fn scan_defined_names(xml: &[u8]) -> Result<(BTreeMap<String, String>, Vec<String>), IoError> {
+    let mut modeled = BTreeMap::new();
+    let mut other = Vec::new();
+    let mut reader = XmlReader::from_reader(xml);
+    let mut current: Option<(String, bool, String)> = None;
+    loop {
+        match reader.read_event().map_err(IoError::from)? {
+            Event::Eof => break,
+            Event::Start(e) if e.name().local_name().as_ref() == b"definedName" => {
+                let mut name = String::new();
+                let mut local = false;
+                let mut raw = format!("<{}", String::from_utf8_lossy(e.name().as_ref()));
+                for attr in e.attributes().flatten() {
+                    let key = String::from_utf8_lossy(attr.key.as_ref()).into_owned();
+                    let value = String::from_utf8_lossy(attr.value.as_ref()).into_owned();
+                    if key == "name" {
+                        name = attr.unescape_value().unwrap_or_default().into_owned();
+                    }
+                    if key == "localSheetId" {
+                        local = true;
+                    }
+                    raw.push_str(&format!(" {key}=\"{value}\""));
+                }
+                raw.push('>');
+                current = Some((name, local, raw));
+            }
+            Event::Text(t) => {
+                if let Some((_, _, raw)) = &mut current {
+                    raw.push_str(&String::from_utf8_lossy(t.as_ref()));
+                }
+            }
+            Event::End(e) if e.name().local_name().as_ref() == b"definedName" => {
+                let Some((name, local, mut raw)) = current.take() else {
+                    continue;
+                };
+                let body = raw
+                    .split_once('>')
+                    .map(|(_, b)| b.to_string())
+                    .unwrap_or_default();
+                raw.push_str("</definedName>");
+                if local || name.starts_with("_xlnm.") || name.is_empty() {
+                    other.push(raw);
+                } else {
+                    modeled.insert(name.to_ascii_uppercase(), unescape_xml(&body));
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok((modeled, other))
+}
+
+/// Undo the five XML entities `escape_xml` writes. The body of a
+/// `<definedName>` is a formula, and `&amp;` in it means `&`.
+fn unescape_xml(s: &str) -> String {
+    s.replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&amp;", "&")
+}
+
+/// Regenerate `<definedNames>` from the model, carrying over the entries we
+/// did not model.
+fn write_defined_names(names: &BTreeMap<String, String>, other: &[String]) -> String {
+    if names.is_empty() && other.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from("<definedNames>");
+    for (name, refers_to) in names {
+        out.push_str(&format!(
+            "<definedName name=\"{}\">{}</definedName>",
+            escape_xml(name),
+            escape_xml(refers_to.strip_prefix('=').unwrap_or(refers_to))
+        ));
+    }
+    for raw in other {
+        out.push_str(raw);
+    }
+    out.push_str("</definedNames>");
+    out
 }
 
 /// Populate `Sheet::col_widths` and `Sheet::row_heights` from the original
@@ -927,7 +1030,12 @@ fn export_preserved(wb: &Workbook, package: &PreservedPackage) -> Result<Vec<u8>
         content_types: package.part(package::CONTENT_TYPES_PART),
     };
     let part_names: Vec<String> = package.entries.iter().map(|e| e.name.clone()).collect();
-    let plan = package::plan(&model, &package.sheet_parts, &parts, &part_names)?;
+    // `<definedNames>` is left exactly as it was unless a name actually
+    // changed, the same rule as `<cols>`: the element holds sheet-scoped
+    // names and print areas this engine does not model.
+    let names_xml = (wb.names != package.defined_names)
+        .then(|| write_defined_names(&wb.names, &package.other_defined_names));
+    let plan = package::plan(&model, &package.sheet_parts, &parts, &part_names, names_xml)?;
 
     // Resolve every cell's style index next, because doing so is what
     // discovers which new `<xf>` records `xl/styles.xml` needs; the sheets and
@@ -1394,6 +1502,12 @@ pub(crate) fn escape_xml(s: &str) -> String {
 /// sheet names, nothing else.
 fn export_fresh(wb: &Workbook) -> Result<Vec<u8>, IoError> {
     let mut book = rust_xlsxwriter::Workbook::new();
+    for (name, refers_to) in &wb.names {
+        // rust_xlsxwriter wants the leading `=`; the model stores what xlsx
+        // stores, which does not have one.
+        let formula = format!("={}", refers_to.strip_prefix('=').unwrap_or(refers_to));
+        book.define_name(name, &formula)?;
+    }
     for sheet in &wb.sheets {
         let ws = book.add_worksheet();
         ws.set_name(&sheet.name)?;

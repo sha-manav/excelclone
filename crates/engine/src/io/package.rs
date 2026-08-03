@@ -90,6 +90,9 @@ struct WorkbookSheets {
     elems: Vec<SheetElem>,
     /// Offset of `</sheets>`, where a new `<sheet>` is inserted.
     insert_at: usize,
+    /// Span of `<definedNames>`, when the file has one, and the offset a new
+    /// one goes at. The schema puts it after `<sheets>`, so that is where.
+    defined_names: Option<std::ops::Range<usize>>,
     /// The attribute key an existing element uses for the relationship id,
     /// e.g. `r:id`. Taken from the file rather than assumed, because the
     /// prefix bound to the relationships namespace is the author's choice.
@@ -106,6 +109,10 @@ pub(crate) fn plan(
     imported: &[(SheetId, String)],
     parts: &Parts<'_>,
     part_names: &[String],
+    // `defined_names`: replacement `<definedNames>` XML, or None to leave the
+    // element exactly as it was. Empty means remove it — a workbook with no
+    // names should not carry an empty element for a reader to tolerate.
+    defined_names: Option<String>,
 ) -> Result<PackagePlan, IoError> {
     let book = scan_workbook(parts.workbook)?;
     let rel_targets = scan_rel_targets(parts.rels)?;
@@ -184,7 +191,10 @@ pub(crate) fn plan(
         dropped,
         patches: Vec::new(),
     };
-    if renames.is_empty() && additions.is_empty() && removed_elems.is_empty() {
+    // A defined name changing rewrites `xl/workbook.xml` even when the sheet
+    // list did not, because that is where the names live.
+    let names_changed = defined_names.is_some();
+    if renames.is_empty() && additions.is_empty() && removed_elems.is_empty() && !names_changed {
         // Nothing about the sheet list changed, so nothing at package level is
         // rewritten and every one of these parts survives byte-identical.
         return Ok(plan);
@@ -192,7 +202,14 @@ pub(crate) fn plan(
 
     plan.patches.push((
         WORKBOOK_PART.to_string(),
-        patch_workbook(parts.workbook, &book, &renames, &additions, &removed_elems)?,
+        patch_workbook(
+            parts.workbook,
+            &book,
+            &renames,
+            &additions,
+            &removed_elems,
+            defined_names,
+        )?,
     ));
     if !additions.is_empty() || !removed_elems.is_empty() {
         let removed_rids: Vec<&str> = removed_elems.iter().map(|e| e.rid.as_str()).collect();
@@ -282,6 +299,7 @@ fn scan_workbook(xml: &[u8]) -> Result<WorkbookSheets, IoError> {
     let mut elems = Vec::new();
     let mut insert_at = None;
     let mut rid_key = None;
+    let mut defined_names: Option<std::ops::Range<usize>> = None;
     let mut reader = XmlReader::from_reader(xml);
     loop {
         let start = reader.buffer_position() as usize;
@@ -290,8 +308,15 @@ fn scan_workbook(xml: &[u8]) -> Result<WorkbookSheets, IoError> {
         match event {
             Event::Eof => break,
             Event::Start(e) | Event::Empty(e) => {
-                if e.name().local_name().as_ref() != b"sheet" {
-                    continue;
+                match e.name().local_name().as_ref() {
+                    // An empty element is its own span; a start tag has its
+                    // end filled in when the closing tag turns up.
+                    b"definedNames" => {
+                        defined_names = Some(start..end);
+                        continue;
+                    }
+                    b"sheet" => {}
+                    _ => continue,
                 }
                 let (mut name, mut rid, mut sheet_id) = (None, None, 0u32);
                 for attr in e.attributes().flatten() {
@@ -322,6 +347,11 @@ fn scan_workbook(xml: &[u8]) -> Result<WorkbookSheets, IoError> {
             Event::End(e) if e.name().local_name().as_ref() == b"sheets" => {
                 insert_at = Some(start);
             }
+            Event::End(e) if e.name().local_name().as_ref() == b"definedNames" => {
+                if let Some(r) = &mut defined_names {
+                    r.end = end;
+                }
+            }
             _ => {}
         }
     }
@@ -333,6 +363,7 @@ fn scan_workbook(xml: &[u8]) -> Result<WorkbookSheets, IoError> {
     Ok(WorkbookSheets {
         elems,
         insert_at,
+        defined_names,
         rid_key: rid_key.unwrap_or_else(|| "r:id".into()),
     })
 }
@@ -435,8 +466,22 @@ fn patch_workbook(
     renames: &[(&SheetElem, &str)],
     additions: &[(String, String, u32, &str)],
     removed: &[&SheetElem],
+    defined_names: Option<String>,
 ) -> Result<Vec<u8>, IoError> {
     let mut edits: Vec<(usize, usize, String)> = Vec::new();
+    if let Some(xml) = defined_names {
+        match &book.defined_names {
+            Some(span) => edits.push((span.start, span.end, xml)),
+            // The schema puts `<definedNames>` immediately after `<sheets>`,
+            // and `insert_at` is the offset of `</sheets>` — so past its
+            // closing tag is where a new one goes.
+            None if xml.is_empty() => {}
+            None => {
+                let after = book.insert_at + b"</sheets>".len();
+                edits.push((after, after, xml));
+            }
+        }
+    }
     for (elem, new_name) in renames {
         edits.push((
             elem.span.start,
@@ -651,7 +696,7 @@ mod tests {
             (SheetId(0), "Books".to_string()),
             (SheetId(1), "Notes".into()),
         ];
-        let plan = plan(&model, &imported(), &parts(), &names()).unwrap();
+        let plan = plan(&model, &imported(), &parts(), &names(), None).unwrap();
         assert!(plan.patches.is_empty());
         assert!(plan.dropped.is_empty());
         assert_eq!(plan.part_for(SheetId(1)), Some("xl/worksheets/sheet7.xml"));
@@ -666,7 +711,7 @@ mod tests {
             (SheetId(0), "Books".to_string()),
             (SheetId(1), "Archive".into()),
         ];
-        let plan = plan(&model, &imported(), &parts(), &names()).unwrap();
+        let plan = plan(&model, &imported(), &parts(), &names(), None).unwrap();
         assert_eq!(plan.part_for(SheetId(1)), Some("xl/worksheets/sheet7.xml"));
         assert!(!plan.slots[1].fresh);
 
@@ -690,7 +735,7 @@ mod tests {
             (SheetId(1), "Notes".into()),
             (SheetId(2), "Extra".into()),
         ];
-        let plan = plan(&model, &imported(), &parts(), &names()).unwrap();
+        let plan = plan(&model, &imported(), &parts(), &names(), None).unwrap();
         let part = plan.part_for(SheetId(2)).unwrap().to_string();
         // sheet1 and sheet7 are taken; the next free name is sheet2, not
         // sheet8 — the numbering is a filename, not an index.
@@ -714,7 +759,7 @@ mod tests {
     #[test]
     fn a_deleted_sheet_loses_its_element_relationship_override_and_part() {
         let model = vec![(SheetId(0), "Books".to_string())];
-        let plan = plan(&model, &imported(), &parts(), &names()).unwrap();
+        let plan = plan(&model, &imported(), &parts(), &names(), None).unwrap();
         assert!(plan
             .dropped
             .contains(&"xl/worksheets/sheet7.xml".to_string()));
@@ -738,7 +783,7 @@ mod tests {
         // calcChain is keyed by sheet index; renumbering makes it point at the
         // wrong cells, and Excel offers to repair the file.
         let model = vec![(SheetId(0), "Books".to_string())];
-        let plan = plan(&model, &imported(), &parts(), &names()).unwrap();
+        let plan = plan(&model, &imported(), &parts(), &names(), None).unwrap();
         assert!(plan.dropped.contains(&CALC_CHAIN_PART.to_string()));
     }
 
@@ -750,7 +795,7 @@ mod tests {
             (SheetId(0), "Books".to_string()),
             (SheetId(1), "Archive".into()),
         ];
-        let plan = plan(&model, &imported(), &parts(), &names()).unwrap();
+        let plan = plan(&model, &imported(), &parts(), &names(), None).unwrap();
         assert!(plan.dropped.is_empty());
     }
 
@@ -760,7 +805,7 @@ mod tests {
             (SheetId(0), "Books".to_string()),
             (SheetId(1), "A & B <ok>".into()),
         ];
-        let plan = plan(&model, &imported(), &parts(), &names()).unwrap();
+        let plan = plan(&model, &imported(), &parts(), &names(), None).unwrap();
         let book = patch_of(&plan, WORKBOOK_PART);
         assert!(book.contains("A &amp; B &lt;ok&gt;"), "{book}");
         // ...and it parses back to the name we meant.

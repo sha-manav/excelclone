@@ -195,6 +195,16 @@ pub struct Workbook {
     #[serde(default)]
     pub formats: FormatTable,
     next_sheet_id: u32,
+    /// Defined names, uppercased, mapped to what they refer to — an A1
+    /// range, usually sheet-qualified and absolute (`Sheet1!$A$1:$B$4`),
+    /// exactly as xlsx spells it.
+    ///
+    /// The text rather than a parsed range, because that is what round-trips:
+    /// a name can refer to things this engine does not model, and keeping the
+    /// string means writing back what was read rather than an approximation
+    /// of it. Evaluation parses it on use.
+    #[serde(default)]
+    pub names: BTreeMap<String, String>,
     /// The original xlsx package this workbook was imported from, kept so
     /// export can patch only the parts we model and write everything else
     /// back unchanged. Bulk binary: never serialized.
@@ -215,6 +225,7 @@ impl Workbook {
             sheets: Vec::new(),
             formats: FormatTable::default(),
             next_sheet_id: 0,
+            names: BTreeMap::new(),
             preserved: None,
         };
         wb.add_sheet("Sheet1");

@@ -35,6 +35,9 @@ import type { CellFormat } from './engine/bridge'
 import type { MoveDirection } from './state/useWorkbook'
 
 const TRANSPARENCY_PATH = '/transparency'
+
+/** `A1:B2` -> `$A$1:$B$2`, which is how xlsx spells a defined name's target. */
+const absolute = (a1Range: string): string => a1Range.replace(/([A-Z]+)([0-9]+)/g, '$$$1$$$2')
 const EMPTY_FORMAT: CellFormat = {}
 
 /** Clipboard state lives in the app, not the engine: copying changes nothing. */
@@ -575,6 +578,37 @@ export default function App() {
     [apply, wb.activeSheet],
   )
 
+  /**
+   * The name box, with Excel's rule: an address goes there, an existing name
+   * goes where it points, anything else becomes a new name over the current
+   * selection.
+   */
+  const handleNameBox = useCallback(
+    (text: string) => {
+      const asRange = parseRangeA1(text)
+      if (asRange) {
+        wb.select({ anchor: asRange.start, range: asRange })
+        return
+      }
+      const key = text.toUpperCase()
+      const existing = wb.engine?.definedNames().find(([n]) => n === key)
+      if (existing) {
+        // The stored form is sheet-qualified and absolute; strip both to get
+        // something the range parser understands.
+        const bare = existing[1].split('!').pop()?.replace(/\$/g, '') ?? ''
+        const target = parseRangeA1(bare)
+        if (target) wb.select({ anchor: target.start, range: target })
+        return
+      }
+      apply({
+        action: 'name_define',
+        name: text,
+        refers_to: `${wb.activeSheet}!${absolute(rangeA1(sel.range))}`,
+      })
+    },
+    [wb, sel.range, apply],
+  )
+
   const handleContextMenu = useCallback((addr: Addr, x: number, y: number) => {
     setMenu({ addr, x, y })
   }, [])
@@ -835,6 +869,7 @@ export default function App() {
         onCommit={() => wb.commitEdit('down')}
         onCancel={wb.cancelEdit}
         onBeginEdit={() => wb.startEdit(active)}
+        onNameBox={handleNameBox}
       />
 
       <div className="workspace">

@@ -32,7 +32,15 @@ pub struct EvalCtx<'a> {
     /// the later ones shadow the earlier ones, which a reverse scan gives for
     /// free.
     pub bindings: &'a [(String, Value)],
+    /// How many defined names deep evaluation already is. A name whose
+    /// definition mentions itself would otherwise recurse until the stack
+    /// runs out, and a stack overflow is not an error a spreadsheet can
+    /// report.
+    pub name_depth: u8,
 }
+
+/// The most defined names one evaluation may resolve through.
+const MAX_NAME_DEPTH: u8 = 8;
 
 /// A rectangular block of computed values with no home on the grid.
 ///
@@ -144,7 +152,7 @@ impl<'a> EvalCtx<'a> {
             Expr::Text(s) => Operand::Scalar(Value::Text(s.clone())),
             Expr::Bool(b) => Operand::Scalar(Value::Bool(*b)),
             Expr::Error(k) => Operand::Scalar(Value::Error(*k)),
-            Expr::Name(n) => Operand::Scalar(self.lookup_name(n)),
+            Expr::Name(n) => self.resolve_name(n),
             Expr::Cell(c) => match self.resolve_sheet(&c.sheet) {
                 Err(k) => Operand::Scalar(Value::Error(k)),
                 Ok(sid) => {
@@ -262,6 +270,42 @@ impl<'a> EvalCtx<'a> {
         Some(Array::new(rows, cols, values))
     }
 
+    /// What a bare identifier means here: a LET binding, then a defined name,
+    /// then `#NAME?`.
+    ///
+    /// LET wins because it is the innermost scope, and because a formula that
+    /// bound `total` should not silently pick up a workbook name of the same
+    /// spelling halfway through.
+    fn resolve_name(&self, name: &str) -> Operand {
+        if let Some((_, v)) = self
+            .bindings
+            .iter()
+            .rev()
+            .find(|(n, _)| n.eq_ignore_ascii_case(name))
+        {
+            return Operand::Scalar(v.clone());
+        }
+        let Some(refers_to) = self.wb.names.get(&name.to_ascii_uppercase()) else {
+            return Operand::Scalar(Value::Error(ErrorKind::Name));
+        };
+        if self.name_depth >= MAX_NAME_DEPTH {
+            return Operand::Scalar(Value::Error(ErrorKind::Name));
+        }
+        let body = refers_to.strip_prefix('=').unwrap_or(refers_to);
+        match crate::parser::parse_formula(body) {
+            Ok(ast) => {
+                let deeper = EvalCtx {
+                    name_depth: self.name_depth + 1,
+                    ..*self
+                };
+                deeper.eval_operand(&ast)
+            }
+            // A definition this engine cannot read is #NAME?, not a panic and
+            // not a silent zero.
+            Err(_) => Operand::Scalar(Value::Error(ErrorKind::Name)),
+        }
+    }
+
     /// The value bound to a name, or `#NAME?` when nothing bound it.
     ///
     /// Innermost first, so `LET(x,1,LET(x,2,x))` is 2 — the inner binding
@@ -286,6 +330,7 @@ impl<'a> EvalCtx<'a> {
             at: self.at,
             now_ms: self.now_ms,
             bindings,
+            name_depth: self.name_depth,
         }
     }
 

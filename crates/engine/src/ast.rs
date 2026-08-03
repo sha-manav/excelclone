@@ -144,6 +144,13 @@ impl Expr {
                     "NOW" | "TODAY" | "RAND" | "RANDBETWEEN" | "OFFSET" | "INDIRECT"
                 ) || args.iter().any(|a| a.is_volatile())
             }
+            // A defined name points somewhere the dependency graph cannot
+            // see: `visit_refs` walks the expression, and the expression says
+            // `Total`, not `Sheet1!$A$1:$A$9`. Same problem OFFSET and
+            // INDIRECT have and the same answer — recalculate it every pass —
+            // at the same cost, which is why the resolution belongs in the
+            // graph eventually and is recorded as a gap rather than hidden.
+            Expr::Name(_) => true,
             Expr::Binary(_, l, r) => l.is_volatile() || r.is_volatile(),
             Expr::Neg(e) | Expr::Pos(e) | Expr::Percent(e) => e.is_volatile(),
             _ => false,
@@ -163,6 +170,9 @@ impl Expr {
                 matches!(name.as_str(), "OFFSET" | "INDIRECT")
                     || args.iter().any(|a| a.has_dynamic_reference())
             }
+            // A name reads cells the graph never saw, so a pass can evaluate
+            // it before the cells it names — the stale-read hazard OFFSET has.
+            Expr::Name(_) => true,
             Expr::Binary(_, l, r) => l.has_dynamic_reference() || r.has_dynamic_reference(),
             Expr::Neg(e) | Expr::Pos(e) | Expr::Percent(e) => e.has_dynamic_reference(),
             _ => false,

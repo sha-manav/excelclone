@@ -205,7 +205,7 @@ Living checklist. Updated every session.
 
 ## Notes
 
-- 446 Rust tests, 157 web unit tests, 51 Playwright end-to-end tests; full
+- 456 Rust tests, 157 web unit tests, 52 Playwright end-to-end tests; full
   CI gate (fmt, clippy -D warnings, tests, wasm build, vite build, e2e)
   passes locally.
 - M5 found a bug that had been latent since M2: **xlsx export had never
@@ -279,8 +279,10 @@ Living checklist. Updated every session.
 - `docProps/app.xml` still lists the sheet names the file arrived with. Excel
   rewrites it on save and no reader validates it against `workbook.xml`, so a
   stale copy is cosmetic — but it is stale.
-- A `<definedName>` pointing at a deleted sheet is left in `xl/workbook.xml`
-  rather than rewritten to `#REF!`.
+- A formula using a defined name is volatile, so it recalculates on every
+  pass: the dependency graph is built from the references *written* in a
+  formula, and a name is not one. Resolving names while building the graph is
+  the fix; until then a workbook that leans on names recalculates fully.
 - Every structural operation triggers a full dependency rebuild and
   recalculation. Correct but O(all formulas); revisit under P5 performance.
 - The grid ignores merged ranges when painting (the engine models them and
