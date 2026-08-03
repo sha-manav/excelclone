@@ -33,6 +33,12 @@ export interface FormatToolbarProps {
    * still, so the gesture is "put the cursor below the headers and press it".
    */
   onFreezeToggle(): void
+  /**
+   * Add a "highlight cells greater than N" rule over the selection — the one
+   * conditional format people reach for first. Richer rules exist in the
+   * engine and have no control yet; this is the gesture worth making cheap.
+   */
+  onHighlightRule(): void
 }
 
 /** Number formats offered by name, so the user never types a format code. */
@@ -60,7 +66,7 @@ const SWATCHES = [
 export function FormatToolbar(props: FormatToolbarProps): JSX.Element {
   const { active, hasRange, merged, frozen, onPatch, onClearFormatting, onMergeToggle } =
     props
-  const { onFreezeToggle } = props
+  const { onFreezeToggle, onHighlightRule } = props
   const [open, setOpen] = useState<'font' | 'fill' | null>(null)
 
   const align = (value: HAlign) =>
@@ -171,6 +177,15 @@ export function FormatToolbar(props: FormatToolbarProps): JSX.Element {
         onClick={onMergeToggle}
       >
         Merge
+      </button>
+      <button
+        aria-label="Highlight cells over a value"
+        title="Colour the cells in the selection that are over a value you choose"
+        disabled={!hasRange}
+        onClick={onHighlightRule}
+        data-testid="cond-add"
+      >
+        Highlight
       </button>
       <button
         aria-label={frozen ? 'Unfreeze panes' : 'Freeze panes'}

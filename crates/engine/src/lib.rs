@@ -6,6 +6,7 @@
 
 pub mod addr;
 pub mod ast;
+pub mod cond;
 pub mod deps;
 pub mod engine;
 pub mod eval;
@@ -22,6 +23,7 @@ pub mod telemetry;
 pub mod value;
 
 pub use addr::{CellAddr, RangeAddr};
+pub use cond::{CondOp, CondRule, CondTest};
 pub use engine::{Action, ApplyError, Engine, Event, FilterSpec, PasteMode, SortKey};
 pub use format::{BorderPreset, Borders, CellFormat, FormatId, FormatPatch, FormatTable, HAlign};
 pub use model::{Cell, CellContent, CellKey, Sheet, SheetId, Workbook};

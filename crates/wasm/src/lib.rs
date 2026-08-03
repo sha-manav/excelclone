@@ -100,6 +100,32 @@ struct ImportWarningJs {
     detail: String,
 }
 
+/// Apply a rule's attributes over a cell's own, which is what "differential"
+/// means: the rule wins where it says anything and is silent everywhere else.
+fn layer(base: &mut CellFormat, over: &CellFormat) {
+    if over.bold {
+        base.bold = true;
+    }
+    if over.italic {
+        base.italic = true;
+    }
+    if over.font_color.is_some() {
+        base.font_color = over.font_color.clone();
+    }
+    if over.fill_color.is_some() {
+        base.fill_color = over.fill_color.clone();
+    }
+    if !over.borders.is_none() {
+        base.borders = over.borders;
+    }
+    if over.number_format.is_some() {
+        base.number_format = over.number_format.clone();
+    }
+    if over.align.is_some() {
+        base.align = over.align;
+    }
+}
+
 fn js_err(e: impl std::fmt::Display) -> JsValue {
     JsValue::from_str(&e.to_string())
 }
@@ -181,7 +207,7 @@ impl Gridline {
         for r in row0..row0 + rows {
             for c in col0..col0 + cols {
                 let addr = CellAddr::new(r, c);
-                let style = match s.format_id(addr) {
+                let mut resolved = match s.format_id(addr) {
                     None => 0,
                     Some(id) => match seen.iter().find(|(k, _)| *k == id) {
                         Some((_, i)) => *i,
@@ -193,6 +219,17 @@ impl Gridline {
                         }
                     },
                 };
+                // A rule's format is differential: it layers over whatever the
+                // cell already had, and the result is a one-off palette entry
+                // rather than an interned format, because it is derived state
+                // that must not reach the workbook's format table.
+                if let Some(cond) = s.cond_formats.get(&addr) {
+                    let mut merged = palette[resolved as usize].clone();
+                    layer(&mut merged, cond);
+                    palette.push(merged);
+                    resolved = (palette.len() - 1) as u32;
+                }
+                let style = resolved;
                 styles.push(style);
                 match s.cells.get(&addr) {
                     None => {

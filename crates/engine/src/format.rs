@@ -134,6 +134,35 @@ fn is_false(b: &bool) -> bool {
 }
 
 impl CellFormat {
+    /// The attribute names this format sets, for the event log and the rules
+    /// panel. Names only — a colour is presentation, but the *list* is what
+    /// makes "what does this rule do" answerable without the values.
+    pub fn attributes(&self) -> Vec<&'static str> {
+        let mut out = Vec::new();
+        if self.bold {
+            out.push("bold");
+        }
+        if self.italic {
+            out.push("italic");
+        }
+        if self.font_color.is_some() {
+            out.push("font_color");
+        }
+        if self.fill_color.is_some() {
+            out.push("fill_color");
+        }
+        if !self.borders.is_none() {
+            out.push("border");
+        }
+        if self.number_format.is_some() {
+            out.push("number_format");
+        }
+        if self.align.is_some() {
+            out.push("align");
+        }
+        out
+    }
+
     pub fn is_default(&self) -> bool {
         *self == CellFormat::default()
     }

@@ -308,6 +308,8 @@
         }
       },
       "col_widths": [],
+      "cond_formats": {},
+      "conditional": [],
       "formats": {
         "A1": {
           "align": "center",
@@ -779,6 +781,8 @@
         }
       },
       "col_widths": [],
+      "cond_formats": {},
+      "conditional": [],
       "formats": {
         "A1": {
           "bold": true

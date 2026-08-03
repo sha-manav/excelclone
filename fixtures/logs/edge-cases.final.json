@@ -68,6 +68,8 @@
         }
       },
       "col_widths": [],
+      "cond_formats": {},
+      "conditional": [],
       "formats": {
         "I4": {
           "font_color": "#b3261e"

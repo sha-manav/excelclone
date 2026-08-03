@@ -32,6 +32,43 @@ export interface FilterSpec {
 
 export type Axis = 'row' | 'col'
 
+export type CondOp =
+  | 'greater_than'
+  | 'less_than'
+  | 'greater_or_equal'
+  | 'less_or_equal'
+  | 'equal'
+  | 'not_equal'
+  | 'between'
+  | 'not_between'
+
+/**
+ * What a conditional-formatting rule asks of a cell. Mirrors the engine's
+ * `CondTest`, which serde tags with a `test` field.
+ */
+export type CondTest =
+  | { test: 'cell_is'; op: CondOp; operands: string[] }
+  | { test: 'text_contains'; needle: string; negate: boolean }
+  | { test: 'blank'; negate: boolean }
+  | { test: 'duplicate'; unique: boolean }
+  | { test: 'formula'; body: string }
+
+export interface CondRule {
+  range: Range
+  test: CondTest
+  /**
+   * A *differential* format: only the attributes it sets are applied, and the
+   * cell's own formatting shows through the rest.
+   */
+  format: {
+    bold?: boolean
+    italic?: boolean
+    font_color?: string
+    fill_color?: string
+    number_format?: string
+  }
+}
+
 export type HAlign = 'left' | 'center' | 'right'
 export type BorderPreset = 'all' | 'outline' | 'none'
 
@@ -115,6 +152,8 @@ export type Action =
     }
   | { action: 'name_delete'; name: string }
   | { action: 'freeze_panes'; sheet: string; rows: number; cols: number }
+  | { action: 'cond_add'; sheet: string; rule: CondRule }
+  | { action: 'cond_clear'; sheet: string; range: Range }
   | { action: 'undo' }
   | { action: 'redo' }
 

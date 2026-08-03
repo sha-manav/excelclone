@@ -72,6 +72,8 @@ pub const ACTION_VOCABULARY: &[&str] = &[
     "name.define",
     "name.delete",
     "panes.freeze",
+    "cond.add",
+    "cond.clear",
     "sort.apply",
     "filter.apply",
     "filter.clear",
@@ -188,6 +190,30 @@ pub fn redact_label_text(text: &str, mode: PrivacyMode, salt: &str) -> String {
             .as_str()
             .unwrap_or_default()
             .to_string(),
+    }
+}
+
+/// A rule's test, with the one field that can hold user content hashed.
+///
+/// A comparison operand is formula text and a needle is a word the user typed
+/// looking for; the first is structure and the second is not, and treating
+/// them alike in either direction would be wrong.
+fn redact_cond_test(test: &crate::cond::CondTest, mode: PrivacyMode, salt: &str) -> Json {
+    use crate::cond::CondTest;
+    match test {
+        CondTest::CellIs { op, operands } => json!({
+            "kind": "cell_is",
+            "op": op.as_xlsx(),
+            "operands": operands,
+        }),
+        CondTest::TextContains { needle, negate } => json!({
+            "kind": "text_contains",
+            "needle": redact_label(needle, mode, salt),
+            "negate": negate,
+        }),
+        CondTest::Blank { negate } => json!({ "kind": "blank", "negate": negate }),
+        CondTest::Duplicate { unique } => json!({ "kind": "duplicate", "unique": unique }),
+        CondTest::Formula { body } => json!({ "kind": "formula", "body": body }),
     }
 }
 
@@ -352,6 +378,20 @@ pub fn describe(action: &Action, mode: PrivacyMode, salt: &str) -> (String, Json
             "refers_to": refers_to,
         }),
         Action::NameDelete { name } => json!({ "name": redact_label(name, mode, salt) }),
+        // A rule is structure: which comparison, over which range, producing
+        // which presentation. The one place user content could hide is the
+        // needle of a "text contains", so that is hashed like any literal.
+        Action::CondAdd { sheet, rule } => json!({
+            "sheet": redact_label(sheet, mode, salt),
+            "range": rule.range.to_a1(),
+            "cells": rule.range.cell_count(),
+            "test": redact_cond_test(&rule.test, mode, salt),
+            "attributes": rule.format.attributes(),
+        }),
+        Action::CondClear { sheet, range } => json!({
+            "sheet": redact_label(sheet, mode, salt),
+            "range": range.to_a1(),
+        }),
         // Which rows and columns are held still is layout, not content.
         Action::FreezePanes { sheet, rows, cols } => json!({
             "sheet": redact_label(sheet, mode, salt),
@@ -397,6 +437,8 @@ pub fn action_name(action: &Action) -> &'static str {
             crate::refs::Axis::Col => "col.resize",
             crate::refs::Axis::Row => "row.resize",
         },
+        Action::CondAdd { .. } => "cond.add",
+        Action::CondClear { .. } => "cond.clear",
         Action::FreezePanes { .. } => "panes.freeze",
         Action::NameDefine { .. } => "name.define",
         Action::NameDelete { .. } => "name.delete",

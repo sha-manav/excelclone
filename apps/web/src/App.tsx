@@ -589,6 +589,25 @@ export default function App() {
    * "unfreeze" are the same gesture in Excel and the toolbar shows which one
    * it currently means.
    */
+  /**
+   * "Highlight cells greater than N" over the selection. A prompt rather than
+   * a dialog because the rule has exactly one parameter; anything richer
+   * needs a real editor, and half a dialog would be worse than a prompt.
+   */
+  const addHighlightRule = useCallback(() => {
+    const answer = window.prompt('Highlight cells greater than:', '0')
+    if (answer === null || answer.trim() === '') return
+    apply({
+      action: 'cond_add',
+      sheet: wb.activeSheet,
+      rule: {
+        range: sel.range,
+        test: { test: 'cell_is', op: 'greater_than', operands: [answer.trim()] },
+        format: { fill_color: '#ffd7d7', font_color: '#9c0006' },
+      },
+    })
+  }, [apply, wb.activeSheet, sel.range])
+
   const toggleFreeze = useCallback(() => {
     const frozen = (activeInfo?.frozen_rows ?? 0) > 0 || (activeInfo?.frozen_cols ?? 0) > 0
     apply({
@@ -827,6 +846,7 @@ export default function App() {
           onMergeToggle={toggleMerge}
           frozen={(activeInfo?.frozen_rows ?? 0) > 0 || (activeInfo?.frozen_cols ?? 0) > 0}
           onFreezeToggle={toggleFreeze}
+          onHighlightRule={addHighlightRule}
         />
 
         <div className="toolbar__group">

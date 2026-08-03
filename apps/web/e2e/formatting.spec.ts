@@ -454,3 +454,44 @@ test('arrowing across a merged block steps over it rather than into it', async (
   await page.keyboard.press('ArrowLeft')
   await expect(page.locator('.formula-bar__address')).toHaveValue('A1')
 })
+
+test('a highlight rule colours cells by value and follows them when they change', async ({
+  page,
+}) => {
+  await clickCell(page, 0, 0)
+  await typeInCell(page, '1')
+  await typeInCell(page, '9')
+
+  // Select A1:A2 and add "greater than 5".
+  await clickCell(page, 0, 0)
+  await page.keyboard.down('Shift')
+  await clickCell(page, 1, 0)
+  await page.keyboard.up('Shift')
+  page.once('dialog', (d) => d.accept('5'))
+  await page.getByTestId('cond-add').click()
+
+  const fills = async () => {
+    const state = await page.evaluate(() =>
+      (window as unknown as { __gridline__: { stateSnapshot(): string } }).__gridline__.stateSnapshot(),
+    )
+    const parsed = JSON.parse(state) as {
+      sheets: { cond_formats: Record<string, { fill_color?: string }> }[]
+    }
+    return parsed.sheets[0].cond_formats
+  }
+
+  // 9 passes, 1 does not.
+  await expect.poll(async () => Object.keys(await fills())).toEqual(['A2'])
+
+  // Change the value and the colour follows it: this is the whole difference
+  // between a rule and a fill somebody painted once.
+  await clickCell(page, 0, 0)
+  await typeInCell(page, '100')
+  await expect.poll(async () => Object.keys(await fills())).toEqual(['A1', 'A2'])
+
+  // ...and Ctrl+Z takes the rule back, colour and all.
+  await clickCell(page, 0, 0)
+  await page.keyboard.press('Control+z')
+  await page.keyboard.press('Control+z')
+  await expect.poll(async () => Object.keys(await fills())).toEqual([])
+})

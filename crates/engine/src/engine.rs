@@ -183,6 +183,17 @@ pub enum Action {
         count: u32,
         size: Option<f64>,
     },
+    /// Add a conditional-formatting rule. Rules apply in the order they were
+    /// added, and the first to set an attribute keeps it.
+    CondAdd {
+        sheet: String,
+        rule: crate::cond::CondRule,
+    },
+    /// Drop every rule whose range lies inside `range`.
+    CondClear {
+        sheet: String,
+        range: RangeAddr,
+    },
     /// Hold the first `rows` rows and `cols` columns still while the rest of
     /// the sheet scrolls. Zero and zero unfreezes, which is how "unfreeze
     /// panes" is expressed without a second action.
@@ -309,6 +320,17 @@ pub enum Event {
     Redone {
         label: String,
     },
+    CondAdded {
+        sheet: String,
+        range: RangeAddr,
+        /// The rule in words. No cell values: the operands are formula text.
+        rule: String,
+    },
+    CondCleared {
+        sheet: String,
+        range: RangeAddr,
+        removed: u32,
+    },
     PanesFrozen {
         sheet: String,
         rows: u32,
@@ -376,6 +398,8 @@ pub enum UndoState {
     /// and copying it means an autofit over a selection undoes as one map
     /// swap instead of a list of per-column patches.
     Sizes(SheetId, Axis, BTreeMap<u32, f64>),
+    /// A sheet's conditional-formatting rules, before the change.
+    Conditional(SheetId, Vec<crate::cond::CondRule>),
     /// A sheet's frozen row and column counts, before the change.
     Frozen(SheetId, (u32, u32)),
     /// The whole name table. A handful of entries at most, and swapping it
@@ -394,6 +418,7 @@ impl UndoState {
             | UndoState::Sheets(_)
             | UndoState::Sizes(..)
             | UndoState::Frozen(..)
+            | UndoState::Conditional(..)
             | UndoState::Names(_) => 0,
         }
     }
@@ -549,6 +574,8 @@ impl Engine {
                 count,
                 size,
             } => self.resize(sheet, *axis, *at, *count, *size),
+            Action::CondAdd { sheet, rule } => self.cond_add(sheet, rule),
+            Action::CondClear { sheet, range } => self.cond_clear(sheet, *range),
             Action::FreezePanes { sheet, rows, cols } => self.freeze_panes(sheet, *rows, *cols),
             Action::NameDefine { name, refers_to } => self.name_define(name, refers_to),
             Action::NameDelete { name } => self.name_delete(name),
@@ -603,6 +630,14 @@ impl Engine {
             UndoState::Sheets(sheets) => {
                 let replaced = std::mem::replace(&mut self.wb.sheets, sheets);
                 UndoState::Sheets(replaced)
+            }
+            UndoState::Conditional(sid, rules) => {
+                let Some(sheet) = self.wb.sheet_mut(sid) else {
+                    return UndoState::Conditional(sid, rules);
+                };
+                let before = std::mem::replace(&mut sheet.conditional, rules);
+                self.recalc_conditional();
+                UndoState::Conditional(sid, before)
             }
             UndoState::Frozen(sid, (rows, cols)) => {
                 let Some(sheet) = self.wb.sheet_mut(sid) else {
@@ -1147,6 +1182,93 @@ impl Engine {
         }])
     }
 
+    /// Add a conditional-formatting rule.
+    fn cond_add(
+        &mut self,
+        sheet: &str,
+        rule: &crate::cond::CondRule,
+    ) -> Result<Vec<Event>, ApplyError> {
+        // Checked when the rule is written rather than on every cell it
+        // covers: a rule whose formula does not parse would otherwise fail
+        // silently, once per cell, forever.
+        for body in rule_formulas(rule) {
+            parse_formula(&body)?;
+        }
+        if rule.format.is_default() {
+            return Err(ApplyError::Invalid(
+                "a rule that changes no formatting would do nothing".into(),
+            ));
+        }
+        let sid = self.sheet_id(sheet)?;
+        let before = self
+            .wb
+            .sheet(sid)
+            .expect("sheet exists")
+            .conditional
+            .clone();
+        self.wb
+            .sheet_mut(sid)
+            .expect("sheet exists")
+            .conditional
+            .push(rule.clone());
+        self.push_undo("add rule", UndoState::Conditional(sid, before));
+        self.recalc_conditional();
+        Ok(vec![Event::CondAdded {
+            sheet: sheet.to_string(),
+            range: rule.range,
+            rule: rule.summary(),
+        }])
+    }
+
+    fn cond_clear(&mut self, sheet: &str, range: RangeAddr) -> Result<Vec<Event>, ApplyError> {
+        let sid = self.sheet_id(sheet)?;
+        let s = self.wb.sheet_mut(sid).expect("sheet exists");
+        let before = s.conditional.clone();
+        // A rule is cleared when its range lies inside the selection, not
+        // when it merely touches it: clearing one cell of a column-wide rule
+        // means "not here", and dropping the whole rule would be a surprise.
+        s.conditional.retain(|r| {
+            !(r.range.start.row >= range.start.row
+                && r.range.end.row <= range.end.row
+                && r.range.start.col >= range.start.col
+                && r.range.end.col <= range.end.col)
+        });
+        let removed = (before.len() - s.conditional.len()) as u32;
+        if removed == 0 {
+            return Ok(Vec::new());
+        }
+        self.push_undo("clear rules", UndoState::Conditional(sid, before));
+        self.recalc_conditional();
+        Ok(vec![Event::CondCleared {
+            sheet: sheet.to_string(),
+            range,
+            removed,
+        }])
+    }
+
+    /// Rebuild every sheet's conditional formats from its rules.
+    ///
+    /// Called after anything that could change a value, because a rule reads
+    /// values: the overlay is derived state and recomputing it is the only
+    /// way it can be trusted.
+    pub(crate) fn recalc_conditional(&mut self) {
+        if self.wb.sheets.iter().all(|s| s.conditional.is_empty()) {
+            // The common case, and worth the check: without it every
+            // recalculation would walk every sheet's rule list to find none.
+            for s in &mut self.wb.sheets {
+                s.cond_formats.clear();
+            }
+            return;
+        }
+        let ids: Vec<SheetId> = self.wb.sheets.iter().map(|s| s.id).collect();
+        for sid in ids {
+            let formats = crate::cond::evaluate(&self.wb, sid, self.now_ms);
+            if let Some(s) = self.wb.sheet_mut(sid) {
+                s.cond_formats = formats;
+            }
+        }
+    }
+
     /// Freeze or unfreeze the top-left panes of a sheet.
     fn freeze_panes(
         &mut self,
@@ -1480,6 +1602,10 @@ impl Engine {
                 }
             }
         }
+        // A rule reads values, so anything that moved a value may have moved
+        // a colour. Derived state is only trustworthy if it is rebuilt from
+        // the same place the values were.
+        self.recalc_conditional();
         changed
     }
 
@@ -2142,4 +2268,14 @@ fn is_valid_name(name: &str) -> bool {
         return false;
     }
     CellAddr::parse_a1(name).is_none()
+}
+
+/// Every formula body a rule carries, so they can all be parsed once when the
+/// rule is written rather than once per cell, forever.
+fn rule_formulas(rule: &crate::cond::CondRule) -> Vec<String> {
+    match &rule.test {
+        crate::cond::CondTest::CellIs { operands, .. } => operands.clone(),
+        crate::cond::CondTest::Formula { body } => vec![body.clone()],
+        _ => Vec::new(),
+    }
 }

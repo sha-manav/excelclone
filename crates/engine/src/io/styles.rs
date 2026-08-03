@@ -99,6 +99,8 @@ struct Counts {
     fills: usize,
     borders: usize,
     xfs: usize,
+    /// Differential formats, which conditional-formatting rules index into.
+    dxfs: usize,
 }
 
 impl StyleSheet {
@@ -172,6 +174,10 @@ impl StyleSheet {
                 b"cellXfs" => section = Some(Section::CellXfs),
                 b"cellStyleXfs" => section = Some(Section::CellStyleXfs),
                 b"numFmts" => section = Some(Section::NumFmts),
+                // Counted rather than parsed: a rule made here appends after
+                // whatever the file already had, so the count is all that is
+                // needed to avoid colliding with an existing id.
+                b"dxf" => out.counts.dxfs += 1,
                 b"numFmt" => {
                     let id = attr(e, b"numFmtId").and_then(|v| v.parse::<u32>().ok());
                     let code = attr(e, b"formatCode");
@@ -263,6 +269,7 @@ impl StyleSheet {
             fills: fills.len(),
             borders: borders.len(),
             xfs: xfs.len(),
+            dxfs: out.counts.dxfs,
         };
         out.formats = xfs
             .iter()
@@ -382,6 +389,12 @@ pub(crate) struct StyleAdditions {
     next_border: usize,
     next_xf: usize,
     next_num_fmt: u32,
+    /// `<dxf>` records for conditional-formatting rules, and the id the first
+    /// of them takes. A dxf is a *differential* format — only the attributes
+    /// it names apply — so it is a different record from an `<xf>` and lives
+    /// in its own collection.
+    dxfs: Vec<String>,
+    next_dxf: usize,
 }
 
 impl StyleAdditions {
@@ -392,6 +405,7 @@ impl StyleAdditions {
             next_fill: sheet.counts.fills,
             next_border: sheet.counts.borders,
             next_xf: sheet.counts.xfs,
+            next_dxf: sheet.counts.dxfs,
             next_num_fmt: used_ids
                 .iter()
                 .copied()
@@ -404,7 +418,14 @@ impl StyleAdditions {
     }
 
     pub(crate) fn is_empty(&self) -> bool {
-        self.xfs.is_empty()
+        self.xfs.is_empty() && self.dxfs.is_empty()
+    }
+
+    /// Mint a `<dxf>` for a rule's format and return its id.
+    pub(crate) fn dxf_for(&mut self, format: &CellFormat) -> usize {
+        let id = self.next_dxf + self.dxfs.len();
+        self.dxfs.push(dxf_element(format));
+        id
     }
 
     /// The `s` index for a format, minting one if this is the first request.
@@ -542,7 +563,16 @@ impl StyleAdditions {
 
         // Applied last-first so earlier offsets stay valid.
         let mut edits: Vec<(usize, usize, String)> = Vec::new();
-        edits.push(collection_append(&out, "cellXfs", &self.xfs, self.next_xf)?);
+        if !self.xfs.is_empty() {
+            edits.push(collection_append(&out, "cellXfs", &self.xfs, self.next_xf)?);
+        }
+        if !self.dxfs.is_empty() {
+            edits.push(dxfs_append(
+                &out,
+                &self.dxfs,
+                self.next_dxf + self.dxfs.len(),
+            )?);
+        }
         if !self.borders.is_empty() {
             edits.push(collection_append(
                 &out,
@@ -559,12 +589,14 @@ impl StyleAdditions {
                 self.next_fill,
             )?);
         }
-        edits.push(collection_append(
-            &out,
-            "fonts",
-            &self.fonts,
-            self.next_font,
-        )?);
+        if !self.fonts.is_empty() {
+            edits.push(collection_append(
+                &out,
+                "fonts",
+                &self.fonts,
+                self.next_font,
+            )?);
+        }
         if !self.num_fmts.is_empty() {
             let items: Vec<String> = self
                 .num_fmts
@@ -591,6 +623,96 @@ impl StyleAdditions {
         }
         Ok(out.into_bytes())
     }
+}
+
+/// One `<dxf>`: the attributes a rule sets, and nothing else.
+///
+/// The element order is the one the schema fixes — font, numFmt, fill,
+/// border — and getting it wrong makes Excel reject the file rather than
+/// ignore the record.
+fn dxf_element(f: &CellFormat) -> String {
+    let mut out = String::from("<dxf>");
+    if f.bold || f.italic || f.font_color.is_some() {
+        out.push_str("<font>");
+        if f.bold {
+            out.push_str("<b/>");
+        }
+        if f.italic {
+            out.push_str("<i/>");
+        }
+        if let Some(c) = &f.font_color {
+            out.push_str(&format!("<color rgb=\"{}\"/>", argb(c)));
+        }
+        out.push_str("</font>");
+    }
+    if let Some(code) = &f.number_format {
+        out.push_str(&format!(
+            "<numFmt numFmtId=\"0\" formatCode=\"{}\"/>",
+            super::xlsx::escape_xml(code)
+        ));
+    }
+    if let Some(c) = &f.fill_color {
+        // A dxf's fill names `bgColor`, not `fgColor` as a cell fill does —
+        // one of the places the differential format is not simply a cut-down
+        // `<xf>`.
+        out.push_str(&format!(
+            "<fill><patternFill><bgColor rgb=\"{}\"/></patternFill></fill>",
+            argb(c)
+        ));
+    }
+    if !f.borders.is_none() {
+        out.push_str("<border>");
+        for (name, on) in [
+            ("left", f.borders.left),
+            ("right", f.borders.right),
+            ("top", f.borders.top),
+            ("bottom", f.borders.bottom),
+        ] {
+            if on {
+                out.push_str(&format!("<{name} style=\"thin\"/>"));
+            }
+        }
+        out.push_str("</border>");
+    }
+    out.push_str("</dxf>");
+    out
+}
+
+/// `<dxfs>` is optional, so it may have to be created. The schema puts it
+/// after `<cellStyles>` and before `<tableStyles>`.
+fn dxfs_append(
+    xml: &str,
+    items: &[String],
+    count: usize,
+) -> Result<(usize, usize, String), IoError> {
+    if xml.contains("</dxfs>") {
+        return collection_append(xml, "dxfs", items, count);
+    }
+    if let Some(at) = xml.find("<dxfs") {
+        // An empty `<dxfs count="0"/>`: replace it with a real collection.
+        if let Some(end) = xml[at..].find("/>").map(|i| at + i + 2) {
+            return Ok((
+                at,
+                end,
+                format!("<dxfs count=\"{count}\">{}</dxfs>", items.concat()),
+            ));
+        }
+    }
+    for anchor in ["</cellStyles>", "</cellXfs>", "</cellStyleXfs>"] {
+        if let Some(at) = xml.find(anchor) {
+            let at = at + anchor.len();
+            return Ok((
+                at,
+                at,
+                format!("<dxfs count=\"{count}\">{}</dxfs>", items.concat()),
+            ));
+        }
+    }
+    Err(IoError::Unrepresentable(
+        "xl/styles.xml has nowhere to put <dxfs>; conditional formatting cannot \
+         be written to this workbook"
+            .into(),
+    ))
 }
 
 /// A colour in the ARGB spelling xlsx uses, fully opaque.

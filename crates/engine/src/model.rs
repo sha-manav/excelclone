@@ -92,6 +92,15 @@ pub struct Sheet {
     /// Row heights in pixels, on the same terms.
     #[serde(default)]
     pub row_heights: BTreeMap<u32, f64>,
+    /// Conditional formatting rules, in priority order: the first to set an
+    /// attribute keeps it.
+    #[serde(default)]
+    pub conditional: Vec<crate::cond::CondRule>,
+    /// What those rules currently say, per cell. Derived like `spill`:
+    /// recalculation rebuilds it and nothing else writes to it, which is what
+    /// keeps "why is this cell red" answerable with a rule.
+    #[serde(skip)]
+    pub cond_formats: BTreeMap<CellAddr, crate::format::CellFormat>,
     /// Rows and columns held still while the rest of the sheet scrolls.
     ///
     /// View state, like `hidden_rows` — it changes nothing about any value —
@@ -128,6 +137,8 @@ impl Sheet {
             hidden_rows: Vec::new(),
             col_widths: BTreeMap::new(),
             row_heights: BTreeMap::new(),
+            conditional: Vec::new(),
+            cond_formats: BTreeMap::new(),
             frozen_rows: 0,
             frozen_cols: 0,
             arrays: BTreeMap::new(),
@@ -326,6 +337,31 @@ impl Workbook {
                     "merged": merged,
                     "hidden_rows": hidden,
                     "frozen": [s.frozen_rows, s.frozen_cols],
+                    // The rules and what they currently paint: a workbook
+                    // whose cells are the same but whose colours are not is
+                    // not the same workbook.
+                    "conditional": s
+                        .conditional
+                        .iter()
+                        .map(|r| {
+                            serde_json::json!({
+                                "range": r.range.to_a1(),
+                                "rule": r.summary(),
+                                "format": serde_json::to_value(&r.format)
+                                    .unwrap_or(serde_json::Value::Null),
+                            })
+                        })
+                        .collect::<Vec<_>>(),
+                    "cond_formats": s
+                        .cond_formats
+                        .iter()
+                        .map(|(a, f)| {
+                            (
+                                a.to_a1(),
+                                serde_json::to_value(f).unwrap_or(serde_json::Value::Null),
+                            )
+                        })
+                        .collect::<serde_json::Map<String, serde_json::Value>>(),
                     "col_widths": size_runs(&s.col_widths),
                     "row_heights": size_runs(&s.row_heights),
                     // Spilled cells are state the user can see and formulas

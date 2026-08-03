@@ -906,3 +906,91 @@ fn freezing_an_imported_sheet_leaves_the_rest_of_its_sheet_view_alone() {
     assert!(!xml.contains("<pane"), "{xml}");
     assert!(xml.contains(r#"zoomScale="85""#), "{xml}");
 }
+
+#[test]
+fn a_rule_reaches_the_file_with_a_dxf_of_its_own() {
+    let mut e = Engine::new();
+    set(&mut e, "Sheet1", "A1", "9");
+    e.apply(&Action::CondAdd {
+        sheet: "Sheet1".into(),
+        rule: engine::CondRule {
+            range: RangeAddr::parse_a1("A1:A9").unwrap(),
+            test: engine::CondTest::CellIs {
+                op: engine::CondOp::GreaterThan,
+                operands: vec!["5".into()],
+            },
+            format: engine::CellFormat {
+                fill_color: Some("#ff0000".into()),
+                bold: true,
+                ..engine::CellFormat::default()
+            },
+        },
+    })
+    .unwrap();
+
+    let saved = xlsx::export(&e.wb).expect("export");
+    let sheet = String::from_utf8(part_of(&saved, "xl/worksheets/sheet1.xml")).unwrap();
+    assert!(
+        sheet.contains(r#"<conditionalFormatting sqref="A1:A9">"#),
+        "{sheet}"
+    );
+    assert!(sheet.contains(r#"type="cellIs""#), "{sheet}");
+    assert!(sheet.contains(r#"operator="greaterThan""#), "{sheet}");
+    assert!(sheet.contains("<formula>5</formula>"), "{sheet}");
+
+    // The presentation lives in a <dxf>, not in a <xf>: a rule is a
+    // differential format and a cell's own styling shows through it.
+    let styles = String::from_utf8(part_of(&saved, "xl/styles.xml")).unwrap();
+    assert!(styles.contains("<dxfs"), "no dxfs collection in {styles}");
+    assert!(styles.contains("<b/>"), "{styles}");
+    // A dxf fill names bgColor where a cell fill names fgColor.
+    assert!(styles.contains(r#"<bgColor rgb="FFFF0000"/>"#), "{styles}");
+
+    // The dxfId the rule cites has to exist.
+    let dxf_id: usize = sheet
+        .split(r#"dxfId=""#)
+        .nth(1)
+        .and_then(|s| s.split('"').next())
+        .and_then(|s| s.parse().ok())
+        .expect("the rule names a dxfId");
+    assert!(
+        dxf_id < styles.matches("<dxf>").count(),
+        "the rule points at dxf {dxf_id}, and the file has {}",
+        styles.matches("<dxf>").count()
+    );
+}
+
+#[test]
+fn rules_a_file_arrived_with_are_left_where_they_are() {
+    // The handmade fixture carries a <conditionalFormatting> this engine does
+    // not model. Adding one of our own must append rather than replace, or
+    // saving would silently delete rules the user made in Excel.
+    let original = handmade_xlsx(SHEET_XML);
+    let mut e = xlsx::import(&original).expect("import").engine;
+    e.apply(&Action::CondAdd {
+        sheet: "Books".into(),
+        rule: engine::CondRule {
+            range: RangeAddr::parse_a1("D1:D9").unwrap(),
+            test: engine::CondTest::Blank { negate: false },
+            format: engine::CellFormat {
+                italic: true,
+                ..engine::CellFormat::default()
+            },
+        },
+    })
+    .unwrap();
+
+    let saved = xlsx::export(&e.wb).expect("export");
+    let sheet = String::from_utf8(part_of(&saved, "xl/worksheets/sheet1.xml")).unwrap();
+    assert!(
+        sheet.contains(r#"<conditionalFormatting sqref="B1:B2">"#),
+        "the original rule was dropped:\n{sheet}"
+    );
+    assert!(
+        sheet.contains(r#"<conditionalFormatting sqref="D1:D9">"#),
+        "the new rule was not written:\n{sheet}"
+    );
+    // ...and the new dxf did not take an id the original file already used.
+    let styles = String::from_utf8(part_of(&saved, "xl/styles.xml")).unwrap();
+    assert!(styles.contains("<dxfs"), "{styles}");
+}

@@ -90,6 +90,13 @@ struct PreservedSheet {
     /// Frozen (rows, cols) as found in `<pane>`, so export can tell whether
     /// the model changed them.
     frozen: (u32, u32),
+    /// How many `<conditionalFormatting>` elements the file arrived with.
+    ///
+    /// The elements themselves are left in the preserved bytes and are *not*
+    /// modeled: reading them would mean parsing arbitrary `<dxf>` records with
+    /// the same fidelity as `cellXfs`, and half-reading one would be worse
+    /// than not reading it. Rules made in Gridline are appended after them.
+    cond_count: usize,
 }
 
 /// Every entry of the imported package plus the map from sheet name to
@@ -889,7 +896,10 @@ fn scan_worksheet(xml: &[u8], features: &mut FeatureFlags) -> Result<PreservedSh
                         }
                     }
                 }
-                b"conditionalFormatting" => features.conditional_formatting = true,
+                b"conditionalFormatting" => {
+                    features.conditional_formatting = true;
+                    out.cond_count += 1;
+                }
                 b"dataValidation" | b"dataValidations" => features.data_validation = true,
                 _ => {}
             },
@@ -915,7 +925,39 @@ struct SheetSpans {
     sheet_view: Option<(ByteSpan<usize>, bool)>,
     /// Where a new `<mergeCells>` element must go to keep schema order.
     merge_insert: Option<usize>,
+    /// Just past the last `<conditionalFormatting>`, when the file has any.
+    cond_end: Option<usize>,
+    /// Failing that, the first element the schema places *after*
+    /// `<conditionalFormatting>` — where a new one has to be inserted.
+    cond_insert: Option<usize>,
 }
+
+/// Elements the schema places after `<conditionalFormatting>`; a generated one
+/// goes before the first of them.
+const AFTER_CONDITIONAL: &[&[u8]] = &[
+    b"dataValidations",
+    b"hyperlinks",
+    b"printOptions",
+    b"pageMargins",
+    b"pageSetup",
+    b"headerFooter",
+    b"rowBreaks",
+    b"colBreaks",
+    b"customProperties",
+    b"cellWatches",
+    b"ignoredErrors",
+    b"smartTags",
+    b"drawing",
+    b"drawingHF",
+    b"picture",
+    b"oleObjects",
+    b"controls",
+    b"webPublishItems",
+    b"tableParts",
+    b"extLst",
+    b"legacyDrawing",
+    b"legacyDrawingHF",
+];
 
 /// Elements that the schema places after `<mergeCells>`; a new mergeCells
 /// element is inserted before the first of them.
@@ -976,6 +1018,9 @@ fn scan_spans(xml: &[u8]) -> Result<SheetSpans, IoError> {
                             if spans.merge_insert.is_none() && AFTER_MERGE_CELLS.contains(&other) {
                                 spans.merge_insert = Some(start);
                             }
+                            if spans.cond_insert.is_none() && AFTER_CONDITIONAL.contains(&other) {
+                                spans.cond_insert = Some(start);
+                            }
                         }
                     }
                 }
@@ -1028,6 +1073,7 @@ fn scan_spans(xml: &[u8]) -> Result<SheetSpans, IoError> {
                             s.end = end;
                         }
                     }
+                    b"conditionalFormatting" if depth == 1 => spans.cond_end = Some(end),
                     b"worksheet" if depth == 0 => worksheet_end = Some(start),
                     _ => {}
                 }
@@ -1120,7 +1166,7 @@ fn export_preserved(wb: &Workbook, package: &PreservedPackage) -> Result<Vec<u8>
         let attrs = style_attrs.remove(&slot.part).unwrap_or_default();
         patched.insert(
             slot.part.clone(),
-            patch_sheet_xml(&original, sheet, &detail, &attrs)?,
+            patch_sheet_xml(&original, sheet, &detail, &attrs, &mut additions)?,
         );
     }
     if !additions.is_empty() {
@@ -1213,6 +1259,7 @@ fn patch_sheet_xml(
     sheet: &Sheet,
     detail: &PreservedSheet,
     style_attrs: &BTreeMap<CellAddr, String>,
+    additions: &mut StyleAdditions,
 ) -> Result<Vec<u8>, IoError> {
     let spans = scan_spans(original)?;
     let Some(sheet_data) = spans.sheet_data.clone() else {
@@ -1253,6 +1300,29 @@ fn patch_sheet_xml(
             // that offset is the one place a new one can go.
             None if xml.is_empty() => {}
             None => edits.push((sheet_data_start..sheet_data_start, xml)),
+        }
+    }
+
+    // Rules made here are appended after whatever the file arrived with,
+    // which stays in the preserved bytes untouched. Reading those would mean
+    // parsing arbitrary `<dxf>` records as faithfully as `cellXfs`, and a
+    // half-read rule would paint the wrong thing rather than nothing.
+    if !sheet.conditional.is_empty() {
+        let xml = write_conditional(&sheet.conditional, additions);
+        match (spans.cond_end, spans.cond_insert) {
+            (Some(at), _) | (None, Some(at)) => edits.push((at..at, xml)),
+            // The schema puts `<conditionalFormatting>` after `<mergeCells>`,
+            // so the same insertion point serves when nothing follows it.
+            (None, None) => match spans.merge_insert {
+                Some(at) => edits.push((at..at, xml)),
+                None => {
+                    return Err(IoError::Malformed(format!(
+                        "worksheet part for sheet '{}' has nowhere to put \
+                         <conditionalFormatting>",
+                        sheet.name
+                    )))
+                }
+            },
         }
     }
 
@@ -1341,6 +1411,74 @@ fn write_merge_cells(ranges: &BTreeSet<String>) -> String {
         out.push_str(&format!("<mergeCell ref=\"{}\"/>", escape_xml(r)));
     }
     out.push_str("</mergeCells>");
+    out
+}
+
+/// `<conditionalFormatting>` elements for the modeled rules, minting a
+/// `<dxf>` for each one as it goes.
+fn write_conditional(rules: &[crate::cond::CondRule], additions: &mut StyleAdditions) -> String {
+    use crate::cond::CondTest;
+    let mut out = String::new();
+    for (i, rule) in rules.iter().enumerate() {
+        let dxf = additions.dxf_for(&rule.format);
+        // Priority is 1-based and lower wins, which is the same order the
+        // model applies them in — first rule keeps the attribute.
+        let priority = i + 1;
+        let body = match &rule.test {
+            CondTest::CellIs { op, operands } => {
+                let formulas: String = operands
+                    .iter()
+                    .take(op.arity())
+                    .map(|o| format!("<formula>{}</formula>", escape_xml(o)))
+                    .collect();
+                format!(
+                    "<cfRule type=\"cellIs\" dxfId=\"{dxf}\" priority=\"{priority}\" \
+                     operator=\"{}\">{formulas}</cfRule>",
+                    op.as_xlsx()
+                )
+            }
+            CondTest::TextContains { needle, negate } => format!(
+                "<cfRule type=\"{}\" dxfId=\"{dxf}\" priority=\"{priority}\" \
+                 operator=\"{}\" text=\"{}\"/>",
+                if *negate {
+                    "notContainsText"
+                } else {
+                    "containsText"
+                },
+                if *negate {
+                    "notContains"
+                } else {
+                    "containsText"
+                },
+                escape_xml(needle)
+            ),
+            CondTest::Blank { negate } => format!(
+                "<cfRule type=\"{}\" dxfId=\"{dxf}\" priority=\"{priority}\"/>",
+                if *negate {
+                    "notContainsBlanks"
+                } else {
+                    "containsBlanks"
+                }
+            ),
+            CondTest::Duplicate { unique } => format!(
+                "<cfRule type=\"{}\" dxfId=\"{dxf}\" priority=\"{priority}\"/>",
+                if *unique {
+                    "uniqueValues"
+                } else {
+                    "duplicateValues"
+                }
+            ),
+            CondTest::Formula { body } => format!(
+                "<cfRule type=\"expression\" dxfId=\"{dxf}\" priority=\"{priority}\">\
+                 <formula>{}</formula></cfRule>",
+                escape_xml(body)
+            ),
+        };
+        out.push_str(&format!(
+            "<conditionalFormatting sqref=\"{}\">{body}</conditionalFormatting>",
+            rule.range.to_a1()
+        ));
+    }
     out
 }
 
@@ -1614,6 +1752,12 @@ fn export_fresh(wb: &Workbook) -> Result<Vec<u8>, IoError> {
         let ws = book.add_worksheet();
         ws.set_name(&sheet.name)?;
 
+        // Rules before the values, because a rule's range may reach past
+        // anything that has been written yet.
+        for rule in &sheet.conditional {
+            write_fresh_rule(ws, rule)?;
+        }
+
         if sheet.frozen_rows > 0 || sheet.frozen_cols > 0 {
             // rust_xlsxwriter takes the first *scrolling* cell, which is the
             // same fact stated as an address.
@@ -1719,6 +1863,87 @@ fn export_fresh(wb: &Workbook) -> Result<Vec<u8>, IoError> {
 /// Translate a `CellFormat` into the writer's own format type. `None` for the
 /// default, so unformatted cells are written exactly as they were before
 /// formatting existed.
+/// One rule, through `rust_xlsxwriter`'s own conditional-format types.
+///
+/// The generated path cannot splice XML the way the preserved one does, so
+/// the rule is restated in the writer's vocabulary. The mapping is total —
+/// every `CondTest` has a home here — which is what stops a rule made in a
+/// from-scratch workbook from quietly not being saved.
+fn write_fresh_rule(
+    ws: &mut rust_xlsxwriter::Worksheet,
+    rule: &crate::cond::CondRule,
+) -> Result<(), IoError> {
+    use crate::cond::{CondOp, CondTest};
+    use rust_xlsxwriter::{
+        ConditionalFormatBlank, ConditionalFormatCell, ConditionalFormatCellRule,
+        ConditionalFormatDuplicate, ConditionalFormatFormula, ConditionalFormatText,
+        ConditionalFormatTextRule,
+    };
+    let (r0, c0) = rc(rule.range.start)?;
+    let (r1, c1) = rc(rule.range.end)?;
+    // A dxf is differential, so an empty format would be a rule that does
+    // nothing; `cond_add` already refuses that.
+    let format = writer_format(&rule.format).unwrap_or_default();
+
+    // The operands are formula bodies. `rust_xlsxwriter` takes a value or a
+    // formula, and a body that is not a plain number is the latter.
+    let operand = |s: &str| -> rust_xlsxwriter::ConditionalFormatValue {
+        match s.trim().parse::<f64>() {
+            Ok(n) => n.into(),
+            Err(_) => rust_xlsxwriter::Formula::new(s).into(),
+        }
+    };
+
+    match &rule.test {
+        CondTest::CellIs { op, operands } => {
+            let a = operand(operands.first().map(String::as_str).unwrap_or("0"));
+            let b = || operand(operands.get(1).map(String::as_str).unwrap_or("0"));
+            let cf_rule = match op {
+                CondOp::GreaterThan => ConditionalFormatCellRule::GreaterThan(a),
+                CondOp::LessThan => ConditionalFormatCellRule::LessThan(a),
+                CondOp::GreaterOrEqual => ConditionalFormatCellRule::GreaterThanOrEqualTo(a),
+                CondOp::LessOrEqual => ConditionalFormatCellRule::LessThanOrEqualTo(a),
+                CondOp::Equal => ConditionalFormatCellRule::EqualTo(a),
+                CondOp::NotEqual => ConditionalFormatCellRule::NotEqualTo(a),
+                CondOp::Between => ConditionalFormatCellRule::Between(a, b()),
+                CondOp::NotBetween => ConditionalFormatCellRule::NotBetween(a, b()),
+            };
+            let cf = ConditionalFormatCell::new()
+                .set_rule(cf_rule)
+                .set_format(format);
+            ws.add_conditional_format(r0, c0, r1, c1, &cf)?;
+        }
+        CondTest::TextContains { needle, negate } => {
+            let cf_rule = if *negate {
+                ConditionalFormatTextRule::DoesNotContain(needle.clone())
+            } else {
+                ConditionalFormatTextRule::Contains(needle.clone())
+            };
+            let cf = ConditionalFormatText::new()
+                .set_rule(cf_rule)
+                .set_format(format);
+            ws.add_conditional_format(r0, c0, r1, c1, &cf)?;
+        }
+        CondTest::Blank { negate } => {
+            let cf = ConditionalFormatBlank::new().set_format(format);
+            let cf = if *negate { cf.invert() } else { cf };
+            ws.add_conditional_format(r0, c0, r1, c1, &cf)?;
+        }
+        CondTest::Duplicate { unique } => {
+            let cf = ConditionalFormatDuplicate::new().set_format(format);
+            let cf = if *unique { cf.invert() } else { cf };
+            ws.add_conditional_format(r0, c0, r1, c1, &cf)?;
+        }
+        CondTest::Formula { body } => {
+            let cf = ConditionalFormatFormula::new()
+                .set_rule(rust_xlsxwriter::Formula::new(body))
+                .set_format(format);
+            ws.add_conditional_format(r0, c0, r1, c1, &cf)?;
+        }
+    }
+    Ok(())
+}
+
 fn writer_format(f: &CellFormat) -> Option<rust_xlsxwriter::Format> {
     use rust_xlsxwriter::{Color, Format, FormatAlign, FormatBorder};
     if f.is_default() {

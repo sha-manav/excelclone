@@ -724,3 +724,172 @@ fn a_batch_that_fails_part_way_leaves_what_it_did() {
     e.apply(&Action::Undo).unwrap();
     assert_eq!(e.value_at("Sheet1", "A1"), Value::Empty);
 }
+
+// ---------------------------------------------------------------------------
+// Conditional formatting
+// ---------------------------------------------------------------------------
+
+fn red_rule(a1: &str) -> engine::CondRule {
+    engine::CondRule {
+        range: RangeAddr::parse_a1(a1).unwrap(),
+        test: engine::CondTest::CellIs {
+            op: engine::CondOp::GreaterThan,
+            operands: vec!["5".into()],
+        },
+        format: CellFormat {
+            fill_color: Some("#ff0000".into()),
+            ..CellFormat::default()
+        },
+    }
+}
+
+fn cond_fill(e: &Engine, a1: &str) -> Option<String> {
+    e.wb.sheets[0]
+        .cond_formats
+        .get(&CellAddr::parse_a1(a1).unwrap())
+        .and_then(|f| f.fill_color.clone())
+}
+
+#[test]
+fn a_rule_follows_the_value_rather_than_being_painted_once() {
+    // The whole difference between conditional formatting and formatting: it
+    // has to change when the number does, including through a formula the
+    // user did not touch.
+    let mut e = Engine::new();
+    set(&mut e, "A1", "1");
+    set(&mut e, "A2", "=A1*10");
+    e.apply(&Action::CondAdd {
+        sheet: "Sheet1".into(),
+        rule: red_rule("A1:A2"),
+    })
+    .unwrap();
+    assert_eq!(cond_fill(&e, "A1"), None);
+    assert_eq!(cond_fill(&e, "A2"), Some("#ff0000".into()));
+
+    set(&mut e, "A1", "9");
+    assert_eq!(cond_fill(&e, "A1"), Some("#ff0000".into()));
+    set(&mut e, "A1", "0");
+    assert_eq!(
+        cond_fill(&e, "A2"),
+        None,
+        "the dependent cell kept a colour its value no longer earns"
+    );
+}
+
+#[test]
+fn a_rule_leaves_the_cells_own_formatting_alone() {
+    // A dxf is differential: colouring the fill must not clear a number
+    // format or a bold the user set by hand.
+    let mut e = Engine::new();
+    set(&mut e, "A1", "9");
+    e.apply(&Action::FormatApply {
+        sheet: "Sheet1".into(),
+        range: RangeAddr::parse_a1("A1:A1").unwrap(),
+        patches: vec![FormatPatch::Bold(true)],
+    })
+    .unwrap();
+    e.apply(&Action::CondAdd {
+        sheet: "Sheet1".into(),
+        rule: red_rule("A1:A1"),
+    })
+    .unwrap();
+
+    let own = e.wb.formats.resolve(e.wb.sheets[0].format_id(a1("A1")));
+    assert!(own.bold, "the rule overwrote the cell's own formatting");
+    assert_eq!(own.fill_color, None, "the rule was written into the cell");
+    assert_eq!(cond_fill(&e, "A1"), Some("#ff0000".into()));
+}
+
+#[test]
+fn adding_a_rule_undoes_as_one_step() {
+    let mut e = Engine::new();
+    set(&mut e, "A1", "9");
+    e.apply(&Action::CondAdd {
+        sheet: "Sheet1".into(),
+        rule: red_rule("A1:A1"),
+    })
+    .unwrap();
+    assert_eq!(cond_fill(&e, "A1"), Some("#ff0000".into()));
+
+    e.apply(&Action::Undo).unwrap();
+    assert!(e.wb.sheets[0].conditional.is_empty());
+    assert_eq!(
+        cond_fill(&e, "A1"),
+        None,
+        "the colour outlived the rule that produced it"
+    );
+
+    e.apply(&Action::Redo).unwrap();
+    assert_eq!(cond_fill(&e, "A1"), Some("#ff0000".into()));
+}
+
+#[test]
+fn clearing_takes_the_rules_inside_the_selection_and_leaves_the_rest() {
+    let mut e = Engine::new();
+    set(&mut e, "A1", "9");
+    set(&mut e, "C1", "9");
+    e.apply(&Action::CondAdd {
+        sheet: "Sheet1".into(),
+        rule: red_rule("A1:A1"),
+    })
+    .unwrap();
+    e.apply(&Action::CondAdd {
+        sheet: "Sheet1".into(),
+        rule: red_rule("C1:C1"),
+    })
+    .unwrap();
+
+    // Clearing A1:A1 takes the rule that lives there and not the other one.
+    e.apply(&Action::CondClear {
+        sheet: "Sheet1".into(),
+        range: RangeAddr::parse_a1("A1:A1").unwrap(),
+    })
+    .unwrap();
+    assert_eq!(cond_fill(&e, "A1"), None);
+    assert_eq!(cond_fill(&e, "C1"), Some("#ff0000".into()));
+
+    // Clearing one cell of a wider rule leaves it alone: "not here" is not a
+    // thing a rule can say, and dropping the whole rule would be a surprise.
+    e.apply(&Action::CondAdd {
+        sheet: "Sheet1".into(),
+        rule: red_rule("E1:E9"),
+    })
+    .unwrap();
+    e.apply(&Action::CondClear {
+        sheet: "Sheet1".into(),
+        range: RangeAddr::parse_a1("E5:E5").unwrap(),
+    })
+    .unwrap();
+    assert_eq!(e.wb.sheets[0].conditional.len(), 2);
+}
+
+#[test]
+fn a_rule_whose_formula_does_not_parse_is_refused_when_it_is_written() {
+    let mut e = Engine::new();
+    let bad = engine::CondRule {
+        range: RangeAddr::parse_a1("A1:A1").unwrap(),
+        test: engine::CondTest::Formula { body: "1+".into() },
+        format: CellFormat {
+            bold: true,
+            ..CellFormat::default()
+        },
+    };
+    assert!(e
+        .apply(&Action::CondAdd {
+            sheet: "Sheet1".into(),
+            rule: bad,
+        })
+        .is_err());
+    // ...and so is one that would do nothing at all.
+    let empty = engine::CondRule {
+        range: RangeAddr::parse_a1("A1:A1").unwrap(),
+        test: engine::CondTest::Blank { negate: false },
+        format: CellFormat::default(),
+    };
+    assert!(e
+        .apply(&Action::CondAdd {
+            sheet: "Sheet1".into(),
+            rule: empty,
+        })
+        .is_err());
+}

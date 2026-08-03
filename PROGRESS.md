@@ -205,7 +205,7 @@ Living checklist. Updated every session.
 
 ## Notes
 
-- 458 Rust tests, 167 web unit tests, 54 Playwright end-to-end tests; full
+- 472 Rust tests, 167 web unit tests, 55 Playwright end-to-end tests; full
   CI gate (fmt, clippy -D warnings, tests, wasm build, vite build, e2e)
   passes locally.
 - M5 found a bug that had been latent since M2: **xlsx export had never
@@ -285,13 +285,17 @@ Living checklist. Updated every session.
   the fix; until then a workbook that leans on names recalculates fully.
 - Every structural operation triggers a full dependency rebuild and
   recalculation. Correct but O(all formulas).
-- **Conditional formatting and charts are preserved but cannot be authored.**
-  Both survive a round trip byte-identically — the rules and the chart parts
-  come back exactly as they arrived — but there is no way to create or edit
-  either. Conditional formatting is the nearer of the two: it needs rules on
-  the sheet, evaluation at recalculation, and `<dxf>` records in
-  `xl/styles.xml`, which is a second style collection beside `cellXfs`.
-  Charts are a rendering surface as well as a model and are further out.
+- **A conditional-formatting rule a file arrived with is preserved but not
+  displayed.** Gridline's own rules work end to end — they colour the grid,
+  follow the values, undo, and reach the file. Reading someone else's means
+  parsing arbitrary `<dxf>` records as faithfully as `cellXfs`, and a
+  half-read rule paints the wrong thing rather than nothing. The elements stay
+  in the preserved bytes and come back untouched.
+- **Only "greater than" has a control.** The engine takes comparisons, text,
+  blank, duplicate and formula rules; the toolbar offers the one people reach
+  for first. The rest need a rule editor.
+- **Charts are preserved but cannot be authored.** A model, an authoring
+  surface and a renderer, and the least like the rest of the codebase.
 - Freezing more rows than fit in the window is allowed. The engine cannot see
   the viewport, and the button freezes above the cursor; putting the cursor
   near the bottom of a long sheet and pressing it leaves almost nothing to
@@ -316,8 +320,9 @@ are open; all seven are in `PARITY.md` with what Gridline currently answers.
 
 Next, in the order they are worth doing:
 
-1. **Conditional formatting.** The largest thing a spreadsheet user expects
-   that this cannot do. See the gap note above for what it needs.
+1. **Read the conditional-formatting rules a file arrives with**, which needs
+   a `<dxf>` parser with the fidelity `cellXfs` already has, and a rule
+   editor for the kinds the toolbar does not offer.
 2. **Resolve defined names while building the dependency graph**, which takes
    the volatility cost off every formula that uses one.
 3. **Incremental structural recalculation**, the other standing O(all
