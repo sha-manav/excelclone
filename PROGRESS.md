@@ -151,7 +151,7 @@ Living checklist. Updated every session.
 - [x] 52 cases pinning them, including the sign rules Microsoft's own page
       spends a paragraph on and the difference between competition and dense
       ranking
-- [x] Coverage 48.5% → 81.6%; cell match 98.3%; 96.4% of implemented
+- [x] Coverage 48.5% → 88.9%; cell match 98.4%; 96.7% of implemented
       functions pinned
 - [x] The reference family (ROW, COLUMN, ROWS, COLUMNS) — `EvalCtx` now
       carries the cell being evaluated, which nothing else had needed
@@ -162,7 +162,15 @@ Living checklist. Updated every session.
 - [x] The financial block (PMT, FV, PV, NPER, RATE, NPV, IRR), with the
       closed forms computed independently from the documented equation and
       the two iterative answers verified by substitution
-- [ ] MODE, STDEV, SUBTOTAL, AGGREGATE, XMATCH, LOOKUP, OFFSET, INDIRECT
+- [x] MODE, STDEV, SUBTOTAL, XMATCH, LOOKUP, TEXTBEFORE, TEXTAFTER,
+      NUMBERVALUE, ISREF
+- [x] `COUNTUNIQUE` removed from the target list: it is a Google Sheets
+      function, and a target naming functions Excel does not have makes the
+      score unreachable for a reason that is nobody's fault
+- [ ] `OFFSET`, `INDIRECT` and `TRANSPOSE` need functions that return
+      *references*; today a function returns a `Value`, so `SUM(OFFSET(...))`
+      could not work and a scalar-only version would fail on the common use
+- [ ] `AGGREGATE`, `TIMEVALUE`, `NETWORKDAYS`, `WORKDAY`, `YEARFRAC`, `LET`
 - [ ] Dynamic arrays (UNIQUE, SORT, FILTER, SEQUENCE, TEXTSPLIT) need spilling
       first, which is a model change rather than a function
 

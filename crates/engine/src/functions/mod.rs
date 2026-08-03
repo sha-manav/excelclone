@@ -3,7 +3,7 @@
 //! Function names are uppercase at parse time; unknown names evaluate to
 //! `#NAME?` (fail loudly, never silently).
 
-mod condagg;
+pub(crate) mod condagg;
 mod date;
 mod finance;
 mod logic;
@@ -56,6 +56,9 @@ pub const IMPLEMENTED: &[&str] = &[
     "SMALL",
     "RANK",
     "SUMPRODUCT",
+    "MODE",
+    "STDEV",
+    "SUBTOTAL",
     "PMT",
     "FV",
     "PV",
@@ -80,6 +83,7 @@ pub const IMPLEMENTED: &[&str] = &[
     "IFNA",
     "NA",
     "TYPE",
+    "ISREF",
     // Lookup
     "VLOOKUP",
     "HLOOKUP",
@@ -91,6 +95,8 @@ pub const IMPLEMENTED: &[&str] = &[
     "COLUMN",
     "ROWS",
     "COLUMNS",
+    "XMATCH",
+    "LOOKUP",
     // Text
     "CONCAT",
     "CONCATENATE",
@@ -114,6 +120,9 @@ pub const IMPLEMENTED: &[&str] = &[
     "CHAR",
     "CODE",
     "CLEAN",
+    "TEXTBEFORE",
+    "TEXTAFTER",
+    "NUMBERVALUE",
     // Conditional aggregation
     "COUNTIF",
     "COUNTIFS",
@@ -177,6 +186,9 @@ pub fn call(ctx: &EvalCtx, name: &str, args: &[Expr]) -> Value {
         "SMALL" => math::small(ctx, args),
         "RANK" => math::rank(ctx, args),
         "SUMPRODUCT" => math::sumproduct(ctx, args),
+        "MODE" => math::mode(ctx, args),
+        "STDEV" => math::stdev(ctx, args),
+        "SUBTOTAL" => math::subtotal(ctx, args),
         // Finance
         "PMT" => finance::pmt(ctx, args),
         "FV" => finance::fv(ctx, args),
@@ -202,6 +214,7 @@ pub fn call(ctx: &EvalCtx, name: &str, args: &[Expr]) -> Value {
         "IFNA" => logic::ifna(ctx, args),
         "NA" => logic::na(ctx, args),
         "TYPE" => logic::type_of(ctx, args),
+        "ISREF" => logic::isref(ctx, args),
         // Lookup
         "VLOOKUP" => lookup::vlookup(ctx, args),
         "HLOOKUP" => lookup::hlookup(ctx, args),
@@ -213,6 +226,8 @@ pub fn call(ctx: &EvalCtx, name: &str, args: &[Expr]) -> Value {
         "COLUMN" => lookup::column(ctx, args),
         "ROWS" => lookup::rows(ctx, args),
         "COLUMNS" => lookup::columns(ctx, args),
+        "XMATCH" => lookup::xmatch(ctx, args),
+        "LOOKUP" => lookup::lookup(ctx, args),
         // Text
         "CONCAT" => text::concat(ctx, args),
         "CONCATENATE" => text::concatenate(ctx, args),
@@ -236,6 +251,9 @@ pub fn call(ctx: &EvalCtx, name: &str, args: &[Expr]) -> Value {
         "CHAR" => text::char_fn(ctx, args),
         "CODE" => text::code(ctx, args),
         "CLEAN" => text::clean(ctx, args),
+        "TEXTBEFORE" => text::textbefore(ctx, args),
+        "TEXTAFTER" => text::textafter(ctx, args),
+        "NUMBERVALUE" => text::numbervalue(ctx, args),
         // Conditional aggregation
         "COUNTIF" => condagg::countif(ctx, args),
         "COUNTIFS" => condagg::countifs(ctx, args),

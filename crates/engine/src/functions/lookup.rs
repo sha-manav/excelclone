@@ -524,6 +524,137 @@ fn reference_extent(ctx: &EvalCtx, args: &[Expr], f: impl Fn(&RangeAddr) -> u32)
     }
 }
 
+/// XMATCH(lookup, array, [match_mode], [search_mode]): MATCH with the
+/// argument order people expected in the first place.
+///
+/// `match_mode` is 0 exact (the default, unlike MATCH's), -1 exact or next
+/// smaller, 1 exact or next larger, 2 wildcard. `search_mode` -1 searches
+/// last-to-first, which is how you find the most recent of several matches.
+pub fn xmatch(ctx: &EvalCtx, args: &[Expr]) -> Value {
+    if let Err(k) = expect_args(args, 2, 4) {
+        return Value::Error(k);
+    }
+    let needle = match Ok::<Value, ErrorKind>(ctx.eval_scalar(&args[0])) {
+        Ok(v) => v,
+        Err(k) => return Value::Error(k),
+    };
+    let values = match vector_values(ctx, &args[1]) {
+        Ok(v) => v,
+        Err(k) => return Value::Error(k),
+    };
+    let mode = match args.get(2).map(|a| ctx.eval_number(a)) {
+        Some(Ok(n)) => n.trunc() as i64,
+        Some(Err(k)) => return Value::Error(k),
+        None => 0,
+    };
+    let backwards = match args.get(3).map(|a| ctx.eval_number(a)) {
+        Some(Ok(n)) => n.trunc() as i64 == -1,
+        Some(Err(k)) => return Value::Error(k),
+        None => false,
+    };
+
+    let order: Vec<usize> = if backwards {
+        (0..values.len()).rev().collect()
+    } else {
+        (0..values.len()).collect()
+    };
+
+    // Exact and wildcard scan in the requested direction; the two approximate
+    // modes take the best candidate anywhere, because "next smaller" is a
+    // question about the whole vector rather than about scan order.
+    let mut best: Option<(usize, Value)> = None;
+    for i in order {
+        let v = &values[i];
+        let hit = match mode {
+            2 => match (&needle, v) {
+                (Value::Text(pat), Value::Text(s)) => super::condagg::wildcard_matches(pat, s),
+                _ => compare_values(&needle, v) == Ordering::Equal,
+            },
+            _ => compare_values(&needle, v) == Ordering::Equal,
+        };
+        if hit {
+            return Value::Number(i as f64 + 1.0);
+        }
+        if mode == -1 || mode == 1 {
+            let ord = compare_values(v, &needle);
+            let candidate = if mode == -1 {
+                ord == Ordering::Less
+            } else {
+                ord == Ordering::Greater
+            };
+            if candidate {
+                let better = match &best {
+                    None => true,
+                    Some((_, b)) => {
+                        let against = compare_values(v, b);
+                        if mode == -1 {
+                            against == Ordering::Greater
+                        } else {
+                            against == Ordering::Less
+                        }
+                    }
+                };
+                if better {
+                    best = Some((i, v.clone()));
+                }
+            }
+        }
+    }
+    match best {
+        Some((i, _)) => Value::Number(i as f64 + 1.0),
+        None => Value::Error(ErrorKind::NA),
+    }
+}
+
+/// LOOKUP(value, lookup_vector, [result_vector]): the vector form.
+///
+/// Always approximate and always assuming ascending order — there is no
+/// exact-match option, which is why VLOOKUP replaced it. The array form is
+/// not implemented; it needs a range-returning function.
+pub fn lookup(ctx: &EvalCtx, args: &[Expr]) -> Value {
+    if let Err(k) = expect_args(args, 2, 3) {
+        return Value::Error(k);
+    }
+    let needle = match Ok::<Value, ErrorKind>(ctx.eval_scalar(&args[0])) {
+        Ok(v) => v,
+        Err(k) => return Value::Error(k),
+    };
+    let keys = match vector_values(ctx, &args[1]) {
+        Ok(v) => v,
+        Err(k) => return Value::Error(k),
+    };
+    let results = match args.get(2) {
+        Some(a) => match vector_values(ctx, a) {
+            Ok(v) => v,
+            Err(k) => return Value::Error(k),
+        },
+        None => keys.clone(),
+    };
+
+    let mut found: Option<usize> = None;
+    for (i, k) in keys.iter().enumerate() {
+        if compare_values(k, &needle) != Ordering::Greater {
+            found = Some(i);
+        }
+    }
+    match found.and_then(|i| results.get(i)) {
+        Some(v) => v.clone(),
+        None => Value::Error(ErrorKind::NA),
+    }
+}
+
+/// A one-dimensional range's values in order, or a lone scalar as a vector of
+/// one.
+fn vector_values(ctx: &EvalCtx, e: &Expr) -> Result<Vec<Value>, ErrorKind> {
+    match ctx.eval_operand(e) {
+        crate::eval::Operand::Range { sheet, range } => {
+            Ok(ctx.range_grid(sheet, range).into_iter().flatten().collect())
+        }
+        crate::eval::Operand::Scalar(Value::Error(k)) => Err(k),
+        crate::eval::Operand::Scalar(v) => Ok(vec![v]),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,0 +1,216 @@
+# The statistical, lookup and text leftovers.
+
+[[case]]
+id = "t2c.mode-is-the-most-common-value"
+given = { A1 = "1", A2 = "2", A3 = "2", A4 = "3" }
+formula = "=MODE(A1:A4)"
+expect = "2"
+source = "known"
+functions = ["MODE"]
+note = "Earliest value on a tie."
+
+[[case]]
+id = "t2c.mode-with-nothing-repeated-is-na"
+given = { A1 = "1", A2 = "2" }
+formula = "=MODE(A1:A2)"
+expect = "#N/A"
+source = "known"
+functions = ["MODE"]
+note = """
+Excel says the question has no answer rather than picking the first value.
+An implementation returning A1 would pass a test that only used data with a
+mode in it.
+"""
+
+[[case]]
+id = "t2c.stdev-is-the-sample-estimate"
+given = { A1 = "2", A2 = "4", A3 = "4", A4 = "4", A5 = "5", A6 = "5", A7 = "7", A8 = "9" }
+formula = "=STDEV(A1:A8)"
+expect = "2.1380899352994"
+source = "known"
+functions = ["STDEV"]
+note = """
+Divided by n-1, not n. The population figure for this data is exactly 2, which
+is the textbook example — an implementation dividing by n would answer a round
+number and look right. Checked against an independent computation of the
+sample standard deviation.
+"""
+
+[[case]]
+id = "t2c.stdev-of-one-value-is-a-div-zero"
+given = { A1 = "5" }
+formula = "=STDEV(A1:A3)"
+expect = "#DIV/0!"
+source = "known"
+functions = ["STDEV"]
+note = "n-1 is zero with a single value, and Excel reports the division."
+
+[[case]]
+id = "t2c.subtotal-sums"
+given = { A1 = "1", A2 = "2", A3 = "3" }
+formula = "=SUBTOTAL(9,A1:A3)"
+expect = "6"
+source = "known"
+functions = ["SUBTOTAL"]
+note = """
+Code 9 is SUM. The point of SUBTOTAL is that a total under a filtered table
+shows the total of what is visible, which is why a plain SUM under a filter is
+usually the wrong formula.
+"""
+
+[[case]]
+id = "t2c.subtotal-counts-numbers"
+given = { A1 = "1", A2 = "'x", A3 = "3" }
+formula = "=SUBTOTAL(2,A1:A3)"
+expect = "2"
+source = "known"
+functions = ["SUBTOTAL"]
+note = "Code 2 is COUNT, so text does not count. Code 3 is COUNTA, which does."
+
+[[case]]
+id = "t2c.subtotal-one-hundred-and-one-is-average"
+given = { A1 = "1", A2 = "2", A3 = "3" }
+formula = "=SUBTOTAL(101,A1:A3)"
+expect = "2"
+source = "known"
+functions = ["SUBTOTAL"]
+note = """
+101-111 are the same aggregates as 1-11 and additionally skip manually hidden
+rows. Gridline has no manual row hiding yet, so the two agree; they will
+diverge when it does, and this case is where that shows up.
+"""
+
+[[case]]
+id = "t2c.xmatch-defaults-to-exact"
+given = { A1 = "'a", A2 = "'b", A3 = "'c" }
+formula = "=XMATCH(\"b\",A1:A3)"
+expect = "2"
+source = "known"
+functions = ["XMATCH"]
+note = """
+The default is exact, unlike MATCH, whose default is approximate. That
+reversal is most of the reason XMATCH exists.
+"""
+
+[[case]]
+id = "t2c.xmatch-next-smaller"
+given = { A1 = "1", A2 = "10", A3 = "20" }
+formula = "=XMATCH(15,A1:A3,-1)"
+expect = "2"
+source = "known"
+functions = ["XMATCH"]
+note = "Mode -1 is exact or next smaller."
+
+[[case]]
+id = "t2c.xmatch-next-larger"
+given = { A1 = "1", A2 = "10", A3 = "20" }
+formula = "=XMATCH(15,A1:A3,1)"
+expect = "3"
+source = "known"
+functions = ["XMATCH"]
+note = """
+Mode 1 is exact or next larger — and unlike MATCH's approximate mode, neither
+requires the data to be sorted, because both scan rather than bisect.
+"""
+
+[[case]]
+id = "t2c.xmatch-can-search-backwards"
+given = { A1 = "'a", A2 = "'b", A3 = "'b" }
+formula = "=XMATCH(\"b\",A1:A3,0,-1)"
+expect = "3"
+source = "known"
+functions = ["XMATCH"]
+note = "Search mode -1 finds the last match, which is how you take the most recent."
+
+[[case]]
+id = "t2c.xmatch-wildcards"
+given = { A1 = "'apple", A2 = "'apricot" }
+formula = "=XMATCH(\"ap*t\",A1:A2,2)"
+expect = "2"
+source = "known"
+functions = ["XMATCH"]
+note = """
+Match mode 2 turns on the same `*` and `?` matching COUNTIF's criteria use —
+shared code, so the two cannot disagree about what a pattern means.
+"""
+
+[[case]]
+id = "t2c.lookup-is-always-approximate"
+given = { A1 = "1", A2 = "10", A3 = "20", B1 = "'low", B2 = "'mid", B3 = "'high" }
+formula = "=LOOKUP(15,A1:A3,B1:B3)"
+expect = "mid"
+source = "known"
+functions = ["LOOKUP"]
+note = """
+LOOKUP has no exact-match option at all, which is why VLOOKUP replaced it.
+The vector form is implemented; the array form needs a range-returning
+function and is not.
+"""
+
+[[case]]
+id = "t2c.textbefore"
+formula = "=TEXTBEFORE(\"a-b-c\",\"-\")"
+expect = "a"
+source = "known"
+functions = ["TEXTBEFORE"]
+note = "Up to the first occurrence."
+
+[[case]]
+id = "t2c.textafter"
+formula = "=TEXTAFTER(\"a-b-c\",\"-\")"
+expect = "b-c"
+source = "known"
+functions = ["TEXTAFTER"]
+note = "Past the first occurrence, including any later ones."
+
+[[case]]
+id = "t2c.textafter-counts-back-from-the-end"
+formula = "=TEXTAFTER(\"a-b-c\",\"-\",-1)"
+expect = "c"
+source = "known"
+functions = ["TEXTAFTER"]
+note = """
+A negative instance counts from the end, which is how you take a file
+extension off a path without knowing how many dots it has.
+"""
+
+[[case]]
+id = "t2c.textbefore-with-no-delimiter-is-na"
+formula = "=TEXTBEFORE(\"abc\",\"-\")"
+expect = "#N/A"
+source = "known"
+functions = ["TEXTBEFORE"]
+note = """
+Not the whole string: "before something that is not present" has no answer,
+and returning the input would look like a successful split.
+"""
+
+[[case]]
+id = "t2c.numbervalue-reads-other-conventions"
+formula = "=NUMBERVALUE(\"1.234,56\",\",\",\".\")"
+expect = "1234.56"
+source = "known"
+functions = ["NUMBERVALUE"]
+note = """
+The reason it exists beside VALUE: a European export writes 1.234,56, and
+VALUE follows the locale and cannot read it.
+"""
+
+[[case]]
+id = "t2c.isref-of-a-reference"
+formula = "=ISREF(A1)"
+expect = "TRUE"
+source = "known"
+functions = ["ISREF"]
+note = """
+Decided from the expression, not the value — by the time a value arrives
+there is nothing left to tell a cell from the number in it.
+"""
+
+[[case]]
+id = "t2c.isref-of-a-number"
+formula = "=ISREF(1)"
+expect = "FALSE"
+source = "known"
+functions = ["ISREF"]
+note = "The other side."

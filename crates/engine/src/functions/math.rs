@@ -3,6 +3,7 @@
 //! Expected values in tests are Excel-verified (Microsoft 365).
 
 use super::{expect_args, gather, gather_numbers, num_result};
+use crate::addr::CellAddr;
 use crate::ast::Expr;
 use crate::eval::EvalCtx;
 use crate::value::{ErrorKind, Value};
@@ -520,4 +521,143 @@ pub fn sumproduct(ctx: &EvalCtx, args: &[Expr]) -> Value {
         total += product;
     }
     Value::Number(total)
+}
+
+/// MODE(range): the most common value, earliest on a tie.
+///
+/// `#N/A` when nothing repeats, which is Excel's way of saying the question
+/// has no answer rather than picking the first value arbitrarily.
+pub fn mode(ctx: &EvalCtx, args: &[Expr]) -> Value {
+    num_result((|| {
+        let ns = gather_numbers(ctx, args)?;
+        let mut best: Option<(f64, usize)> = None;
+        for (i, v) in ns.iter().enumerate() {
+            let count = ns.iter().filter(|o| *o == v).count();
+            let earlier_index = ns.iter().position(|o| o == v).unwrap_or(i);
+            let better = match best {
+                None => count > 1,
+                Some((bv, bc)) => {
+                    count > bc
+                        || (count == bc
+                            && earlier_index < ns.iter().position(|o| *o == bv).unwrap_or(0))
+                }
+            };
+            if count > 1 && better {
+                best = Some((*v, count));
+            }
+        }
+        best.map(|(v, _)| v).ok_or(ErrorKind::NA)
+    })())
+}
+
+/// STDEV(range): the *sample* standard deviation, dividing by n-1.
+///
+/// STDEVP is the population one. Excel's plain `STDEV` being the sample
+/// estimate surprises people coming from a statistics package, and getting it
+/// wrong is a quiet error: the answer is close, just never right.
+pub fn stdev(ctx: &EvalCtx, args: &[Expr]) -> Value {
+    num_result((|| {
+        let ns = gather_numbers(ctx, args)?;
+        if ns.len() < 2 {
+            return Err(ErrorKind::Div0);
+        }
+        let mean = ns.iter().sum::<f64>() / ns.len() as f64;
+        let variance = ns.iter().map(|n| (n - mean).powi(2)).sum::<f64>() / (ns.len() as f64 - 1.0);
+        Ok(variance.sqrt())
+    })())
+}
+
+/// SUBTOTAL(function_num, ref, ...): an aggregate that skips filtered rows.
+///
+/// The whole point is that a total under a filtered table shows the total of
+/// what is *visible*. Codes 1-11 pick the aggregate; 101-111 are the same
+/// aggregates and additionally skip manually hidden rows — Gridline has no
+/// manual row hiding yet, so the two behave identically and will diverge when
+/// it does.
+pub fn subtotal(ctx: &EvalCtx, args: &[Expr]) -> Value {
+    if let Err(k) = expect_args(args, 2, usize::MAX) {
+        return Value::Error(k);
+    }
+    let code = match ctx.eval_number(&args[0]) {
+        Ok(n) => n.trunc() as i64,
+        Err(k) => return Value::Error(k),
+    };
+    let mut visible: Vec<f64> = Vec::new();
+    let mut non_empty = 0usize;
+    for a in &args[1..] {
+        match ctx.eval_operand(a) {
+            crate::eval::Operand::Range { sheet, range } => {
+                let hidden = ctx
+                    .wb
+                    .sheet(sheet)
+                    .map(|s| s.hidden_rows.clone())
+                    .unwrap_or_default();
+                for row in range.start.row..=range.end.row {
+                    if hidden.contains(&row) {
+                        continue;
+                    }
+                    for col in range.start.col..=range.end.col {
+                        let v = ctx
+                            .wb
+                            .sheet(sheet)
+                            .map(|s| s.value(CellAddr::new(row, col)));
+                        match v {
+                            Some(Value::Number(n)) => {
+                                visible.push(n);
+                                non_empty += 1;
+                            }
+                            Some(Value::Error(k)) => return Value::Error(k),
+                            Some(Value::Empty) | None => {}
+                            Some(_) => non_empty += 1,
+                        }
+                    }
+                }
+            }
+            crate::eval::Operand::Scalar(Value::Error(k)) => return Value::Error(k),
+            crate::eval::Operand::Scalar(v) => {
+                if let Value::Number(n) = v {
+                    visible.push(n);
+                    non_empty += 1;
+                } else if !v.is_empty() {
+                    non_empty += 1;
+                }
+            }
+        }
+    }
+
+    let n = visible.len() as f64;
+    let sum: f64 = visible.iter().sum();
+    let mean = if n > 0.0 { sum / n } else { 0.0 };
+    let sample_var = || visible.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / (n - 1.0);
+    let population_var = || visible.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / n;
+
+    // 101-111 mean "also skip manually hidden rows", which is the same set
+    // here because manual hiding does not exist yet.
+    match code % 100 {
+        1 if n > 0.0 => Value::Number(mean),
+        1 => Value::Error(ErrorKind::Div0),
+        2 => Value::Number(n),
+        3 => Value::Number(non_empty as f64),
+        4 => Value::Number(
+            visible
+                .iter()
+                .copied()
+                .fold(f64::NEG_INFINITY, f64::max)
+                .max(0.0),
+        ),
+        5 if n > 0.0 => Value::Number(visible.iter().copied().fold(f64::INFINITY, f64::min)),
+        5 => Value::Number(0.0),
+        6 => Value::Number(if visible.is_empty() {
+            0.0
+        } else {
+            visible.iter().product()
+        }),
+        7 if n > 1.0 => Value::Number(sample_var().sqrt()),
+        8 if n > 0.0 => Value::Number(population_var().sqrt()),
+        9 => Value::Number(sum),
+        10 if n > 1.0 => Value::Number(sample_var()),
+        11 if n > 0.0 => Value::Number(population_var()),
+        7 | 8 | 10 | 11 => Value::Error(ErrorKind::Div0),
+        _ => Value::Error(ErrorKind::Value),
+    }
 }

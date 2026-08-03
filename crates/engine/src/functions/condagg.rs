@@ -173,7 +173,9 @@ fn split_op(s: &str) -> (Op, &str) {
 /// `~` escapes the next character when it is `*`, `?` or `~` (otherwise `~` is
 /// a literal). Iterative with backtracking so patterns like "*a*b*" are linear
 /// in practice and never recurse.
-fn wildcard_matches(pattern: &str, text: &str) -> bool {
+/// Excel's `*` and `?` matching, shared with XMATCH's wildcard mode so the
+/// two cannot disagree about what a pattern means.
+pub(super) fn wildcard_matches(pattern: &str, text: &str) -> bool {
     let pat: Vec<char> = pattern.to_lowercase().chars().collect();
     let txt: Vec<char> = text.to_lowercase().chars().collect();
     let mut p = 0usize;

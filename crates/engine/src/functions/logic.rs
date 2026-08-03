@@ -218,3 +218,25 @@ pub fn type_of(ctx: &EvalCtx, args: &[Expr]) -> Value {
     };
     Value::Number(code)
 }
+
+/// ISREF(value): whether the argument is a reference at all.
+///
+/// Decided from the *expression* rather than the value, because by the time a
+/// value arrives there is nothing left to tell a cell from the number in it.
+pub fn isref(ctx: &EvalCtx, args: &[Expr]) -> Value {
+    if let Err(k) = expect_args(args, 1, 1) {
+        return Value::Error(k);
+    }
+    let is_reference = match &args[0] {
+        Expr::Cell(_) | Expr::Range(_) => true,
+        // A function that returns a reference would count too; we have none
+        // yet, and OFFSET/INDIRECT are exactly what would change this.
+        _ => false,
+    };
+    // Evaluated anyway so a #REF! inside the argument still surfaces — ISREF
+    // asks about shape, not about whether the reference resolves.
+    if let Value::Error(ErrorKind::Ref) = peek(ctx, &args[0]) {
+        return Value::Bool(is_reference);
+    }
+    Value::Bool(is_reference)
+}

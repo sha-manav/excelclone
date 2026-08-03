@@ -15,9 +15,9 @@ this file and fails if the result differs from what is committed.
 
 | Measure | Score | |
 | --- | --- | --- |
-| Cell match (settled cases) | **98.3%** | 230 of 234 |
-| Function coverage | **81.6%** | 111 of 136 target functions implemented |
-| Functions pinned by a case | **96.4%** | 107 of 111 implemented |
+| Cell match (settled cases) | **98.4%** | 250 of 254 |
+| Function coverage | **88.9%** | 120 of 135 target functions implemented |
+| Functions pinned by a case | **96.7%** | 116 of 120 implemented |
 | Round-trip fidelity | **100.0%** | 2 of 2 workbooks |
 | Recorded differences | 4 | counted as misses above |
 | Open questions | 3 | excluded above |
@@ -101,29 +101,28 @@ against anything but our own opinion.
 | `RAND` | yes | — |
 | `RANDBETWEEN` | yes | — |
 
-### Tier 2 — 45 of 70 implemented
+### Tier 2 — 54 of 69 implemented
 
 | Function | Implemented | Pinned |
 | --- | --- | --- |
 | `SUMPRODUCT` | yes | yes |
 | `MEDIAN` | yes | yes |
-| `MODE` | — | — |
-| `STDEV` | — | — |
+| `MODE` | yes | yes |
+| `STDEV` | yes | yes |
 | `LARGE` | yes | yes |
 | `SMALL` | yes | yes |
 | `RANK` | yes | yes |
-| `COUNTUNIQUE` | — | — |
-| `SUBTOTAL` | — | — |
+| `SUBTOTAL` | yes | yes |
 | `AGGREGATE` | — | — |
 | `IFNA` | yes | yes |
 | `ISNA` | yes | yes |
 | `ISERR` | yes | yes |
 | `ISLOGICAL` | yes | yes |
-| `ISREF` | — | — |
+| `ISREF` | yes | yes |
 | `NA` | yes | yes |
 | `TYPE` | yes | yes |
-| `XMATCH` | — | — |
-| `LOOKUP` | — | — |
+| `XMATCH` | yes | yes |
+| `LOOKUP` | yes | yes |
 | `OFFSET` | — | — |
 | `INDIRECT` | — | — |
 | `ROW` | yes | yes |
@@ -137,14 +136,14 @@ against anything but our own opinion.
 | `FILTER` | — | — |
 | `SEQUENCE` | — | — |
 | `TEXTSPLIT` | — | — |
-| `TEXTBEFORE` | — | — |
-| `TEXTAFTER` | — | — |
+| `TEXTBEFORE` | yes | yes |
+| `TEXTAFTER` | yes | yes |
 | `REPT` | yes | yes |
 | `EXACT` | yes | yes |
 | `CHAR` | yes | yes |
 | `CODE` | yes | yes |
 | `CLEAN` | yes | yes |
-| `NUMBERVALUE` | — | — |
+| `NUMBERVALUE` | yes | yes |
 | `LET` | — | — |
 | `TIME` | yes | yes |
 | `HOUR` | yes | yes |

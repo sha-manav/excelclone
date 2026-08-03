@@ -31,8 +31,11 @@ tier1 = [
 
 tier2 = [
   # Aggregation people reach for immediately after the basics
+  # COUNTUNIQUE was listed here and removed: it is a Google Sheets function,
+  # not an Excel one, and a target list naming functions Excel does not have
+  # makes the coverage number unreachable for a reason that is nobody's fault.
   "SUMPRODUCT", "MEDIAN", "MODE", "STDEV", "LARGE", "SMALL", "RANK",
-  "COUNTUNIQUE", "SUBTOTAL", "AGGREGATE",
+  "SUBTOTAL", "AGGREGATE",
   # Error and type predicates that pair with the ones we have
   "IFNA", "ISNA", "ISERR", "ISLOGICAL", "ISREF", "NA", "TYPE",
   # Lookup, including the dynamic-array generation
