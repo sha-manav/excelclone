@@ -75,7 +75,7 @@ fn sort_maps(v: serde_json::Value) -> serde_json::Value {
 
 /// Where snapshots live. In memory by default; backed by a directory when the
 /// dataset has to outlive the process.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct SnapshotStore {
     memory: HashMap<SnapshotId, Vec<u8>>,
     dir: Option<PathBuf>,

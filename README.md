@@ -30,6 +30,7 @@ Other targets:
 
 ```sh
 make demo     # seed a worked workbook and history, mine it, export the dataset
+make dataset  # rebuild the agent-training dataset from ./corpus/env
 make test     # cargo test --workspace
 make lint     # cargo fmt --check + clippy -D warnings
 make wasm     # build the engine for the browser
@@ -52,10 +53,14 @@ crates/wasm/     wasm-bindgen bindings, consumed by the web app
 crates/server/   axum + SQLite: auth, event ingest, consent, workbooks, routines
 crates/miner/    log normalization, sequence mining, routine synthesis, export
 crates/parity/   the Excel comparison harness and its scorecard
+crates/env/      the agent-training environment: reset, observe, step, grade
 apps/web/        React app: canvas grid, formula bar, consent UI, routines panel
 fixtures/        golden workbooks and recorded event logs used by tests
 parity/          the case corpus and the target function list
-docs/            ARCHITECTURE.md, EVENTS.md, PRIVACY.md, DATASET.md
+corpus/env/      the source material the training dataset is built from
+dataset/         the built dataset: demonstrations, variants, snapshots
+docs/            ARCHITECTURE.md, EVENTS.md, PRIVACY.md, DATASET.md,
+                 ENVIRONMENT.md
 ```
 
 ## How it works

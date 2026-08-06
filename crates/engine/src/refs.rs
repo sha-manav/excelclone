@@ -256,14 +256,21 @@ pub fn moved(
     })
 }
 
-enum RefKind<'a> {
+pub enum RefKind<'a> {
     Cell(&'a CellRef),
     Range(&'a RangeRef),
 }
 
 /// Rebuild an expression, letting `f` replace any reference node. Returning
 /// None from `f` leaves that reference untouched.
-fn map_refs(e: &Expr, f: &mut impl FnMut(RefKind) -> Option<Expr>) -> Expr {
+///
+/// Public because it is the primitive the three transforms above are built
+/// from, and a caller outside the engine needs a fourth: the dataset
+/// generator has to grow a range whose bottom sat on the last row of the
+/// data. Exposing the primitive is better than exposing a fourth
+/// special-purpose function, and much better than the generator growing its
+/// own expression walker that would drift from this one.
+pub fn map_refs(e: &Expr, f: &mut impl FnMut(RefKind) -> Option<Expr>) -> Expr {
     match e {
         Expr::Cell(c) => f(RefKind::Cell(c)).unwrap_or_else(|| e.clone()),
         Expr::Range(r) => f(RefKind::Range(r)).unwrap_or_else(|| e.clone()),

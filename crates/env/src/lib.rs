@@ -23,9 +23,11 @@
 //! score itself stays correct. Any other arrangement lets a summarization bug
 //! silently inflate results.
 
+pub mod augment;
 pub mod observe;
 pub mod snapshot;
 pub mod task;
+pub mod trajectory;
 
 use engine::{Action, CellAddr, Engine, Event, RangeAddr};
 use serde::{Deserialize, Serialize};
@@ -33,6 +35,7 @@ use serde::{Deserialize, Serialize};
 pub use observe::{observe as observe_workbook, WorkbookObservation};
 pub use snapshot::{canonical, SnapshotId, SnapshotStore};
 pub use task::{grade as grade_workbook, Check, GradeResult, TaskSpec};
+pub use trajectory::{Recorder, Source, Termination, Trajectory};
 
 /// Everything that can go wrong down here. Deliberately small: an action the
 /// engine rejects is *not* an error at this level — a policy proposing an
@@ -46,6 +49,12 @@ pub enum EnvError {
     NotStarted,
     #[error("no sheet named {0}")]
     UnknownSheet(String),
+    /// A perturbation the engine would not accept — an insert past the sheet
+    /// limit, a rename onto a name already in use. Distinct from the other
+    /// variants because it is the *generator's* fault, not the caller's, and
+    /// augmentation reports it rather than aborting the batch.
+    #[error("perturbation failed: {0}")]
+    Perturbation(String),
     #[error("serialization: {0}")]
     Serde(#[from] serde_json::Error),
     #[error("io: {0}")]
@@ -132,6 +141,12 @@ impl Env {
 
     pub fn store_mut(&mut self) -> &mut SnapshotStore {
         &mut self.store
+    }
+
+    /// Take the store back, discarding the episode. What a batch does between
+    /// variants so that thousands of them share one store.
+    pub fn into_store(self) -> SnapshotStore {
+        self.store
     }
 
     /// Put the world back to `id`, discarding whatever was there.

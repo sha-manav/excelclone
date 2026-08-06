@@ -1,0 +1,6 @@
+{"action": "cell_edit", "sheet": "Sheet1", "addr": {"row": 1, "col": 3}, "input": "=B2*C2"}
+{"action": "cell_edit", "sheet": "Sheet1", "addr": {"row": 2, "col": 3}, "input": "=B3*C3"}
+{"action": "cell_edit", "sheet": "Sheet1", "addr": {"row": 3, "col": 3}, "input": "=B4*C4"}
+{"action": "cell_edit", "sheet": "Sheet1", "addr": {"row": 4, "col": 3}, "input": "=B5*C5"}
+{"action": "cell_edit", "sheet": "Sheet1", "addr": {"row": 5, "col": 3}, "input": "=B6*C6"}
+{"action": "cell_edit", "sheet": "Sheet1", "addr": {"row": 6, "col": 3}, "input": "=SUM(D2:D6)"}

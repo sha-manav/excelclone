@@ -521,6 +521,58 @@ fn sum_of(engine: &Engine, range: &str) -> Option<f64> {
     Some(total + 0.0)
 }
 
+/// Rewrite a check's *expected value* to what the workbook currently holds.
+///
+/// Only for generated variants whose inputs changed: doubling every quantity
+/// changes what the Total column should sum to, and a variant that kept the
+/// original expectation would be unpassable for reasons that have nothing to
+/// do with the policy.
+///
+/// This makes the retargeted check tautological against the run it was taken
+/// from, which is exactly why only a *validated* demonstration is ever
+/// augmented and why `augment` refuses a variant whose checks are all
+/// retargeted. Structural checks — is it filled, are there errors, did the
+/// inputs survive — are untouched and are what still has teeth.
+pub fn retarget(check: &Check, engine: &Engine) -> Check {
+    match check {
+        Check::CellNumber {
+            at,
+            expect,
+            tolerance,
+        } => match resolve(engine, at).map(|(s, a)| value_at(engine, &s, a)) {
+            Some(Value::Number(n)) => Check::CellNumber {
+                at: at.clone(),
+                expect: n,
+                tolerance: *tolerance,
+            },
+            // Not a number any more: leave the expectation alone and let the
+            // grader fail the variant, which is the honest outcome.
+            _ => Check::CellNumber {
+                at: at.clone(),
+                expect: *expect,
+                tolerance: *tolerance,
+            },
+        },
+        Check::CellDisplays { at, .. } => match resolve(engine, at) {
+            Some((sheet, addr)) => Check::CellDisplays {
+                at: at.clone(),
+                expect: display_at(engine, &sheet, addr),
+            },
+            None => check.clone(),
+        },
+        Check::SumEquals {
+            range,
+            expect,
+            tolerance,
+        } => Check::SumEquals {
+            range: range.clone(),
+            expect: sum_of(engine, range).unwrap_or(*expect),
+            tolerance: *tolerance,
+        },
+        other => other.clone(),
+    }
+}
+
 /// Task specs as a TOML-free JSON list, for the CLI and the eval corpus.
 pub fn load_tasks(path: &std::path::Path) -> Result<Vec<TaskSpec>, crate::EnvError> {
     let text = std::fs::read_to_string(path).map_err(crate::EnvError::Io)?;

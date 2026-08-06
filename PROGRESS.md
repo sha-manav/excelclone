@@ -298,8 +298,30 @@ Living checklist. Updated every session.
       any up-and-left formula, and the sheet-name mismatch that counted
       honest work as collateral damage
 
-### E3 — Trajectories and the JSONL dataset (not started)
-### E4 — Augmentation with replay validation (not started)
+### E3 — Trajectories and the JSONL dataset (complete)
+- [x] `Trajectory`: instruction, initial snapshot by hash, ordered
+      observations and actions, per-step state hashes, final workbook diff,
+      termination reason and grader output
+- [x] `Recorder` wraps the environment so no step can be taken unrecorded
+- [x] `replay()` — the validation gate: every recorded state hash has to be
+      reproduced, per step, and a refusal has to replay as a refusal
+- [x] JSONL, one object per line, snapshots stored beside it by hash
+
+### E4 — Augmentation with replay validation (complete)
+- [x] Four perturbations — insert rows/columns (moving the table, or dropping
+      an irrelevant column into it), rename a sheet, append rows of data,
+      scale the numeric inputs — composable into named recipes
+- [x] Each expressed as engine actions plus an address remap, so references
+      are rewritten by the same code copy, paste and fill go through
+- [x] The gate: replay the demonstration against the variant, grade it, keep
+      it only if it passes; rejections reported with the grader's own reason
+- [x] `gridline-env put | show | grade | record | augment | validate`
+- [x] `corpus/env` + `scripts/dataset.sh` produce `dataset/`: 2 human
+      demonstrations, 11 validated variants, 24 snapshots. Three recipes are
+      rejected, correctly — see the recorded limitation in
+      `docs/ENVIRONMENT.md`
+- [x] `make ci` re-validates the committed dataset, so an engine change that
+      invalidates it fails the build rather than going unnoticed
 
 ## Known gaps carried forward
 
@@ -347,31 +369,37 @@ is worse than no gap list, because it is read as current.
 
 ## Resume point
 
-M0-M7, the parity track P0-P7 and the first two steps of the environment
-track are complete and green: `make ci` passes (fmt, clippy -D warnings, 519
-Rust tests, the parity report check, `tsc -b`, the vite build, 167 web unit
-tests and 55 Playwright end-to-end tests), and `./scripts/demo.sh` runs the
-whole seeded scenario end to end.
+M0-M7, the parity track P0-P7 and the environment track E1-E4 are complete
+and green: `make ci` passes (fmt, clippy -D warnings, 543 Rust tests, the
+X
+web unit tests and 55 Playwright end-to-end tests). `./scripts/demo.sh` runs
+the whole seeded scenario end to end and `./scripts/dataset.sh` regenerates
+the training dataset.
 
 Parity stands at **99.1%** cell match over 320 settled cases, **100%**
 function coverage of the tier-1 and tier-2 target list, and 100% round-trip
 fidelity. Three differences are recorded rather than fixed and four questions
 are open; all seven are in `PARITY.md` with what Gridline currently answers.
 
-The environment can reset from a snapshot, observe, step and grade
-deterministically, and `gridline-env grade` scores a task from the shell.
-What it cannot yet do is record what happened.
+The environment resets, observes, steps and grades deterministically;
+episodes are recorded as replayable trajectories; and one validated
+demonstration multiplies into variants that are each replayed and graded
+before being kept. `docs/ENVIRONMENT.md` is the description of it, including
+what it deliberately does not do.
 
 Next, in the order they are worth doing:
 
-1. **E3 — trajectories and the dataset.** A record carrying the instruction,
-   the initial snapshot id, the ordered observations and actions, the
-   per-step state hashes, the final diff, why it stopped and what the grader
-   said; written as JSONL with snapshots stored beside it by hash.
-2. **E4 — augmentation.** Take a validated trajectory, move the table, rename
-   the sheet, change the row count, insert an irrelevant column, vary the
-   literals, relocate the output; replay the original actions against each
-   variant, rewriting references, and keep only the ones the grader passes.
+1. **Phase 2 — the hierarchical agent.** A planner emitting typed steps
+   (`LocateTable`, `CreateDerivedColumn`, `ApplyFormula`, `FillRange`,
+   `FilterRows`, `ReconcileTotals`, `ExportWorkbook`) rather than addresses;
+   a compiler resolving each into `engine::Action` values by matching
+   headers, named ranges and data types; an `ActionValidator` refusing edits
+   outside the proposed scope; and clustering of repeated plans into
+   parameterized micro-policies.
+2. **Phase 3 — correction, evaluation and promotion.** Capture what a user
+   undid or repaired, the divergence point, and turn clean corrections into
+   supervised examples and failed-versus-corrected pairs into preference
+   data; a versioned eval corpus scored on more than average reward.
 3. **Read the conditional-formatting rules a file arrives with**, which needs
    a `<dxf>` parser with the fidelity `cellXfs` already has, and a rule
    editor for the kinds the toolbar does not offer.
