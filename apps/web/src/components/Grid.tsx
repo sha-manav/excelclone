@@ -16,6 +16,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type {
+  FocusEvent as ReactFocusEvent,
   JSX,
   KeyboardEvent as ReactKeyboardEvent,
   MouseEvent as ReactMouseEvent,
@@ -192,11 +193,20 @@ interface Latest {
   onSelect(sel: Selection): void
   onFill(source: Range, target: Range): void
   onStartEdit(addr: Addr, initial?: string): void
+  onCommitEdit(move: MoveDirection): void
   onContextMenu(addr: Addr, clientX: number, clientY: number): void
   onResize(axis: Axis, at: number, count: number, size: number | null): void
 }
 
 const EMPTY_HIGHLIGHTS: readonly Range[] = []
+
+/** Arrow keys, as the direction the selection moves when one commits an edit. */
+const EDITOR_ARROWS: Record<string, MoveDirection | undefined> = {
+  ArrowUp: 'up',
+  ArrowDown: 'down',
+  ArrowLeft: 'left',
+  ArrowRight: 'right',
+}
 
 const sameRange = (a: Range, b: Range): boolean =>
   a.start.row === b.start.row &&
@@ -317,6 +327,7 @@ export function Grid(props: GridProps): JSX.Element {
     onSelect,
     onFill,
     onStartEdit,
+    onCommitEdit,
     onContextMenu,
     onResize,
   }
@@ -991,6 +1002,19 @@ export function Grid(props: GridProps): JSX.Element {
       const L = latestRef.current
       const m = L.metrics
       const p = pointOf(e.clientX, e.clientY)
+      // A press on the grid ends any edit in progress, exactly as it does in
+      // Excel: what was typed lands in the cell it was typed into, and the
+      // selection is then free to follow the mouse.
+      //
+      // Leaving the editor open here was the single worst thing about this
+      // grid. The selection moved underneath a floating input that still had
+      // focus, so the cell you had clicked never looked selected, dragging a
+      // range appeared to do nothing, and Delete went into the input instead
+      // of clearing the cells — the app read as unresponsive rather than
+      // merely unfinished. Committing first is also what makes the focus()
+      // below safe: it blurs the input, and blur commits too, so the two
+      // paths have to agree on the outcome.
+      if (L.editing) L.onCommitEdit('none')
       containerRef.current?.focus()
       // Presses on the native scrollbars land inside the element but outside
       // its client box; they belong to the browser, not to the selection.
@@ -1283,20 +1307,54 @@ export function Grid(props: GridProps): JSX.Element {
         case 'Enter':
           e.preventDefault()
           onCommitEdit(e.shiftKey ? 'up' : 'down')
-          break
+          return
         case 'Tab':
           e.preventDefault()
           onCommitEdit(e.shiftKey ? 'left' : 'right')
-          break
+          return
         case 'Escape':
           e.preventDefault()
           onCancelEdit()
-          break
+          return
         default:
           break
       }
+
+      const dir = EDITOR_ARROWS[e.key]
+      if (!dir || !editing) return
+      // Excel has two editing modes, and the arrow keys are the only place the
+      // difference shows. Typing over a cell is *enter mode*: an arrow commits
+      // and moves, which is what lets a row be filled by typing and arrowing
+      // without ever reaching for Enter. F2 or a double-click is *edit mode*:
+      // the arrows belong to the caret, because the point of opening an
+      // existing value is to amend it.
+      //
+      // Half-typed formulas stay on the caret whichever mode they started in.
+      // Excel would enter pointing mode here and let the arrows pick the next
+      // operand; until that exists, moving the caret is the harmless reading
+      // of the keystroke, where committing would turn `=A1+` into an error the
+      // user never asked for.
+      if (!editing.replacing || editing.value.startsWith('=')) return
+      e.preventDefault()
+      onCommitEdit(dir)
     },
-    [onCancelEdit, onCommitEdit],
+    [editing, onCancelEdit, onCommitEdit],
+  )
+
+  const handleEditorBlur = useCallback(
+    (e: ReactFocusEvent<HTMLInputElement>) => {
+      // Losing focus commits, so clicking a toolbar button or another part of
+      // the app cannot leave a value stranded in an editor nobody can see.
+      //
+      // The formula bar is the exception: moving into it continues the same
+      // edit rather than abandoning it, and the two inputs share `editing`, so
+      // committing here would tear down the state the formula bar is about to
+      // keep typing into.
+      const to = e.relatedTarget as HTMLElement | null
+      if (to?.closest('.formula-bar')) return
+      onCommitEdit('none')
+    },
+    [onCommitEdit],
   )
 
   /* ------------------------------------------------------------- effects */
@@ -1385,11 +1443,13 @@ export function Grid(props: GridProps): JSX.Element {
       {editing && editBox && (
         <input
           ref={inputRef}
+          data-testid="cell-editor"
           value={editing.value}
           spellCheck={false}
           autoComplete="off"
           onChange={(e) => onEditValueChange(e.target.value)}
           onKeyDown={handleEditorKeyDown}
+          onBlur={handleEditorBlur}
           style={{
             position: 'absolute',
             left: editBox.x,

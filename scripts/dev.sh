@@ -21,21 +21,34 @@ export PORT="${PORT:-8787}"
 # the module throws during init, and React never mounts. The page comes up
 # blank with the title set, which looks like a broken app rather than a stale
 # artifact.
-WASM=crates/wasm/pkg/gridline_wasm_bg.wasm
+#
+# The marker is `package.json` rather than the `.wasm` blob, because wasm-pack
+# writes it last. A build that dies partway — the wasm-opt download failing
+# behind a proxy is the one we hit — leaves the blob behind without a manifest,
+# and `gridline-wasm` is a `file:` dependency, so npm's symlink then points at
+# a directory Vite cannot resolve as a package. Keying off the blob would call
+# that wreckage fresh and serve it forever, since nothing in the sources is
+# newer than it.
+WASM_STAMP=crates/wasm/pkg/package.json
 wasm_is_stale() {
-  [ -f "$WASM" ] || return 0
+  [ -f "$WASM_STAMP" ] || return 0
   # Any engine or binding source newer than what was built from it?
   [ -n "$(find crates/engine/src crates/wasm/src \
                 crates/engine/Cargo.toml crates/wasm/Cargo.toml \
-                -newer "$WASM" -print 2>/dev/null | head -1)" ]
+                -newer "$WASM_STAMP" -print 2>/dev/null | head -1)" ]
 }
 if wasm_is_stale; then
-  if [ -f "$WASM" ]; then
+  if [ -f "$WASM_STAMP" ]; then
     echo "==> the engine changed since the browser build; rebuilding"
   else
     echo "==> building the engine for the browser (first run)"
   fi
-  wasm-pack build crates/wasm --target web --out-dir pkg
+  # `--no-opt` for the dev server: wasm-opt only shrinks the artifact, which
+  # matters for what users download and not at all for what a developer runs.
+  # It also costs a download of the binaryen toolchain on first use, so
+  # skipping it makes the dev loop faster and removes a network dependency
+  # from it. `make wasm` and CI still build the optimized package.
+  wasm-pack build crates/wasm --target web --no-opt --out-dir pkg
 fi
 
 if [ ! -d apps/web/node_modules ]; then

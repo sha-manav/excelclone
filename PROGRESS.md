@@ -406,6 +406,11 @@ Living checklist. Updated every session.
   the viewport, and the button freezes above the cursor; putting the cursor
   near the bottom of a long sheet and pressing it leaves almost nothing to
   scroll. Excel refuses; this does not.
+- **No pointing mode.** In Excel, arrowing while a formula is half-typed picks
+  the next operand off the grid. Here the arrows move the caret instead, in
+  both editing modes, which is the harmless reading — committing `=A1+` would
+  produce an error nobody asked for. Clicking a cell mid-formula likewise
+  commits rather than inserting its address.
 
 Two entries that stood here for several milestones were struck after checking
 them rather than after fixing them: the grid *does* paint merged ranges (M5)
@@ -417,9 +422,16 @@ is worse than no gap list, because it is read as current.
 M0-M7, the parity track P0-P7, the environment track E1-E4, the agent track
 A1-A5 and the improvement loop C1-C4 are complete and green: `make ci` passes (fmt, clippy -D
 warnings, 671 Rust tests, the parity report check, the dataset replay check,
-`tsc -b`, the vite build, 167 web unit tests and 55 Playwright end-to-end
+`tsc -b`, the vite build, 167 web unit tests and 66 Playwright end-to-end
 tests). `./scripts/demo.sh` runs the whole seeded scenario end to end and
 `./scripts/dataset.sh` regenerates the training dataset.
+
+Editing and selection were rebuilt to Excel's rules after the grid was
+reported as sticky: a press on the grid commits the edit before the selection
+moves, losing focus commits too (the formula bar excepted), and the arrow keys
+commit-and-move when the edit started by typing while staying on the caret
+when it started with F2 or a double-click. `apps/web/e2e/editing.spec.ts`
+holds all eleven gestures; five of them failed before the change.
 
 Parity stands at **99.1%** cell match over 320 settled cases, **100%**
 function coverage of the tier-1 and tier-2 target list, and 100% round-trip
