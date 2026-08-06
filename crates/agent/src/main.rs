@@ -1,9 +1,18 @@
 //! `gridline-agent` — run the agent over a set of tasks and score it.
 //!
 //! ```text
-//! gridline-agent solve --store DIR --tasks t.jsonl [--out runs.jsonl]
-//!                      [--memory plans.jsonl] [--min-support N]
+//! gridline-agent solve    --store DIR --tasks t.jsonl [--out runs.jsonl]
+//!                         [--memory plans.jsonl] [--min-support N]
+//! gridline-agent evaluate --store DIR --tasks t.jsonl --policy rules|memo
+//!                         [--memory plans.jsonl] --out card.json
+//! gridline-agent promote  --incumbent a.json --candidate b.json
 //! ```
+//!
+//! `evaluate` scores a policy against a versioned corpus from immutable
+//! snapshots; `promote` decides whether one scorecard may replace another,
+//! and refuses on any of several conditions that a single number cannot
+//! express — most importantly that a policy which completes more tasks while
+//! modifying unrelated cells is worse than one that completes fewer.
 //!
 //! With `--memory`, successful plans are remembered and the ones that recur
 //! become micro-policies; the run then routes to them first and falls back to
@@ -33,7 +42,7 @@ fn main() -> ExitCode {
     }
 }
 
-const USAGE: &str = "usage: gridline-agent solve --store DIR --tasks t.jsonl [--out runs.jsonl]";
+const USAGE: &str = "usage: gridline-agent <solve|evaluate|promote> ...";
 
 fn go() -> Result<ExitCode, EnvError> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -49,6 +58,9 @@ fn go() -> Result<ExitCode, EnvError> {
             "--tasks" => flags.tasks = it.next().map(PathBuf::from),
             "--out" => flags.out = it.next().map(PathBuf::from),
             "--memory" => flags.memory = it.next().map(PathBuf::from),
+            "--policy" => flags.policy = it.next().cloned().unwrap_or_default(),
+            "--incumbent" => flags.incumbent = it.next().map(PathBuf::from),
+            "--candidate" => flags.candidate = it.next().map(PathBuf::from),
             "--min-support" => {
                 flags.min_support = it.next().and_then(|n| n.parse().ok()).unwrap_or(2)
             }
@@ -57,6 +69,8 @@ fn go() -> Result<ExitCode, EnvError> {
     }
     match command {
         "solve" => solve(&flags),
+        "evaluate" => evaluate_cmd(&flags),
+        "promote" => promote_cmd(&flags),
         other => {
             eprintln!("unknown command `{other}`\n{USAGE}");
             Ok(ExitCode::FAILURE)
@@ -71,7 +85,7 @@ fn solve(flags: &Flags) -> Result<ExitCode, EnvError> {
     };
     let tasks = env::task::load_tasks(tasks_path)?;
     let store = match &flags.store {
-        Some(dir) => SnapshotStore::at(dir)?,
+        Some(dir) => SnapshotStore::read_only_at(dir)?,
         None => SnapshotStore::in_memory(),
     };
 
@@ -194,6 +208,9 @@ struct Flags {
     out: Option<PathBuf>,
     memory: Option<PathBuf>,
     min_support: usize,
+    policy: String,
+    incumbent: Option<PathBuf>,
+    candidate: Option<PathBuf>,
 }
 
 impl Default for Flags {
@@ -204,6 +221,108 @@ impl Default for Flags {
             out: None,
             memory: None,
             min_support: 2,
+            policy: "rules".to_string(),
+            incumbent: None,
+            candidate: None,
+        }
+    }
+}
+
+/// Score one policy against a versioned corpus.
+fn evaluate_cmd(flags: &Flags) -> Result<ExitCode, EnvError> {
+    let Some(tasks_path) = &flags.tasks else {
+        eprintln!("evaluate: needs --tasks FILE.jsonl");
+        return Ok(ExitCode::FAILURE);
+    };
+    let corpus = agent::eval::EvalCorpus::load(tasks_path)?;
+    // Read-only: an evaluation that leaves new snapshots in the corpus it
+    // measured against has changed the thing it was measuring.
+    let store = match &flags.store {
+        Some(dir) => SnapshotStore::read_only_at(dir)?,
+        None => SnapshotStore::in_memory(),
+    };
+
+    let policies = match &flags.memory {
+        Some(path) if path.exists() => PlanLibrary::load(path)?.cluster(flags.min_support),
+        _ => Vec::new(),
+    };
+    if flags.policy == "memo" && policies.is_empty() {
+        eprintln!("evaluate: --policy memo needs a --memory file with something in it");
+        return Ok(ExitCode::FAILURE);
+    }
+
+    // The counts a router would report. Without one, every proposal came
+    // from whichever planner was asked, and saying so is more honest than
+    // reporting zero.
+    let from_memory = flags.policy == "memo";
+    let mut counts = || {
+        if from_memory {
+            agent::eval::CallCounts {
+                planner: 0,
+                memory: 1,
+            }
+        } else {
+            agent::eval::CallCounts {
+                planner: 1,
+                memory: 0,
+            }
+        }
+    };
+    let name = flags.policy.clone();
+    let policies_for_factory = policies.clone();
+    let mut make = || -> Box<dyn agent::run::Planner> {
+        if from_memory {
+            Box::new(MemoPlanner::new(policies_for_factory.clone()))
+        } else {
+            Box::new(RulePlanner::new())
+        }
+    };
+
+    let (_, card) = agent::eval::evaluate(
+        Env::new(store),
+        &name,
+        &corpus,
+        &mut make,
+        &mut counts,
+        &RunConfig::default(),
+    )?;
+    print!("{}", card.render());
+    if let Some(out) = &flags.out {
+        if let Some(parent) = out.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)?;
+            }
+        }
+        std::fs::write(out, serde_json::to_string_pretty(&card)?)?;
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Decide whether a candidate may replace the incumbent.
+fn promote_cmd(flags: &Flags) -> Result<ExitCode, EnvError> {
+    let (Some(a), Some(b)) = (&flags.incumbent, &flags.candidate) else {
+        eprintln!("promote: needs --incumbent and --candidate scorecards");
+        return Ok(ExitCode::FAILURE);
+    };
+    let incumbent: agent::eval::Scorecard = serde_json::from_str(&std::fs::read_to_string(a)?)?;
+    let candidate: agent::eval::Scorecard = serde_json::from_str(&std::fs::read_to_string(b)?)?;
+    match agent::eval::promotion(&incumbent, &candidate) {
+        agent::eval::Verdict::Promote { because } => {
+            println!("PROMOTE {} over {}", candidate.policy, incumbent.policy);
+            for r in &because {
+                println!("  {r}");
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        agent::eval::Verdict::Hold { reasons } => {
+            println!(
+                "HOLD {} — not promoted over {}",
+                candidate.policy, incumbent.policy
+            );
+            for r in &reasons {
+                println!("  {r}");
+            }
+            Ok(ExitCode::FAILURE)
         }
     }
 }

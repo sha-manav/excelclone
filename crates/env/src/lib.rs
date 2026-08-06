@@ -24,6 +24,7 @@
 //! silently inflate results.
 
 pub mod augment;
+pub mod correction;
 pub mod observe;
 pub mod snapshot;
 pub mod task;
@@ -32,6 +33,7 @@ pub mod trajectory;
 use engine::{Action, CellAddr, Engine, Event, RangeAddr};
 use serde::{Deserialize, Serialize};
 
+pub use correction::{Correction, CorrectionLog, PreferencePair, Signal, SupervisedExample};
 pub use observe::{observe as observe_workbook, WorkbookObservation};
 pub use snapshot::{canonical, SnapshotId, SnapshotStore};
 pub use task::{grade as grade_workbook, Check, GradeResult, TaskSpec};
@@ -175,7 +177,20 @@ impl Env {
 
     /// Reset to a task's starting state, adopting its sheet and step budget.
     pub fn reset_for(&mut self, task: &TaskSpec) -> Result<(), EnvError> {
-        self.reset(&task.initial_snapshot)?;
+        self.reset_for_at(task, &task.initial_snapshot.clone())
+    }
+
+    /// Reset to `snapshot` while adopting the task's sheet and step budget.
+    ///
+    /// How a resumed run starts from a checkpoint. `reset` on its own puts
+    /// the budget back to the default, which for a task whose data is two
+    /// hundred rows long is nowhere near enough — and the failure looks like
+    /// the policy giving up rather than like the harness cutting it off.
+    /// That is not hypothetical: it is what happened the first time resume
+    /// was wired up, and every unit test stayed green while the corpus score
+    /// quietly dropped.
+    pub fn reset_for_at(&mut self, task: &TaskSpec, snapshot: &SnapshotId) -> Result<(), EnvError> {
+        self.reset(snapshot)?;
         if let Some(sheet) = &task.start_sheet {
             self.set_active_sheet(sheet)?;
         }

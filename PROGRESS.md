@@ -298,6 +298,27 @@ Living checklist. Updated every session.
       any up-and-left formula, and the sheet-name mismatch that counted
       honest work as collateral damage
 
+### C1–C4 — Corrections, evaluation and promotion (complete)
+- [x] `Correction`: the instruction, the initial snapshot, the failed
+      trajectory, the user's repair, the corrected state, and the exact
+      divergence — computed from state hashes rather than from actions
+- [x] Clean corrections distil into supervised examples; failed-versus-
+      corrected pairs into preference data anchored at the diverging state,
+      each carrying the grader's reason
+- [x] `gridline-env distil`, reporting what it could not use
+- [x] A content-versioned evaluation corpus read from immutable snapshots,
+      scored on completion (overall and per origin), required outputs,
+      invariants, forbidden-cell modifications, incidental cells, replans,
+      refusals, router split and wall clock
+- [x] A promotion rule that holds on any of several conditions — including a
+      task that used to pass and now fails — and never on average reward
+- [x] `gridline-agent evaluate` and `promote`; `make evaluate` runs both
+- [x] `run_from` resumes at a checkpoint and reaches the same final workbook
+      as an uninterrupted run, keeping the task's step budget
+- [x] 671 Rust tests. Two things left deliberately unbuilt and documented in
+      `docs/LOOP.md`: nothing in the product fires a correction capture, and
+      nothing here trains anything
+
 ### A1–A5 — The hierarchical agent (complete)
 - [x] `crates/agent`: a typed plan vocabulary with no code, no coordinates
       and no addresses — `LocateTable`, `CreateDerivedColumn`,
@@ -393,9 +414,9 @@ is worse than no gap list, because it is read as current.
 
 ## Resume point
 
-M0-M7, the parity track P0-P7, the environment track E1-E4 and the agent
-track A1-A5 are complete and green: `make ci` passes (fmt, clippy -D
-warnings, 635 Rust tests, the parity report check, the dataset replay check,
+M0-M7, the parity track P0-P7, the environment track E1-E4, the agent track
+A1-A5 and the improvement loop C1-C4 are complete and green: `make ci` passes (fmt, clippy -D
+warnings, 671 Rust tests, the parity report check, the dataset replay check,
 `tsc -b`, the vite build, 167 web unit tests and 55 Playwright end-to-end
 tests). `./scripts/demo.sh` runs the whole seeded scenario end to end and
 `./scripts/dataset.sh` regenerates the training dataset.
@@ -408,24 +429,24 @@ are open; all seven are in `PARITY.md` with what Gridline currently answers.
 The environment resets, observes, steps and grades deterministically;
 episodes are recorded as replayable trajectories; one validated demonstration
 multiplies into variants that are each replayed and graded before being kept;
-and an agent plans over headers rather than addresses, is refused before it
-can damage anything, and distils its own successes into policies that make
-the next pass cheaper. `docs/ENVIRONMENT.md` and `docs/AGENT.md` describe
-both, including what they deliberately do not do.
+an agent plans over headers rather than addresses, is refused before it can
+damage anything, and distils its own successes into policies that make the
+next pass cheaper; corrections turn into supervised examples and preference
+pairs; and a candidate is scored on eight dimensions and refused promotion on
+any one of them. `docs/ENVIRONMENT.md`, `docs/AGENT.md` and `docs/LOOP.md`
+describe all three, including what they deliberately do not do.
 
 Next, in the order they are worth doing:
 
-1. **Phase 3 — correction, evaluation and promotion.** Capture what a user
-   undid or repaired, and the exact state divergence; turn clean corrections
-   into supervised examples and failed-versus-corrected pairs into preference
-   data; a versioned evaluation corpus run from immutable snapshots, scored
-   on completion, required outputs, invariants, forbidden-cell changes,
-   replans, interventions, latency and cost — and a promotion rule that
-   refuses a policy which completes more while touching more.
-2. **A model planner behind the existing interface.** The routing, the
-   confidence contract and the evaluation are built; what plugs into them is
-   not. The two-step tasks the rule planner cannot phrase are the measurable
-   gap it would close.
+1. **A model planner behind the existing interface.** The routing, the
+   confidence contract, the corrections format and the evaluation are built;
+   what plugs into them is not. The two-step tasks the rule planner cannot
+   phrase are the measurable gap it would close, and `make evaluate` is
+   already the instrument that would show it closing.
+2. **The correction capture triggers.** The record format and the
+   distillation are done and tested end to end against the real agent; what
+   is missing is the UI noticing that a user undid the agent, edited its
+   preview, or repaired its output. Without them the loop has no input.
 3. **Read the conditional-formatting rules a file arrives with**, which needs
    a `<dxf>` parser with the fidelity `cellXfs` already has, and a rule
    editor for the kinds the toolbar does not offer.

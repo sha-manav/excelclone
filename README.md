@@ -32,6 +32,7 @@ Other targets:
 make demo     # seed a worked workbook and history, mine it, export the dataset
 make dataset  # rebuild the agent-training dataset from ./corpus/env
 make agent    # run the agent over that dataset and print a scorecard
+make evaluate # score two policies and decide whether one may replace the other
 make test     # cargo test --workspace
 make lint     # cargo fmt --check + clippy -D warnings
 make wasm     # build the engine for the browser
@@ -62,7 +63,7 @@ parity/          the case corpus and the target function list
 corpus/env/      the source material the training dataset is built from
 dataset/         the built dataset: demonstrations, variants, snapshots
 docs/            ARCHITECTURE.md, EVENTS.md, PRIVACY.md, DATASET.md,
-                 ENVIRONMENT.md, AGENT.md
+                 ENVIRONMENT.md, AGENT.md, LOOP.md
 ```
 
 ## How it works

@@ -14,8 +14,10 @@ version = "0.1.0"
 dependencies = [
  "engine",
  "env",
+ "hex",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror",
 ]
 

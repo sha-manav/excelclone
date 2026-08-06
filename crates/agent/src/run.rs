@@ -160,16 +160,47 @@ impl Outcome {
 
 /// Run one task to completion.
 pub fn run(
-    mut env: Env,
+    env: Env,
     planner: &mut dyn Planner,
     task: &TaskSpec,
     config: &RunConfig,
 ) -> Result<(Env, Outcome), EnvError> {
-    env.reset_for(task)?;
-    let mut recorder = Recorder::start_task(
+    run_from(env, planner, task, config, None)
+}
+
+/// Run a task, optionally starting from a checkpoint of an earlier run.
+///
+/// `from` is an `AppliedStep::checkpoint` — the state after some step that
+/// was validated, rehearsed and committed. Resuming there rather than from
+/// the beginning is what makes a long task survive a crashed worker, and it
+/// is deterministic for the same reason everything else here is: a checkpoint
+/// is a content-addressed snapshot, and loading one recalculates.
+///
+/// Two things the resumed run does *not* inherit, on purpose:
+///
+/// * **The plan.** The planner is asked afresh against the state it finds. A
+///   plan is a description of intent formed from an observation, and the
+///   observation has moved on; replaying the rest of a stale plan is exactly
+///   the fixed-coordinate macro replay this design exists to avoid.
+/// * **The trajectory.** The resumed run records its own, starting from the
+///   checkpoint. Stitching two recordings into one would produce a
+///   trajectory whose state hashes are real but whose action list never
+///   happened in one sitting, and it would not replay.
+pub fn run_from(
+    env: Env,
+    planner: &mut dyn Planner,
+    task: &TaskSpec,
+    config: &RunConfig,
+    from: Option<&SnapshotId>,
+) -> Result<(Env, Outcome), EnvError> {
+    let start = from
+        .cloned()
+        .unwrap_or_else(|| task.initial_snapshot.clone());
+    let mut recorder = Recorder::start_task_at(
         env,
         format!("{}::{}", task.id, planner.name()),
         task,
+        &start,
         Source::Policy {
             name: planner.name().to_string(),
         },

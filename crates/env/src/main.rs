@@ -13,6 +13,8 @@
 //!                       --recipes r.json --out variants.jsonl \
 //!                       [--out-tasks variant-tasks.jsonl]
 //! gridline-env validate --store DIR --dataset d.jsonl [--tasks t.jsonl]
+//! gridline-env distil   --corrections c.jsonl --out-supervised s.jsonl \
+//!                       --out-preferences p.jsonl
 //! ```
 //!
 //! `record` then `augment` then `validate` is the dataset pipeline: capture a
@@ -68,6 +70,7 @@ fn run() -> Result<ExitCode, EnvError> {
         "record" => record(&flags),
         "augment" => augment(&flags),
         "validate" => validate(&flags),
+        "distil" => distil(&flags),
         other => {
             eprintln!("unknown command `{other}`\n{USAGE}");
             Ok(ExitCode::FAILURE)
@@ -76,7 +79,7 @@ fn run() -> Result<ExitCode, EnvError> {
 }
 
 const USAGE: &str =
-    "usage: gridline-env <put|show|grade|record|augment|validate> [--store DIR] ...";
+    "usage: gridline-env <put|show|grade|record|augment|validate|distil> [--store DIR] ...";
 
 fn open(flags: &Flags) -> Result<SnapshotStore, EnvError> {
     match &flags.store {
@@ -329,6 +332,9 @@ struct Flags {
     recipes: Option<PathBuf>,
     out: Option<PathBuf>,
     out_tasks: Option<PathBuf>,
+    corrections: Option<PathBuf>,
+    out_supervised: Option<PathBuf>,
+    out_preferences: Option<PathBuf>,
     positional: Vec<PathBuf>,
 }
 
@@ -345,9 +351,46 @@ impl Flags {
                 "--recipes" => flags.recipes = it.next().map(PathBuf::from),
                 "--out" => flags.out = it.next().map(PathBuf::from),
                 "--out-tasks" => flags.out_tasks = it.next().map(PathBuf::from),
+                "--corrections" => flags.corrections = it.next().map(PathBuf::from),
+                "--out-supervised" => flags.out_supervised = it.next().map(PathBuf::from),
+                "--out-preferences" => flags.out_preferences = it.next().map(PathBuf::from),
                 other => flags.positional.push(PathBuf::from(other)),
             }
         }
         flags
     }
+}
+
+/// Turn a log of corrections into training data.
+///
+/// Reports what it could not use rather than dropping it quietly: a pipeline
+/// that silently discards most of what it sees looks exactly like one that is
+/// working.
+fn distil(flags: &Flags) -> Result<ExitCode, EnvError> {
+    let Some(path) = &flags.corrections else {
+        eprintln!("distil: needs --corrections FILE.jsonl");
+        return Ok(ExitCode::FAILURE);
+    };
+    let log = env::correction::CorrectionLog::load(path)?;
+    let supervised = log.supervised();
+    let preferences = log.preferences();
+    let unusable = log.unusable();
+
+    if let Some(out) = &flags.out_supervised {
+        env::correction::write_jsonl(out, &supervised)?;
+    }
+    if let Some(out) = &flags.out_preferences {
+        env::correction::write_jsonl(out, &preferences)?;
+    }
+    for (id, why) in &unusable {
+        eprintln!("unusable {id}: {why}");
+    }
+    eprintln!(
+        "{} correction(s): {} supervised example(s), {} preference pair(s), {} unusable",
+        log.corrections.len(),
+        supervised.len(),
+        preferences.len(),
+        unusable.len()
+    );
+    Ok(ExitCode::SUCCESS)
 }

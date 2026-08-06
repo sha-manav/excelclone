@@ -229,18 +229,35 @@ impl Recorder {
 
     /// Start from a task, adopting its instruction, sheet and step budget.
     pub fn start_task(
-        mut env: Env,
+        env: Env,
         id: impl Into<String>,
         task: &TaskSpec,
         source: Source,
     ) -> Result<Self, EnvError> {
-        env.reset_for(task)?;
+        let start = task.initial_snapshot.clone();
+        Recorder::start_task_at(env, id, task, &start, source)
+    }
+
+    /// Start a task from a checkpoint rather than from its beginning, keeping
+    /// the task's sheet and step budget.
+    ///
+    /// Not `start` plus a different snapshot: `start` resets the budget to
+    /// the default, which for a long task cuts the run off partway and makes
+    /// it look like the policy gave up.
+    pub fn start_task_at(
+        mut env: Env,
+        id: impl Into<String>,
+        task: &TaskSpec,
+        from: &SnapshotId,
+        source: Source,
+    ) -> Result<Self, EnvError> {
+        env.reset_for_at(task, from)?;
         Ok(Recorder {
             env,
             id: id.into(),
             task_id: Some(task.id.clone()),
             instruction: task.instruction.clone(),
-            initial: task.initial_snapshot.clone(),
+            initial: from.clone(),
             source,
             policy: ObservationPolicy::default(),
             steps: Vec::new(),

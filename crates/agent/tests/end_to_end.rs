@@ -429,3 +429,147 @@ fn a_second_pass_over_the_same_corpus_costs_less_and_scores_no_worse() {
     );
     let _ = first_pass_replans;
 }
+
+#[test]
+fn a_run_resumed_from_a_checkpoint_lands_where_an_uninterrupted_one_does() {
+    // What checkpointing is *for*: a long task survives a crashed worker.
+    // The claim is not "it produces something" but "it produces the same
+    // thing", and only comparing the final state hashes says that.
+    use agent::run::run_from;
+
+    let (env, task) = seeded();
+    let mut planner = RulePlanner::new();
+    let (env, whole) = run(env, &mut planner, &task, &RunConfig::default()).unwrap();
+    assert!(whole.passed());
+    let expected = whole.trajectory.final_snapshot.clone();
+
+    // Pretend the worker died after the first committed step.
+    let checkpoint = whole.applied[0].checkpoint.clone();
+    let mut planner = RulePlanner::new();
+    let (env, resumed) = run_from(
+        env,
+        &mut planner,
+        &task,
+        &RunConfig::default(),
+        Some(&checkpoint),
+    )
+    .unwrap();
+
+    assert!(resumed.passed(), "{:?}", resumed.rejected);
+    assert_eq!(
+        resumed.trajectory.final_snapshot, expected,
+        "the resumed run reached a different workbook"
+    );
+    assert_eq!(resumed.incidental_changes(), 0);
+
+    // ...and the resumed trajectory is a trajectory like any other.
+    let store = env.into_store();
+    let report = env::trajectory::replay(store, &resumed.trajectory, None).unwrap();
+    assert!(report.faithful, "{report:?}");
+}
+
+#[test]
+fn resuming_from_the_last_checkpoint_of_a_finished_run_does_no_work_and_still_passes() {
+    // The degenerate case a crash-recovery path will actually hit most
+    // often: the worker died *after* the last step committed. Redoing the
+    // task from there must not double-apply anything.
+    use agent::run::run_from;
+
+    let (env, task) = seeded();
+    let mut planner = RulePlanner::new();
+    let (env, whole) = run(env, &mut planner, &task, &RunConfig::default()).unwrap();
+    let last = whole.applied.last().unwrap().checkpoint.clone();
+
+    let mut planner = RulePlanner::new();
+    let (env, resumed) =
+        run_from(env, &mut planner, &task, &RunConfig::default(), Some(&last)).unwrap();
+
+    assert!(resumed.passed(), "{:?}", resumed.rejected);
+    assert_eq!(
+        resumed.trajectory.final_snapshot,
+        whole.trajectory.final_snapshot
+    );
+    assert_eq!(
+        resumed.incidental_changes(),
+        0,
+        "resuming a finished run changed something"
+    );
+    let _ = env;
+}
+
+#[test]
+fn a_resumed_run_keeps_the_task_step_budget() {
+    // The regression this pins, which every unit test survived: a resumed
+    // run reset the environment through the general `reset`, which puts the
+    // step budget back to the default. On a task whose data is two hundred
+    // rows long the run was cut off partway, and the failure looked like the
+    // policy giving up rather than like the harness cutting it off. The only
+    // thing that noticed was the corpus score, three commits later.
+    use agent::run::run_from;
+
+    let mut store = SnapshotStore::in_memory();
+    let mut e = Engine::new();
+    for (a1, v) in [
+        ("A1", "Item"),
+        ("B1", "Qty"),
+        ("C1", "Price"),
+        ("D1", "Total"),
+    ] {
+        e.apply(&edit("Sheet1", a1, v)).unwrap();
+    }
+    // Long enough that a default budget would not cover it.
+    for row in 2..=120 {
+        e.apply(&edit("Sheet1", &format!("A{row}"), "widget"))
+            .unwrap();
+        e.apply(&edit("Sheet1", &format!("B{row}"), "2")).unwrap();
+        e.apply(&edit("Sheet1", &format!("C{row}"), "3")).unwrap();
+    }
+    let snapshot = store.put(&e.wb).unwrap();
+    let task = TaskSpec {
+        id: "long".into(),
+        instruction: "Fill in the Total column: Qty times Price.".into(),
+        initial_snapshot: snapshot,
+        checks: vec![
+            Check::RangeFilled {
+                range: "D2:D120".into(),
+            },
+            Check::CellDisplays {
+                at: "D1".into(),
+                expect: "Total".into(),
+            },
+            Check::SumEquals {
+                range: "D2:D120".into(),
+                expect: 714.0,
+                tolerance: 0.0,
+            },
+        ],
+        start_sheet: None,
+        max_steps: 400,
+        origin: None,
+    };
+
+    let mut planner = RulePlanner::new();
+    let (env, whole) = run(Env::new(store), &mut planner, &task, &RunConfig::default()).unwrap();
+    assert!(whole.passed(), "{:?}", whole.rejected);
+
+    let checkpoint = whole.applied[0].checkpoint.clone();
+    let mut planner = RulePlanner::new();
+    let (_, resumed) = run_from(
+        env,
+        &mut planner,
+        &task,
+        &RunConfig::default(),
+        Some(&checkpoint),
+    )
+    .unwrap();
+    assert!(
+        resumed.passed(),
+        "the resumed run was cut off: {:?} / {:?}",
+        resumed.ending,
+        resumed.rejected
+    );
+    assert_eq!(
+        resumed.trajectory.final_snapshot,
+        whole.trajectory.final_snapshot
+    );
+}

@@ -1,4 +1,4 @@
-.PHONY: dev demo dataset agent parity server web wasm test lint fmt ci
+.PHONY: dev demo dataset agent evaluate parity server web wasm test lint fmt ci
 
 # Start server + web dev environment
 dev:
@@ -16,6 +16,21 @@ dataset:
 agent:
 	cargo run -q -p agent --bin gridline-agent -- solve \
 	  --store dataset/snapshots --tasks dataset/variant-tasks.jsonl || true
+
+# Score the agent against the corpus and decide whether memory earns promotion
+evaluate:
+	cargo run -q -p agent --bin gridline-agent -- evaluate \
+	  --store dataset/snapshots --tasks dataset/variant-tasks.jsonl \
+	  --policy rules --out runs/rules.json
+	cargo run -q -p agent --bin gridline-agent -- solve \
+	  --store dataset/snapshots --tasks dataset/variant-tasks.jsonl \
+	  --memory runs/plans.jsonl >/dev/null || true
+	cargo run -q -p agent --bin gridline-agent -- evaluate \
+	  --store dataset/snapshots --tasks dataset/variant-tasks.jsonl \
+	  --policy memo --memory runs/plans.jsonl --out runs/memo.json
+	cargo run -q -p agent --bin gridline-agent -- promote \
+	  --incumbent runs/rules.json \
+	  --candidate runs/memo.json
 
 # Measure Excel parity and regenerate PARITY.md
 parity:

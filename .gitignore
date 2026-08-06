@@ -13,3 +13,4 @@ apps/web/playwright-report/
 gridline.db
 .dev-token
 demo/
+runs/

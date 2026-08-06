@@ -79,6 +79,8 @@ fn sort_maps(v: serde_json::Value) -> serde_json::Value {
 pub struct SnapshotStore {
     memory: HashMap<SnapshotId, Vec<u8>>,
     dir: Option<PathBuf>,
+    /// Read from `dir`, never write to it.
+    read_only: bool,
 }
 
 impl SnapshotStore {
@@ -93,6 +95,29 @@ impl SnapshotStore {
         Ok(SnapshotStore {
             memory: HashMap::new(),
             dir: Some(dir),
+            read_only: false,
+        })
+    }
+
+    /// A store that reads `dir` and writes nothing back to it.
+    ///
+    /// What an evaluation uses. Every committed step checkpoints, so a
+    /// scoring run against a directory-backed corpus would leave a trail of
+    /// new snapshot files in it — and a corpus that changes when you measure
+    /// against it is not a corpus, it is a moving target. New snapshots
+    /// still work; they just live in memory for as long as the run does.
+    pub fn read_only_at(dir: impl Into<PathBuf>) -> Result<Self, EnvError> {
+        let dir = dir.into();
+        if !dir.is_dir() {
+            return Err(EnvError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("{} is not a directory", dir.display()),
+            )));
+        }
+        Ok(SnapshotStore {
+            memory: HashMap::new(),
+            dir: Some(dir),
+            read_only: true,
         })
     }
 
@@ -104,7 +129,7 @@ impl SnapshotStore {
         if self.memory.contains_key(&id) {
             return Ok(id);
         }
-        if let Some(dir) = &self.dir {
+        if let Some(dir) = self.dir.as_ref().filter(|_| !self.read_only) {
             let path = self.path_for(dir, &id);
             if !path.exists() {
                 std::fs::write(&path, &bytes).map_err(EnvError::Io)?;
@@ -223,6 +248,41 @@ mod tests {
         let store = SnapshotStore::at(&dir).unwrap();
         let e = store.load(&id).unwrap();
         assert_eq!(e.value_at("Sheet1", "A1"), engine::Value::Number(7.0));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_read_only_store_leaves_the_directory_alone() {
+        // What an evaluation uses. Every committed step checkpoints, so a
+        // scoring run against a directory-backed corpus would leave a trail
+        // of new files in it — and a corpus that changes when you measure
+        // against it is not a corpus.
+        let dir = std::env::temp_dir().join(format!("gridline-ro-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let id = {
+            let mut store = SnapshotStore::at(&dir).unwrap();
+            store.put(&workbook_with(&[("A1", "1")])).unwrap()
+        };
+        let before = std::fs::read_dir(&dir).unwrap().count();
+
+        let mut store = SnapshotStore::read_only_at(&dir).unwrap();
+        // Reading what is there still works...
+        assert_eq!(
+            store.load(&id).unwrap().value_at("Sheet1", "A1"),
+            engine::Value::Number(1.0)
+        );
+        // ...and so does storing something new, in memory.
+        let fresh = store.put(&workbook_with(&[("A1", "2")])).unwrap();
+        assert_ne!(fresh, id);
+        assert_eq!(
+            store.load(&fresh).unwrap().value_at("Sheet1", "A1"),
+            engine::Value::Number(2.0)
+        );
+        assert_eq!(
+            std::fs::read_dir(&dir).unwrap().count(),
+            before,
+            "a read-only store wrote to its directory"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

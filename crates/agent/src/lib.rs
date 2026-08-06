@@ -20,6 +20,7 @@
 //! about, over a general one that cannot.
 
 pub mod compile;
+pub mod eval;
 pub mod memory;
 pub mod plan;
 pub mod policy;
@@ -27,6 +28,7 @@ pub mod run;
 pub mod validate;
 
 pub use compile::{compile, CompileError, Compiled, Subject};
+pub use eval::{evaluate, EvalCorpus, Scorecard, Verdict};
 pub use memory::{MemoPlanner, MicroPolicy, PlanLibrary};
 pub use plan::{Aggregate, ColumnRef, FormulaTemplate, Plan, Predicate, RowRange, Step};
 pub use policy::{Router, RouterStats, RulePlanner};
