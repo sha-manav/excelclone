@@ -3,7 +3,7 @@
  * light syntax highlighting of references while editing.
  */
 
-import { useMemo, useRef } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { a1, type Addr } from '../engine/actions'
 
 export interface FormulaBarProps {
@@ -16,6 +16,12 @@ export interface FormulaBarProps {
   onCommit(): void
   onCancel(): void
   onBeginEdit(): void
+  /**
+   * The name box was submitted. Excel's rule: an address or an existing name
+   * navigates, anything else defines a new name over the current selection.
+   * The caller decides which, because only it knows what names exist.
+   */
+  onNameBox(text: string): void
 }
 
 /** Reference-like tokens, for highlighting. Deliberately permissive: the
@@ -79,16 +85,37 @@ export function FormulaBar({
   onCommit,
   onCancel,
   onBeginEdit,
+  onNameBox,
 }: FormulaBarProps) {
   const inputRef = useRef<HTMLInputElement>(null)
+  // The name box shows the address until the user types in it, and goes back
+  // to showing the address as soon as the selection moves — otherwise a
+  // half-typed name would sit there looking like where you are.
+  const [nameBox, setNameBox] = useState<string | null>(null)
+  const address = a1(active)
+  useEffect(() => setNameBox(null), [address])
   const shown = editing ? editValue : cellInput
   const tokens = useMemo(() => tokenizeFormula(shown), [shown])
 
   return (
     <div className="formula-bar">
-      <div className="formula-bar__address" aria-label="Active cell">
-        {a1(active)}
-      </div>
+      <input
+        className="formula-bar__address"
+        aria-label="Name box"
+        data-testid="name-box"
+        value={nameBox ?? address}
+        onChange={(e) => setNameBox(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault()
+            const text = (nameBox ?? '').trim()
+            setNameBox(null)
+            if (text) onNameBox(text)
+          }
+          if (e.key === 'Escape') setNameBox(null)
+        }}
+        onBlur={() => setNameBox(null)}
+      />
       <div className="formula-bar__divider" />
       <div className="formula-bar__field">
         {/* The highlight layer sits behind a transparent input so the caret

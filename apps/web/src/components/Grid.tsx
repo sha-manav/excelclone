@@ -21,43 +21,48 @@ import type {
   MouseEvent as ReactMouseEvent,
 } from 'react'
 import { KIND_ERROR, KIND_NUMBER } from '../engine/bridge'
-import type { EngineHandle, Viewport } from '../engine/bridge'
+import type { CellFormat, EngineHandle, Viewport } from '../engine/bridge'
 import { colLetters, range as mkRange, rangeContains } from '../engine/actions'
-import type { Addr, Range } from '../engine/actions'
+import type { Addr, Axis, Range } from '../engine/actions'
 import type { EditState, MoveDirection, Selection } from '../state/useWorkbook'
 import {
+  MergeMap,
   OVERSCAN,
-  cellAlign,
+  autoscrollDelta,
   cellRect,
   clampColWidth,
+  clampRowHeight,
   colWidth,
   columnAtX,
-  columnLeft,
+  colViewportX,
+  frozenHeight,
+  frozenWidth,
   createMetrics,
   fillHandleRect,
   fillTarget,
   firstVisibleRow,
   hitTest,
   lastVisibleRow,
-  moveAddr,
+  moveWithMerges,
   overflowHashes,
   pageJump,
   pointInRect,
   rangeRect,
+  resolvedAlign,
   rowAtY,
   rowHeight,
-  rowTop,
+  rowViewportY,
   scrollToInclude,
   selectionAt,
   selectionFocus,
   selectionFrom,
-  totalHeight,
-  totalWidth,
+  scrollableHeight,
+  scrollableWidth,
   usedEdge,
   virtualExtent,
   visibleRange,
 } from './grid-geometry'
-import type { GridMetrics } from './grid-geometry'
+import type { CellAlign, GridMetrics } from './grid-geometry'
 
 export interface GridProps {
   engine: EngineHandle
@@ -68,6 +73,14 @@ export interface GridProps {
   editing: EditState | null
   /** Rows hidden by a filter; skipped entirely in layout. */
   hiddenRows: number[]
+  /** Merged ranges in A1 form, as the engine reports them. */
+  merged: string[]
+  /** Extent to make scrollable: includes cells that carry only formatting. */
+  paintedRows: number
+  paintedCols: number
+  /** Rows and columns held still while the rest of the sheet scrolls. */
+  frozenRows: number
+  frozenCols: number
   onSelect(sel: Selection): void
   /** `initial` set means typing replaced the cell rather than opening it. */
   onStartEdit(addr: Addr, initial?: string): void
@@ -76,7 +89,15 @@ export interface GridProps {
   onEditValueChange(value: string): void
   onFill(source: Range, target: Range): void
   onContextMenu(addr: Addr, clientX: number, clientY: number): void
-  onAutofitColumn(col: number): void
+  /**
+   * A finished resize gesture. Sizes live in the engine, not here, so this is
+   * how a drag becomes a fact: the grid previews the width while the pointer
+   * is down and then hands the final number over to be applied, recorded and
+   * saved like any other edit.
+   */
+  onResize(axis: Axis, at: number, count: number, size: number | null): void
+  /** Ranges to wash, used by find to show where the matches are. */
+  highlights?: readonly Range[]
 }
 
 const CELL_FONT = '12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace'
@@ -95,17 +116,75 @@ const COLOR_HEADER_ACTIVE = '#dbeae1'
 const COLOR_HEADER_TEXT = '#555555'
 const COLOR_HEADER_LINE = '#c8c8c8'
 const COLOR_FORMULA_MARK = 'rgba(30, 126, 69, 0.5)'
+const COLOR_BORDER = '#333333'
+const COLOR_FIND_HIT = 'rgba(255, 196, 0, 0.35)'
+
+/** Canvas font strings for the four bold/italic combinations, built once. */
+const CELL_FONTS: Record<string, string> = {
+  '': CELL_FONT,
+  b: `bold ${CELL_FONT}`,
+  i: `italic ${CELL_FONT}`,
+  bi: `italic bold ${CELL_FONT}`,
+}
+
+function fontFor(f: CellFormat): string {
+  return CELL_FONTS[`${f.bold ? 'b' : ''}${f.italic ? 'i' : ''}`]
+}
+
+const EMPTY_CELL_FORMAT: CellFormat = {}
+
+/** How far down a column autofit looks before settling on a width. */
+const AUTOFIT_SCAN_ROWS = 1000
+/** How far a double-click fill will follow a neighbouring run. */
+const FILL_DOWN_SCAN_ROWS = 10_000
+
+/**
+ * How far a fill-handle double-click should reach: the end of the contiguous
+ * run of values in the column immediately left of the selection, falling back
+ * to the column on its right.
+ *
+ * Returns null when there is no neighbouring run, rather than filling to the
+ * bottom of the sheet — a gesture that silently wrote ten thousand rows would
+ * be much worse than one that does nothing.
+ */
+function fillDownTarget(L: Latest): Range | null {
+  const src = L.selection.range
+  const probe = (col: number): number => {
+    if (col < 0) return src.end.row
+    const rows = Math.min(
+      Math.max(L.usedRows - src.end.row - 1, 0),
+      FILL_DOWN_SCAN_ROWS,
+    )
+    if (rows <= 0) return src.end.row
+    const vp = L.engine.viewport(L.sheet, src.end.row + 1, col, rows, 1)
+    let last = src.end.row
+    for (let i = 0; i < rows; i++) {
+      if (!vp.values[i]) break
+      last = src.end.row + 1 + i
+    }
+    return last
+  }
+  if (!L.sheetExists) return null
+  const end = Math.max(probe(src.start.col - 1), probe(src.end.col + 1))
+  if (end <= src.end.row) return null
+  return { start: src.start, end: { row: end, col: src.end.col } }
+}
 
 type Drag =
   | { kind: 'select'; anchor: Addr; last: Addr }
   | { kind: 'fill'; source: Range; target: Range }
-  | { kind: 'resize'; col: number; startX: number; startWidth: number }
+  | { kind: 'resize'; col: number; startX: number; startWidth: number; width: number }
+  | { kind: 'resize-row'; row: number; startY: number; startHeight: number; height: number }
 
 interface Latest {
   engine: EngineHandle
   sheet: string
   version: number
   metrics: GridMetrics
+  merges: MergeMap
+  /** False for the one render after the sheet was renamed or deleted. */
+  sheetExists: boolean
+  highlights: readonly Range[]
   selection: Selection
   editing: EditState | null
   usedRows: number
@@ -114,8 +193,10 @@ interface Latest {
   onFill(source: Range, target: Range): void
   onStartEdit(addr: Addr, initial?: string): void
   onContextMenu(addr: Addr, clientX: number, clientY: number): void
-  onAutofitColumn(col: number): void
+  onResize(axis: Axis, at: number, count: number, size: number | null): void
 }
+
+const EMPTY_HIGHLIGHTS: readonly Range[] = []
 
 const sameRange = (a: Range, b: Range): boolean =>
   a.start.row === b.start.row &&
@@ -131,6 +212,12 @@ export function Grid(props: GridProps): JSX.Element {
     selection,
     editing,
     hiddenRows,
+    merged,
+    paintedRows,
+    paintedCols,
+    frozenRows,
+    frozenCols,
+    highlights,
     onSelect,
     onStartEdit,
     onCommitEdit,
@@ -138,7 +225,7 @@ export function Grid(props: GridProps): JSX.Element {
     onEditValueChange,
     onFill,
     onContextMenu,
-    onAutofitColumn,
+    onResize,
   } = props
 
   const containerRef = useRef<HTMLDivElement>(null)
@@ -146,8 +233,11 @@ export function Grid(props: GridProps): JSX.Element {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
 
-  const [colWidths, setColWidths] = useState<ReadonlyMap<number, number>>(() => new Map())
-  const [rowHeights] = useState<ReadonlyMap<number, number>>(() => new Map())
+  // Sizes live in the engine. This holds only the width being dragged right
+  // now, so the column follows the pointer without a round trip per pixel;
+  // it is cleared the moment the real resize lands.
+  const [preview, setPreview] = useState<{ col: number; width: number } | null>(null)
+  const [rowPreview, setRowPreview] = useState<{ row: number; height: number } | null>(null)
 
   const sheetInfo = useMemo(() => {
     // `version` is never read here; it is the only signal that the used range
@@ -157,19 +247,57 @@ export function Grid(props: GridProps): JSX.Element {
   }, [engine, sheet, version])
   const usedRows = sheetInfo?.used_rows ?? 0
   const usedCols = sheetInfo?.used_cols ?? 0
+  // Renaming or deleting a sheet leaves `sheet` naming one the engine no
+  // longer has, for the single render before the parent notices. Asking for
+  // its viewport throws, and the throw lands inside a requestAnimationFrame
+  // callback where nothing can catch it.
+  const sheetExists = sheetInfo !== null
+
+  const colWidths = useMemo(() => {
+    const m = new Map(sheetInfo?.col_widths ?? [])
+    if (preview) m.set(preview.col, preview.width)
+    return m
+  }, [sheetInfo, preview])
+  const rowHeights = useMemo(() => {
+    const m = new Map(sheetInfo?.row_heights ?? [])
+    if (rowPreview) m.set(rowPreview.row, rowPreview.height)
+    return m
+  }, [sheetInfo, rowPreview])
 
   const hiddenSet = useMemo(() => new Set(hiddenRows), [hiddenRows])
+  const mergedKey = merged.join('|')
+  const merges = useMemo(
+    () => MergeMap.fromA1(mergedKey ? mergedKey.split('|') : []),
+    [mergedKey],
+  )
 
   const metrics = useMemo(() => {
-    const extent = virtualExtent(usedRows, usedCols)
+    // The scrollable extent follows the *painted* range, so a bold empty
+    // column below the data is still reachable.
+    const extent = virtualExtent(
+      Math.max(usedRows, paintedRows),
+      Math.max(usedCols, paintedCols),
+    )
     return createMetrics({
       colWidths,
       rowHeights,
       hiddenRows: hiddenSet,
       rowCount: extent.rows,
       colCount: extent.cols,
+      frozenRows,
+      frozenCols,
     })
-  }, [colWidths, rowHeights, hiddenSet, usedRows, usedCols])
+  }, [
+    colWidths,
+    rowHeights,
+    hiddenSet,
+    usedRows,
+    usedCols,
+    paintedRows,
+    paintedCols,
+    frozenRows,
+    frozenCols,
+  ])
 
   // Everything the imperative layer (paint, window drag listeners, keyboard)
   // needs, refreshed every render so those handlers can stay identity-stable
@@ -179,6 +307,9 @@ export function Grid(props: GridProps): JSX.Element {
     sheet,
     version,
     metrics,
+    merges,
+    sheetExists,
+    highlights: highlights ?? EMPTY_HIGHLIGHTS,
     selection,
     editing,
     usedRows,
@@ -187,12 +318,12 @@ export function Grid(props: GridProps): JSX.Element {
     onFill,
     onStartEdit,
     onContextMenu,
-    onAutofitColumn,
+    onResize,
   }
   const latestRef = useRef<Latest>(latest)
   latestRef.current = latest
 
-  const cacheRef = useRef<{ key: string; vp: Viewport | null }>({ key: '', vp: null })
+  const cacheRef = useRef<{ key: string; panes: Viewport[] }>({ key: '', panes: [] })
   const dragRef = useRef<Drag | null>(null)
   const fillPreviewRef = useRef<Range | null>(null)
   const rafRef = useRef(0)
@@ -235,32 +366,74 @@ export function Grid(props: GridProps): JSX.Element {
     ctx.fillRect(0, 0, cssW, cssH)
 
     const vis = visibleRange(scrollTop, scrollLeft, cssW, cssH, m)
-    const nRows = vis.lastRow - vis.firstRow + 1
-    const nCols = vis.lastCol - vis.firstCol + 1
+
+    // What to paint, in order: the frozen band first and then the scrolling
+    // region. A *list* rather than a range because the two are not adjacent
+    // in the sheet — scrolled down, row 1 sits directly above row 900 — and
+    // every loop below indexes this rather than counting from a first row.
+    const rowsAt: number[] = []
+    for (let r = 0; r < m.frozenRows; r++) rowsAt.push(r)
+    for (let r = vis.firstRow; r <= vis.lastRow; r++) rowsAt.push(r)
+    const colsAt: number[] = []
+    for (let c = 0; c < m.frozenCols; c++) colsAt.push(c)
+    for (let c = vis.firstCol; c <= vis.lastCol; c++) colsAt.push(c)
+    const nRows = rowsAt.length
+    const nCols = colsAt.length
     if (nRows <= 0 || nCols <= 0) return
 
-    // Per-frame edge tables: one allocation each, never one per cell.
+    // Per-frame edge tables: one allocation each, never one per cell. Each
+    // entry is asked for its own position rather than accumulated from the
+    // one before, because the step from the last frozen row to the first
+    // scrolling row is not that row's height.
     const xs = new Array<number>(nCols + 1)
-    xs[0] = hw + columnLeft(m, vis.firstCol) - scrollLeft
-    for (let i = 0; i < nCols; i++) xs[i + 1] = xs[i] + colWidth(m, vis.firstCol + i)
+    for (let i = 0; i < nCols; i++) xs[i] = colViewportX(m, colsAt[i], scrollLeft)
+    xs[nCols] = xs[nCols - 1] + colWidth(m, colsAt[nCols - 1])
     const ys = new Array<number>(nRows + 1)
-    ys[0] = hh + rowTop(m, vis.firstRow) - scrollTop
-    for (let i = 0; i < nRows; i++) ys[i + 1] = ys[i] + rowHeight(m, vis.firstRow + i)
+    for (let i = 0; i < nRows; i++) ys[i] = rowViewportY(m, rowsAt[i], scrollTop)
+    ys[nRows] = ys[nRows - 1] + rowHeight(m, rowsAt[nRows - 1])
 
-    // One engine call per repaint, cached so plain scrolling inside the
-    // overscan band does not re-cross the wasm boundary.
-    const r0 = Math.max(0, vis.firstRow - OVERSCAN)
-    const c0 = Math.max(0, vis.firstCol - OVERSCAN)
-    const rows = Math.min(m.rowCount, vis.lastRow + OVERSCAN + 1) - r0
-    const cols = Math.min(m.colCount, vis.lastCol + OVERSCAN + 1) - c0
-    const key = `${L.sheet}|${L.version}|${r0}|${c0}|${rows}|${cols}`
+    // Engine calls per repaint, cached so plain scrolling inside the overscan
+    // band does not re-cross the wasm boundary. One rectangle when nothing is
+    // frozen; up to four — the quadrants — when something is, because the
+    // frozen band and the scrolling region are far apart and one rectangle
+    // spanning both would fetch every row in between.
+    const rowBands: [number, number][] = [[vis.firstRow, vis.lastRow]]
+    if (m.frozenRows > 0) rowBands.unshift([0, m.frozenRows - 1])
+    const colBands: [number, number][] = [[vis.firstCol, vis.lastCol]]
+    if (m.frozenCols > 0) colBands.unshift([0, m.frozenCols - 1])
+    const wanted: [number, number, number, number][] = []
+    for (const [ra, rb] of rowBands) {
+      for (const [ca, cb] of colBands) {
+        const r0 = Math.max(0, ra - OVERSCAN)
+        const c0 = Math.max(0, ca - OVERSCAN)
+        const rows = Math.min(m.rowCount, rb + OVERSCAN + 1) - r0
+        const cols = Math.min(m.colCount, cb + OVERSCAN + 1) - c0
+        if (rows > 0 && cols > 0) wanted.push([r0, c0, rows, cols])
+      }
+    }
+    const key = `${L.sheet}|${L.version}|${wanted.map((w) => w.join(':')).join('|')}`
     if (cacheRef.current.key !== key) {
       cacheRef.current = {
         key,
-        vp: rows > 0 && cols > 0 ? L.engine.viewport(L.sheet, r0, c0, rows, cols) : null,
+        panes: L.sheetExists
+          ? wanted.map(([r0, c0, rows, cols]) =>
+              L.engine.viewport(L.sheet, r0, c0, rows, cols),
+            )
+          : [],
       }
     }
-    const vp = cacheRef.current.vp
+    const panes = cacheRef.current.panes
+    /** The viewport holding a cell and its index in it, or null. */
+    const lookup = (row: number, col: number): [Viewport, number] | null => {
+      for (const p of panes) {
+        const vr = row - p.row0
+        const vc = col - p.col0
+        if (vr >= 0 && vr < p.rows && vc >= 0 && vc < p.cols) {
+          return [p, vr * p.cols + vc]
+        }
+      }
+      return null
+    }
 
     const selRect = rangeRect(m, L.selection.range, scrollTop, scrollLeft)
     const multi =
@@ -272,9 +445,24 @@ export function Grid(props: GridProps): JSX.Element {
     ctx.rect(hw, hh, cssW - hw, cssH - hh)
     ctx.clip()
 
-    if (multi) {
-      ctx.fillStyle = COLOR_WASH
-      ctx.fillRect(selRect.x, selRect.y, selRect.w, selRect.h)
+    // The palette entry for a visible cell; index 0 is always the default.
+    const formatAt = (ri: number, ci: number): CellFormat => {
+      const found = lookup(rowsAt[ri], colsAt[ci])
+      if (!found) return EMPTY_CELL_FORMAT
+      const [p, idx] = found
+      return p.palette[p.styles[idx]] ?? EMPTY_CELL_FORMAT
+    }
+
+    // Fills go down first, under the gridlines, exactly as in Excel.
+    for (let ri = 0; ri < nRows; ri++) {
+      const h = ys[ri + 1] - ys[ri]
+      if (h <= 0) continue
+      for (let ci = 0; ci < nCols; ci++) {
+        const fill = formatAt(ri, ci).fill_color
+        if (!fill) continue
+        ctx.fillStyle = fill
+        ctx.fillRect(xs[ci], ys[ri], xs[ci + 1] - xs[ci], h)
+      }
     }
 
     // Grid lines as a single path; the half-pixel offset keeps 1px strokes
@@ -295,38 +483,100 @@ export function Grid(props: GridProps): JSX.Element {
     }
     ctx.stroke()
 
-    if (vp) {
+    // A merged block is one cell to the eye: repaint over it to erase the
+    // interior gridlines, then put the single outline back.
+    const mergesToPaint = L.merges.isEmpty
+      ? []
+      : L.merges.ranges.filter(
+          (r) =>
+            r.end.row >= rowsAt[0] &&
+            r.start.row <= rowsAt[nRows - 1] &&
+            r.end.col >= colsAt[0] &&
+            r.start.col <= colsAt[nCols - 1],
+        )
+    for (const mr of mergesToPaint) {
+      const rect = rangeRect(m, mr, scrollTop, scrollLeft)
+      if (rect.w <= 0 || rect.h <= 0) continue
+      const anchor = lookup(mr.start.row, mr.start.col)
+      const anchorFill = anchor
+        ? (anchor[0].palette[anchor[0].styles[anchor[1]]] ?? EMPTY_CELL_FORMAT).fill_color
+        : undefined
+      ctx.fillStyle = anchorFill ?? COLOR_BG
+      ctx.fillRect(rect.x, rect.y, rect.w, rect.h)
+      ctx.strokeStyle = COLOR_GRID
+      ctx.lineWidth = 1
+      ctx.strokeRect(
+        Math.round(rect.x) + 0.5,
+        Math.round(rect.y) + 0.5,
+        Math.round(rect.w) - 1,
+        Math.round(rect.h) - 1,
+      )
+    }
+
+    for (const hl of L.highlights) {
+      const r = rangeRect(m, hl, scrollTop, scrollLeft)
+      if (r.w <= 0 || r.h <= 0) continue
+      ctx.fillStyle = COLOR_FIND_HIT
+      ctx.fillRect(r.x, r.y, r.w, r.h)
+    }
+
+    if (multi) {
+      ctx.fillStyle = COLOR_WASH
+      ctx.fillRect(selRect.x, selRect.y, selRect.w, selRect.h)
+    }
+
+    if (panes.length > 0) {
       ctx.font = CELL_FONT
       ctx.textBaseline = 'middle'
       ctx.textAlign = 'left'
-      let align: 'left' | 'right' = 'left'
+      let align: CellAlign = 'left'
+      let font = CELL_FONT
       const hashWidth = ctx.measureText('#').width
 
       for (let ri = 0; ri < nRows; ri++) {
         const h = ys[ri + 1] - ys[ri]
         if (h <= 0) continue
         if (ys[ri] > cssH || ys[ri + 1] < hh) continue
-        const vrow = vis.firstRow + ri - vp.row0
-        if (vrow < 0 || vrow >= vp.rows) continue
         const midY = ys[ri] + h / 2
+        const row = rowsAt[ri]
 
         for (let ci = 0; ci < nCols; ci++) {
-          const vcol = vis.firstCol + ci - vp.col0
-          if (vcol < 0 || vcol >= vp.cols) continue
-          const idx = vrow * vp.cols + vcol
+          const col = colsAt[ci]
+          const found = lookup(row, col)
+          if (!found) continue
+          const [vp, idx] = found
           const text = vp.values[idx]
           if (!text) continue
-          const w = xs[ci + 1] - xs[ci]
+
+          // Text belongs to the merge's anchor and spans the whole block; a
+          // covered cell holds no value, but a stale one must not surface.
+          const merge = L.merges.isEmpty ? null : L.merges.at(row, col)
+          if (merge && (merge.start.row !== row || merge.start.col !== col)) continue
+          let left = xs[ci]
+          let right = xs[ci + 1]
+          if (merge) {
+            const rect = rangeRect(m, merge, scrollTop, scrollLeft)
+            left = rect.x
+            right = rect.x + rect.w
+          }
+          const w = right - left
           const avail = w - CELL_PAD * 2
           if (avail <= 0) continue
 
           const kind = vp.kinds[idx]
-          const wanted = cellAlign(kind)
+          const style = vp.palette[vp.styles[idx]] ?? EMPTY_CELL_FORMAT
+          const wantedFont = fontFor(style)
+          if (wantedFont !== font) {
+            font = wantedFont
+            ctx.font = wantedFont
+          }
+          const wanted = resolvedAlign(kind, style.align)
           if (wanted !== align) {
             align = wanted
             ctx.textAlign = wanted
           }
-          ctx.fillStyle = kind === KIND_ERROR ? COLOR_ERROR : COLOR_TEXT
+          ctx.fillStyle =
+            kind === KIND_ERROR ? COLOR_ERROR : (style.font_color ?? COLOR_TEXT)
 
           // measureText is the expensive call here, so skip it whenever the
           // string is obviously short enough for the column.
@@ -340,10 +590,16 @@ export function Grid(props: GridProps): JSX.Element {
           if (clip) {
             ctx.save()
             ctx.beginPath()
-            ctx.rect(xs[ci], ys[ri], w, h)
+            ctx.rect(left, ys[ri], w, h)
             ctx.clip()
           }
-          ctx.fillText(out, align === 'left' ? xs[ci] + CELL_PAD : xs[ci + 1] - CELL_PAD, midY)
+          const tx =
+            align === 'left'
+              ? left + CELL_PAD
+              : align === 'right'
+                ? right - CELL_PAD
+                : (left + right) / 2
+          ctx.fillText(out, tx, midY)
           if (clip) ctx.restore()
 
           if (vp.formulas[idx]) {
@@ -352,7 +608,43 @@ export function Grid(props: GridProps): JSX.Element {
           }
         }
       }
+      ctx.font = CELL_FONT
     }
+
+    // Explicit borders go over the gridlines, so a thin black edge reads as
+    // deliberate rather than as a slightly darker gridline.
+    ctx.strokeStyle = COLOR_BORDER
+    ctx.lineWidth = 1
+    ctx.beginPath()
+    for (let ri = 0; ri < nRows; ri++) {
+      const h = ys[ri + 1] - ys[ri]
+      if (h <= 0) continue
+      for (let ci = 0; ci < nCols; ci++) {
+        const b = formatAt(ri, ci).borders
+        if (!b) continue
+        const x0 = Math.round(xs[ci]) + 0.5
+        const x1 = Math.round(xs[ci + 1]) - 0.5
+        const y0 = Math.round(ys[ri]) + 0.5
+        const y1 = Math.round(ys[ri + 1]) - 0.5
+        if (b.top) {
+          ctx.moveTo(x0, y0)
+          ctx.lineTo(x1, y0)
+        }
+        if (b.bottom) {
+          ctx.moveTo(x0, y1)
+          ctx.lineTo(x1, y1)
+        }
+        if (b.left) {
+          ctx.moveTo(x0, y0)
+          ctx.lineTo(x0, y1)
+        }
+        if (b.right) {
+          ctx.moveTo(x1, y0)
+          ctx.lineTo(x1, y1)
+        }
+      }
+    }
+    ctx.stroke()
 
     // Selection chrome sits above the text but below the headers.
     ctx.textAlign = 'left'
@@ -408,7 +700,7 @@ export function Grid(props: GridProps): JSX.Element {
     ctx.clip()
     ctx.fillStyle = COLOR_HEADER_ACTIVE
     for (let ci = 0; ci < nCols; ci++) {
-      const col = vis.firstCol + ci
+      const col = colsAt[ci]
       if (col < selR.start.col || col > selR.end.col) continue
       ctx.fillRect(xs[ci], 0, xs[ci + 1] - xs[ci], hh)
     }
@@ -537,36 +829,24 @@ export function Grid(props: GridProps): JSX.Element {
     }
   }, [])
 
-  const handleDragMove = useCallback(
-    (e: MouseEvent) => {
+  /** Extend the drag to the cell under the pointer, in content coordinates. */
+  const applyDragAt = useCallback(
+    (clientX: number, clientY: number) => {
       const d = dragRef.current
-      const el = scrollRef.current
-      if (!d || !el) return
+      if (!d || d.kind === 'resize' || d.kind === 'resize-row') return
       const L = latestRef.current
       const m = L.metrics
-
-      if (d.kind === 'resize') {
-        const width = clampColWidth(d.startWidth + (e.clientX - d.startX))
-        setColWidths((prev) => {
-          if (prev.get(d.col) === width) return prev
-          const next = new Map(prev)
-          next.set(d.col, width)
-          return next
-        })
-        return
-      }
-
-      const p = pointOf(e.clientX, e.clientY)
+      const p = pointOf(clientX, clientY)
       const row = rowAtY(m, Math.max(0, p.y - m.headerHeight) + p.scrollTop)
       const col = columnAtX(m, Math.max(0, p.x - m.headerWidth) + p.scrollLeft)
 
       if (d.kind === 'select') {
         if (row === d.last.row && col === d.last.col) return
         d.last = { row, col }
-        L.onSelect(selectionFrom(d.anchor, { row, col }))
+        const sel = selectionFrom(d.anchor, { row, col })
+        L.onSelect({ anchor: sel.anchor, range: L.merges.expand(sel.range) })
         return
       }
-
       const target = fillTarget(d.source, row, col)
       if (sameRange(target, d.target)) return
       d.target = target
@@ -576,9 +856,90 @@ export function Grid(props: GridProps): JSX.Element {
     [invalidate, pointOf],
   )
 
+  /**
+   * Keep scrolling — and keep extending the selection — while the pointer
+   * sits outside the content box. Without this a drag simply stops at the
+   * edge and there is no way to select past the fold with the mouse.
+   */
+  const autoscrollRef = useRef(0)
+  const pointerRef = useRef({ x: 0, y: 0 })
+
+  const stopAutoscroll = useCallback(() => {
+    if (autoscrollRef.current) {
+      cancelAnimationFrame(autoscrollRef.current)
+      autoscrollRef.current = 0
+    }
+  }, [])
+
+  const stepAutoscroll = useCallback(() => {
+    autoscrollRef.current = 0
+    const el = scrollRef.current
+    if (!dragRef.current || !el) return
+    const p = pointOf(pointerRef.current.x, pointerRef.current.y)
+    const { dx, dy } = autoscrollDelta(
+      p.x,
+      p.y,
+      el.clientWidth,
+      el.clientHeight,
+      latestRef.current.metrics,
+    )
+    if (dx === 0 && dy === 0) return
+    el.scrollLeft += dx
+    el.scrollTop += dy
+    applyDragAt(pointerRef.current.x, pointerRef.current.y)
+    autoscrollRef.current = requestAnimationFrame(stepAutoscroll)
+  }, [applyDragAt, pointOf])
+
+  const handleDragMove = useCallback(
+    (e: MouseEvent) => {
+      const d = dragRef.current
+      const el = scrollRef.current
+      if (!d || !el) return
+
+      if (d.kind === 'resize') {
+        const width = clampColWidth(d.startWidth + (e.clientX - d.startX))
+        d.width = width
+        setPreview((prev) =>
+          prev && prev.col === d.col && prev.width === width ? prev : { col: d.col, width },
+        )
+        return
+      }
+
+      if (d.kind === 'resize-row') {
+        const height = clampRowHeight(d.startHeight + (e.clientY - d.startY))
+        d.height = height
+        setRowPreview((prev) =>
+          prev && prev.row === d.row && prev.height === height ? prev : { row: d.row, height },
+        )
+        return
+      }
+
+      pointerRef.current = { x: e.clientX, y: e.clientY }
+      applyDragAt(e.clientX, e.clientY)
+
+      const p = pointOf(e.clientX, e.clientY)
+      const { dx, dy } = autoscrollDelta(
+        p.x,
+        p.y,
+        el.clientWidth,
+        el.clientHeight,
+        latestRef.current.metrics,
+      )
+      if (dx !== 0 || dy !== 0) {
+        if (!autoscrollRef.current) {
+          autoscrollRef.current = requestAnimationFrame(stepAutoscroll)
+        }
+      } else {
+        stopAutoscroll()
+      }
+    },
+    [applyDragAt, pointOf, stepAutoscroll, stopAutoscroll],
+  )
+
   const handleDragEnd = useCallback(() => {
     const d = dragRef.current
     dragRef.current = null
+    stopAutoscroll()
     window.removeEventListener('mousemove', handleDragMove)
     window.removeEventListener('mouseup', handleDragEnd)
     if (d && d.kind === 'fill') {
@@ -586,7 +947,23 @@ export function Grid(props: GridProps): JSX.Element {
       if (!sameRange(d.target, d.source)) latestRef.current.onFill(d.source, d.target)
       invalidate()
     }
-  }, [handleDragMove, invalidate])
+    if (d && d.kind === 'resize') {
+      // A drag that ended where it started is not a resize, and recording one
+      // would put a no-op on the undo stack and in the capture log.
+      if (d.width !== d.startWidth) {
+        latestRef.current.onResize('col', d.col, 1, d.width)
+      }
+      setPreview(null)
+      invalidate()
+    }
+    if (d && d.kind === 'resize-row') {
+      if (d.height !== d.startHeight) {
+        latestRef.current.onResize('row', d.row, 1, d.height)
+      }
+      setRowPreview(null)
+      invalidate()
+    }
+  }, [handleDragMove, invalidate, stopAutoscroll])
 
   const beginDrag = useCallback(
     (drag: Drag) => {
@@ -601,8 +978,9 @@ export function Grid(props: GridProps): JSX.Element {
     () => () => {
       window.removeEventListener('mousemove', handleDragMove)
       window.removeEventListener('mouseup', handleDragEnd)
+      stopAutoscroll()
     },
-    [handleDragEnd, handleDragMove],
+    [handleDragEnd, handleDragMove, stopAutoscroll],
   )
 
   const handleMouseDown = useCallback(
@@ -645,6 +1023,7 @@ export function Grid(props: GridProps): JSX.Element {
             col: hit.col,
             startX: e.clientX,
             startWidth: colWidth(m, hit.col),
+            width: colWidth(m, hit.col),
           })
           return
         case 'col-header':
@@ -654,6 +1033,15 @@ export function Grid(props: GridProps): JSX.Element {
               { row: firstVisibleRow(m), col: hit.col },
               { row: lastVisibleRow(m), col: hit.col },
             ),
+          })
+          return
+        case 'row-border':
+          beginDrag({
+            kind: 'resize-row',
+            row: hit.row,
+            startY: e.clientY,
+            startHeight: rowHeight(m, hit.row),
+            height: rowHeight(m, hit.row),
           })
           return
         case 'row-header':
@@ -667,12 +1055,18 @@ export function Grid(props: GridProps): JSX.Element {
           return
         case 'cell': {
           const addr = { row: hit.row, col: hit.col }
+          pointerRef.current = { x: e.clientX, y: e.clientY }
           if (e.shiftKey) {
-            L.onSelect(selectionFrom(L.selection.anchor, addr))
+            const sel = selectionFrom(L.selection.anchor, addr)
+            L.onSelect({ anchor: sel.anchor, range: L.merges.expand(sel.range) })
             beginDrag({ kind: 'select', anchor: L.selection.anchor, last: addr })
           } else {
-            L.onSelect(selectionAt(addr))
-            beginDrag({ kind: 'select', anchor: addr, last: addr })
+            // Clicking anywhere inside a merged block selects the block, so
+            // the cursor never lands on a cell the user cannot see.
+            const anchor = L.merges.anchor(addr.row, addr.col)
+            const sel = selectionAt(anchor)
+            L.onSelect({ anchor, range: L.merges.expand(sel.range) })
+            beginDrag({ kind: 'select', anchor, last: addr })
           }
           return
         }
@@ -698,20 +1092,68 @@ export function Grid(props: GridProps): JSX.Element {
           1,
         )
       el.style.cursor =
-        hit.kind === 'col-border' ? 'col-resize' : onHandle ? 'crosshair' : 'cell'
+        hit.kind === 'col-border'
+          ? 'col-resize'
+          : hit.kind === 'row-border'
+            ? 'row-resize'
+            : onHandle
+              ? 'crosshair'
+              : 'cell'
     },
     [pointOf],
   )
 
+  /**
+   * Width that fits the widest value in a column.
+   *
+   * Only the first `AUTOFIT_SCAN_ROWS` rows are measured. Excel scans the
+   * whole column; we cap it because measuring a million strings blocks the
+   * main thread, and a header plus the first thousand rows decides the width
+   * in practice. A value further down that no longer fits still renders as
+   * `#####` rather than being silently truncated, so the cap is visible.
+   */
+  const autofitColumn = useCallback((col: number) => {
+    const canvas = canvasRef.current
+    const ctx = canvas?.getContext('2d')
+    const L = latestRef.current
+    if (!ctx || !L.sheetExists) return
+    const rows = Math.min(L.metrics.rowCount, Math.max(L.usedRows, 1), AUTOFIT_SCAN_ROWS)
+    const vp = L.engine.viewport(L.sheet, 0, col, rows, 1)
+    let widest = 0
+    for (let i = 0; i < vp.values.length; i++) {
+      const text = vp.values[i]
+      if (!text) continue
+      ctx.font = fontFor(vp.palette[vp.styles[i]] ?? EMPTY_CELL_FORMAT)
+      widest = Math.max(widest, ctx.measureText(text).width)
+    }
+    ctx.font = CELL_FONT
+    const width = clampColWidth(widest + CELL_PAD * 2 + 2)
+    L.onResize('col', col, 1, width)
+  }, [])
+
   const handleDoubleClick = useCallback(
     (e: ReactMouseEvent<HTMLDivElement>) => {
       const L = latestRef.current
+      const m = L.metrics
       const p = pointOf(e.clientX, e.clientY)
-      const hit = hitTest(p.x, p.y, p.scrollTop, p.scrollLeft, L.metrics)
-      if (hit.kind === 'col-border') L.onAutofitColumn(hit.col)
+
+      // Double-clicking the fill handle fills down to the length of the
+      // neighbouring run, the way it does in Excel — the gesture for "apply
+      // this formula to the whole table" without dragging past the fold.
+      if (p.x >= m.headerWidth && p.y >= m.headerHeight) {
+        const fh = fillHandleRect(m, L.selection.range, p.scrollTop, p.scrollLeft)
+        if (pointInRect(p.x, p.y, fh, 1)) {
+          const target = fillDownTarget(L)
+          if (target) L.onFill(L.selection.range, target)
+          return
+        }
+      }
+
+      const hit = hitTest(p.x, p.y, p.scrollTop, p.scrollLeft, m)
+      if (hit.kind === 'col-border') autofitColumn(hit.col)
       else if (hit.kind === 'cell') L.onStartEdit({ row: hit.row, col: hit.col })
     },
-    [pointOf],
+    [autofitColumn, pointOf],
   )
 
   const handleContextMenu = useCallback(
@@ -763,18 +1205,22 @@ export function Grid(props: GridProps): JSX.Element {
     }
     if (dir) {
       e.preventDefault()
-      go(mod ? usedEdge(m, from, dir, L.usedRows, L.usedCols) : moveAddr(m, from, dir))
+      go(
+        mod
+          ? usedEdge(m, from, dir, L.usedRows, L.usedCols)
+          : moveWithMerges(m, L.merges, from, dir),
+      )
       return
     }
 
     switch (e.key) {
       case 'Tab':
         e.preventDefault()
-        L.onSelect(selectionAt(moveAddr(m, active, e.shiftKey ? 'left' : 'right')))
+        L.onSelect(selectionAt(moveWithMerges(m, L.merges, active, e.shiftKey ? 'left' : 'right')))
         return
       case 'Enter':
         e.preventDefault()
-        L.onSelect(selectionAt(moveAddr(m, active, e.shiftKey ? 'up' : 'down')))
+        L.onSelect(selectionAt(moveWithMerges(m, L.merges, active, e.shiftKey ? 'up' : 'down')))
         return
       case 'F2':
         e.preventDefault()
@@ -915,6 +1361,7 @@ export function Grid(props: GridProps): JSX.Element {
     >
       <div
         ref={scrollRef}
+        data-testid="grid-scroll"
         onScroll={invalidate}
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
@@ -924,8 +1371,10 @@ export function Grid(props: GridProps): JSX.Element {
       >
         <div
           style={{
-            width: metrics.headerWidth + totalWidth(metrics),
-            height: metrics.headerHeight + totalHeight(metrics),
+            // The frozen band is always on screen, so it is not part of what
+            // there is to scroll through.
+            width: metrics.headerWidth + frozenWidth(metrics) + scrollableWidth(metrics),
+            height: metrics.headerHeight + frozenHeight(metrics) + scrollableHeight(metrics),
           }}
         />
       </div>

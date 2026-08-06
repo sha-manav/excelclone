@@ -1,0 +1,125 @@
+# Time-value-of-money.
+#
+# Every closed-form answer below was computed independently from the equation
+# Microsoft documents —
+#
+#     pv(1+r)^n + pmt(1 + r·type)·((1+r)^n − 1)/r + fv = 0
+#
+# — rather than read off the implementation, and the two iterative answers
+# (RATE and IRR) were checked by substituting them back into it: both leave a
+# residual under 1e-9. The `known` source means the equation is documented,
+# not that a copy of Excel confirmed the digits.
+
+[[case]]
+id = "fin.pmt-on-a-mortgage"
+formula = "=PMT(0.05/12,360,200000)"
+expect = "-1073.64324602428"
+source = "known"
+functions = ["PMT"]
+note = """
+A 200,000 loan at 5% a year over 30 monthly payments a year. Negative because
+Excel's sign convention is cash-flow direction: the bank gave you the money
+(positive pv) and you pay it back (negative pmt). Getting that backwards
+produces an answer that looks right and is not.
+"""
+
+[[case]]
+id = "fin.pmt-with-no-interest"
+formula = "=PMT(0,10,1000)"
+expect = "-100"
+source = "known"
+functions = ["PMT"]
+note = """
+A rate of zero divides by zero in the annuity factor, so it needs its own
+branch: the payment is simply the principal spread over the periods.
+"""
+
+[[case]]
+id = "fin.pmt-at-the-start-of-the-period"
+formula = "=PMT(0.05,10,1000,0,1)"
+expect = "-123.337690443292"
+source = "known"
+functions = ["PMT"]
+note = """
+Type 1 pays at the beginning of each period, so every payment earns one more
+period of interest and each one is smaller. Type 0 on the same terms is
+-129.50; a function ignoring the fifth argument would answer that.
+"""
+
+[[case]]
+id = "fin.fv-of-a-regular-deposit"
+formula = "=FV(0.05,10,-100)"
+expect = "1257.78925355488"
+source = "known"
+functions = ["FV"]
+note = "Paying in 100 a year (negative: money out) for ten years at 5%."
+
+[[case]]
+id = "fin.pv-of-a-regular-payment"
+formula = "=PV(0.05,10,-100)"
+expect = "772.173492918482"
+source = "known"
+functions = ["PV"]
+note = "The same stream seen from the start rather than the end."
+
+[[case]]
+id = "fin.nper-counts-the-periods"
+formula = "=NPER(0.05,-1000,10000)"
+expect = "14.2066990828905"
+source = "known"
+functions = ["NPER"]
+note = """
+Fractional on purpose: it is the exact solution of the equation, not a count
+of whole payments, and rounding it here would hide that the last payment is a
+part payment.
+"""
+
+[[case]]
+id = "fin.npv-discounts-from-the-first-period"
+formula = "=NPV(0.1,100,200,300)"
+expect = "481.592787377911"
+source = "known"
+functions = ["NPV"]
+note = """
+The first value is discounted once, not zero times. An initial outlay at time
+zero therefore has to be added *outside* the call — the single most common
+mistake made with this function, and the reason NPV and IRR disagree about
+where the series starts.
+"""
+
+[[case]]
+id = "fin.rate-is-solved-numerically"
+formula = "=RATE(10,-130,1000)"
+expect = "0.0507870156306013"
+source = "known"
+functions = ["RATE"]
+note = """
+There is no closed form, so this is bisected. Substituting the answer back
+into the equation leaves a residual of 1.2e-9, which is how it was checked
+without Excel.
+"""
+
+[[case]]
+id = "fin.irr-of-a-cash-flow"
+given = { A1 = "-1000", A2 = "300", A3 = "400", A4 = "500" }
+formula = "=IRR(A1:A4)"
+expect = "0.0889633946936277"
+source = "known"
+functions = ["IRR"]
+note = """
+Unlike NPV, IRR puts the first value at time zero — the two functions differ
+on that deliberately. Verified by substitution: residual -5.4e-10.
+"""
+
+[[case]]
+id = "fin.irr-of-a-single-sign-is-num"
+given = { A1 = "100", A2 = "200" }
+formula = "=IRR(A1:A2)"
+expect = "#NUM!"
+source = "known"
+functions = ["IRR"]
+note = """
+Without both an outflow and an inflow there is no rate at which the present
+value is zero. Iterating anyway would return whichever end of the search
+bracket happened to be nearer, which is a number and not an answer.
+"""

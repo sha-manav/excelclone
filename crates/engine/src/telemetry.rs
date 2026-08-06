@@ -67,6 +67,13 @@ pub const ACTION_VOCABULARY: &[&str] = &[
     "row.delete",
     "col.insert",
     "col.delete",
+    "row.resize",
+    "col.resize",
+    "name.define",
+    "name.delete",
+    "panes.freeze",
+    "cond.add",
+    "cond.clear",
     "sort.apply",
     "filter.apply",
     "filter.clear",
@@ -186,6 +193,30 @@ pub fn redact_label_text(text: &str, mode: PrivacyMode, salt: &str) -> String {
     }
 }
 
+/// A rule's test, with the one field that can hold user content hashed.
+///
+/// A comparison operand is formula text and a needle is a word the user typed
+/// looking for; the first is structure and the second is not, and treating
+/// them alike in either direction would be wrong.
+fn redact_cond_test(test: &crate::cond::CondTest, mode: PrivacyMode, salt: &str) -> Json {
+    use crate::cond::CondTest;
+    match test {
+        CondTest::CellIs { op, operands } => json!({
+            "kind": "cell_is",
+            "op": op.as_xlsx(),
+            "operands": operands,
+        }),
+        CondTest::TextContains { needle, negate } => json!({
+            "kind": "text_contains",
+            "needle": redact_label(needle, mode, salt),
+            "negate": negate,
+        }),
+        CondTest::Blank { negate } => json!({ "kind": "blank", "negate": negate }),
+        CondTest::Duplicate { unique } => json!({ "kind": "duplicate", "unique": unique }),
+        CondTest::Formula { body } => json!({ "kind": "formula", "body": body }),
+    }
+}
+
 fn a1(addr: &crate::addr::CellAddr) -> String {
     addr.to_a1()
 }
@@ -274,6 +305,47 @@ pub fn describe(action: &Action, mode: PrivacyMode, salt: &str) -> (String, Json
         Action::MergeApply { sheet, range } | Action::MergeClear { sheet, range } => json!({
             "sheet": redact_label(sheet, mode, salt),
             "range": range.to_a1(),
+            "kind": if matches!(action, Action::MergeApply { .. }) { "merge" } else { "unmerge" },
+        }),
+        // Formatting carries no user text: the attribute names are a closed
+        // vocabulary and a colour or a format code describes presentation,
+        // not content. Values are recorded because the miner needs to tell
+        // "made it currency" apart from "made it a percentage".
+        Action::FormatApply {
+            sheet,
+            range,
+            patches,
+        } => json!({
+            "sheet": redact_label(sheet, mode, salt),
+            "range": range.to_a1(),
+            "cells": range.cell_count(),
+            "kind": "style",
+            "attributes": patches.iter().map(|p| p.attribute()).collect::<Vec<_>>(),
+            "patches": patches,
+        }),
+        Action::FormatClear { sheet, range } => json!({
+            "sheet": redact_label(sheet, mode, salt),
+            "range": range.to_a1(),
+            "cells": range.cell_count(),
+            "kind": "clear",
+        }),
+        // Search terms are user content, so they are hashed like any other
+        // literal. The shape — scope, options, how much was replaced — is not.
+        Action::FindReplace {
+            sheet,
+            range,
+            find,
+            replace,
+            match_case,
+            whole_cell,
+        } => json!({
+            "sheet": redact_label(sheet, mode, salt),
+            "range": range.map(|r| r.to_a1()),
+            "scope": if range.is_some() { "range" } else { "sheet" },
+            "find": redact_label(find, mode, salt),
+            "replace": redact_label(replace, mode, salt),
+            "match_case": match_case,
+            "whole_cell": whole_cell,
         }),
         Action::SheetAdd { name } => json!({ "name": redact_label(name, mode, salt) }),
         Action::SheetRename { from, to } => json!({
@@ -281,6 +353,52 @@ pub fn describe(action: &Action, mode: PrivacyMode, salt: &str) -> (String, Json
             "to": redact_label(to, mode, salt),
         }),
         Action::SheetDelete { name } => json!({ "name": redact_label(name, mode, salt) }),
+        // A size is presentation, like a format: nothing about the pixel
+        // count reveals what the column contains, and the miner needs the
+        // number to tell "widened to 200" apart from "reset to default".
+        Action::Resize {
+            sheet,
+            axis,
+            at,
+            count,
+            size,
+        } => json!({
+            "sheet": redact_label(sheet, mode, salt),
+            "axis": if matches!(axis, crate::refs::Axis::Col) { "col" } else { "row" },
+            "at": at,
+            "count": count,
+            "size": size,
+            "kind": if size.is_some() { "set" } else { "default" },
+        }),
+        // A name is something the user chose, so it is hashed like a sheet
+        // name. Where it points is structure, not content, and the miner
+        // needs it to rebuild the action.
+        Action::NameDefine { name, refers_to } => json!({
+            "name": redact_label(name, mode, salt),
+            "refers_to": refers_to,
+        }),
+        Action::NameDelete { name } => json!({ "name": redact_label(name, mode, salt) }),
+        // A rule is structure: which comparison, over which range, producing
+        // which presentation. The one place user content could hide is the
+        // needle of a "text contains", so that is hashed like any literal.
+        Action::CondAdd { sheet, rule } => json!({
+            "sheet": redact_label(sheet, mode, salt),
+            "range": rule.range.to_a1(),
+            "cells": rule.range.cell_count(),
+            "test": redact_cond_test(&rule.test, mode, salt),
+            "attributes": rule.format.attributes(),
+        }),
+        Action::CondClear { sheet, range } => json!({
+            "sheet": redact_label(sheet, mode, salt),
+            "range": range.to_a1(),
+        }),
+        // Which rows and columns are held still is layout, not content.
+        Action::FreezePanes { sheet, rows, cols } => json!({
+            "sheet": redact_label(sheet, mode, salt),
+            "rows": rows,
+            "cols": cols,
+            "kind": if *rows == 0 && *cols == 0 { "unfreeze" } else { "freeze" },
+        }),
         Action::Undo | Action::Redo => json!({}),
     };
     (name, payload)
@@ -307,10 +425,23 @@ pub fn action_name(action: &Action) -> &'static str {
         Action::SortApply { .. } => "sort.apply",
         Action::FilterApply { .. } => "filter.apply",
         Action::FilterClear { .. } => "filter.clear",
-        Action::MergeApply { .. } | Action::MergeClear { .. } => "format.apply",
+        Action::MergeApply { .. }
+        | Action::MergeClear { .. }
+        | Action::FormatApply { .. }
+        | Action::FormatClear { .. } => "format.apply",
+        Action::FindReplace { .. } => "find.replace",
         Action::SheetAdd { .. } => "sheet.add",
         Action::SheetRename { .. } => "sheet.rename",
         Action::SheetDelete { .. } => "sheet.delete",
+        Action::Resize { axis, .. } => match axis {
+            crate::refs::Axis::Col => "col.resize",
+            crate::refs::Axis::Row => "row.resize",
+        },
+        Action::CondAdd { .. } => "cond.add",
+        Action::CondClear { .. } => "cond.clear",
+        Action::FreezePanes { .. } => "panes.freeze",
+        Action::NameDefine { .. } => "name.define",
+        Action::NameDelete { .. } => "name.delete",
         Action::Undo => "undo",
         Action::Redo => "redo",
     }

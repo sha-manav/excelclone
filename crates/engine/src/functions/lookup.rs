@@ -9,8 +9,9 @@
 //!   abort the scan.
 
 use super::expect_args;
+use crate::addr::{CellAddr, RangeAddr};
 use crate::ast::Expr;
-use crate::eval::{compare_values, EvalCtx};
+use crate::eval::{compare_values, EvalCtx, Operand};
 use crate::value::{ErrorKind, Value};
 use std::cmp::Ordering;
 
@@ -442,6 +443,373 @@ fn wildcard_matches(pattern: &str, text: &str) -> bool {
     }
     // Whatever is left of the pattern must be able to match nothing.
     pat[p..].iter().all(|tk| matches!(tk, Tok::Star))
+}
+
+// ---------------------------------------------------------------------------
+// Reference functions
+// ---------------------------------------------------------------------------
+
+/// The range an argument denotes, or the cell it denotes as a 1x1 range.
+///
+/// `ROWS(A1)` is 1 rather than an error, so a single reference has to read as
+/// a range here even though everywhere else it degrades to a scalar.
+fn arg_range(ctx: &EvalCtx, e: &Expr) -> Result<RangeAddr, ErrorKind> {
+    match ctx.eval_operand(e) {
+        crate::eval::Operand::Range { range, .. } => Ok(range),
+        // A scalar where a reference was wanted: Excel says #VALUE!, and it is
+        // worth being loud because `ROWS(3)` is almost always a typo.
+        crate::eval::Operand::Scalar(_) => Err(ErrorKind::Value),
+        // A computed block has no addresses at all, so there is nothing to
+        // hand back; ROWS and COLUMNS take the array path instead.
+        crate::eval::Operand::Array(_) => Err(ErrorKind::Value),
+    }
+}
+
+/// ROW([reference]): the row number, 1-based, of the reference's first cell —
+/// or of the cell the formula is in when there is no argument.
+pub fn row(ctx: &EvalCtx, args: &[Expr]) -> Value {
+    reference_position(ctx, args, |r| r.start.row, |a| a.row)
+}
+
+/// COLUMN([reference]): the same for columns. A is 1, not 0.
+pub fn column(ctx: &EvalCtx, args: &[Expr]) -> Value {
+    reference_position(ctx, args, |r| r.start.col, |a| a.col)
+}
+
+fn reference_position(
+    ctx: &EvalCtx,
+    args: &[Expr],
+    of_range: impl Fn(&RangeAddr) -> u32,
+    of_cell: impl Fn(&CellAddr) -> u32,
+) -> Value {
+    if let Err(k) = expect_args(args, 0, 1) {
+        return Value::Error(k);
+    }
+    let index = match args.first() {
+        // No argument: the cell holding the formula. This is what makes
+        // ROW() useful for numbering a column as it is filled down.
+        None => of_cell(&ctx.at),
+        Some(e) => match ctx.eval_operand(e) {
+            crate::eval::Operand::Range { range, .. } => of_range(&range),
+            // A single cell reference reaches here as a scalar, so the
+            // address has to come from the expression rather than the value.
+            crate::eval::Operand::Scalar(_) => match e {
+                Expr::Cell(c) => of_cell(&c.r.addr()),
+                _ => return Value::Error(ErrorKind::Value),
+            },
+            // A block is not anywhere, so it has no row or column.
+            crate::eval::Operand::Array(_) => return Value::Error(ErrorKind::Value),
+        },
+    };
+    // Addresses are 0-based inside the engine and 1-based in the language.
+    Value::Number(index as f64 + 1.0)
+}
+
+/// ROWS(range) / COLUMNS(range): how many, not which.
+pub fn rows(ctx: &EvalCtx, args: &[Expr]) -> Value {
+    reference_extent(ctx, args, |r| r.end.row - r.start.row + 1, |a| a.rows)
+}
+
+pub fn columns(ctx: &EvalCtx, args: &[Expr]) -> Value {
+    reference_extent(ctx, args, |r| r.end.col - r.start.col + 1, |a| a.cols)
+}
+
+fn reference_extent(
+    ctx: &EvalCtx,
+    args: &[Expr],
+    f: impl Fn(&RangeAddr) -> u32,
+    // A computed block has a shape but no addresses, so `ROWS(UNIQUE(A1:A9))`
+    // has to be answered from the block itself.
+    g: impl Fn(&crate::eval::Array) -> u32,
+) -> Value {
+    if let Err(k) = expect_args(args, 1, 1) {
+        return Value::Error(k);
+    }
+    if let crate::eval::Operand::Array(a) = ctx.eval_operand(&args[0]) {
+        return Value::Number(g(&a) as f64);
+    }
+    match args[0] {
+        // A single cell is a 1x1 range; `arg_range` cannot see that because
+        // the evaluator has already degraded it to a scalar.
+        Expr::Cell(_) => Value::Number(1.0),
+        _ => match arg_range(ctx, &args[0]) {
+            Ok(r) => Value::Number(f(&r) as f64),
+            Err(k) => Value::Error(k),
+        },
+    }
+}
+
+/// XMATCH(lookup, array, [match_mode], [search_mode]): MATCH with the
+/// argument order people expected in the first place.
+///
+/// `match_mode` is 0 exact (the default, unlike MATCH's), -1 exact or next
+/// smaller, 1 exact or next larger, 2 wildcard. `search_mode` -1 searches
+/// last-to-first, which is how you find the most recent of several matches.
+pub fn xmatch(ctx: &EvalCtx, args: &[Expr]) -> Value {
+    if let Err(k) = expect_args(args, 2, 4) {
+        return Value::Error(k);
+    }
+    let needle = match Ok::<Value, ErrorKind>(ctx.eval_scalar(&args[0])) {
+        Ok(v) => v,
+        Err(k) => return Value::Error(k),
+    };
+    let values = match vector_values(ctx, &args[1]) {
+        Ok(v) => v,
+        Err(k) => return Value::Error(k),
+    };
+    let mode = match args.get(2).map(|a| ctx.eval_number(a)) {
+        Some(Ok(n)) => n.trunc() as i64,
+        Some(Err(k)) => return Value::Error(k),
+        None => 0,
+    };
+    let backwards = match args.get(3).map(|a| ctx.eval_number(a)) {
+        Some(Ok(n)) => n.trunc() as i64 == -1,
+        Some(Err(k)) => return Value::Error(k),
+        None => false,
+    };
+
+    let order: Vec<usize> = if backwards {
+        (0..values.len()).rev().collect()
+    } else {
+        (0..values.len()).collect()
+    };
+
+    // Exact and wildcard scan in the requested direction; the two approximate
+    // modes take the best candidate anywhere, because "next smaller" is a
+    // question about the whole vector rather than about scan order.
+    let mut best: Option<(usize, Value)> = None;
+    for i in order {
+        let v = &values[i];
+        let hit = match mode {
+            2 => match (&needle, v) {
+                (Value::Text(pat), Value::Text(s)) => super::condagg::wildcard_matches(pat, s),
+                _ => compare_values(&needle, v) == Ordering::Equal,
+            },
+            _ => compare_values(&needle, v) == Ordering::Equal,
+        };
+        if hit {
+            return Value::Number(i as f64 + 1.0);
+        }
+        if mode == -1 || mode == 1 {
+            let ord = compare_values(v, &needle);
+            let candidate = if mode == -1 {
+                ord == Ordering::Less
+            } else {
+                ord == Ordering::Greater
+            };
+            if candidate {
+                let better = match &best {
+                    None => true,
+                    Some((_, b)) => {
+                        let against = compare_values(v, b);
+                        if mode == -1 {
+                            against == Ordering::Greater
+                        } else {
+                            against == Ordering::Less
+                        }
+                    }
+                };
+                if better {
+                    best = Some((i, v.clone()));
+                }
+            }
+        }
+    }
+    match best {
+        Some((i, _)) => Value::Number(i as f64 + 1.0),
+        None => Value::Error(ErrorKind::NA),
+    }
+}
+
+/// LOOKUP(value, lookup_vector, [result_vector]): the vector form.
+///
+/// Always approximate and always assuming ascending order — there is no
+/// exact-match option, which is why VLOOKUP replaced it. The array form is
+/// not implemented; it needs a range-returning function.
+pub fn lookup(ctx: &EvalCtx, args: &[Expr]) -> Value {
+    if let Err(k) = expect_args(args, 2, 3) {
+        return Value::Error(k);
+    }
+    let needle = match Ok::<Value, ErrorKind>(ctx.eval_scalar(&args[0])) {
+        Ok(v) => v,
+        Err(k) => return Value::Error(k),
+    };
+    let keys = match vector_values(ctx, &args[1]) {
+        Ok(v) => v,
+        Err(k) => return Value::Error(k),
+    };
+    let results = match args.get(2) {
+        Some(a) => match vector_values(ctx, a) {
+            Ok(v) => v,
+            Err(k) => return Value::Error(k),
+        },
+        None => keys.clone(),
+    };
+
+    let mut found: Option<usize> = None;
+    for (i, k) in keys.iter().enumerate() {
+        if compare_values(k, &needle) != Ordering::Greater {
+            found = Some(i);
+        }
+    }
+    match found.and_then(|i| results.get(i)) {
+        Some(v) => v.clone(),
+        None => Value::Error(ErrorKind::NA),
+    }
+}
+
+/// A one-dimensional range's values in order, or a lone scalar as a vector of
+/// one.
+fn vector_values(ctx: &EvalCtx, e: &Expr) -> Result<Vec<Value>, ErrorKind> {
+    match ctx.eval_operand(e) {
+        crate::eval::Operand::Range { sheet, range } => {
+            Ok(ctx.range_grid(sheet, range).into_iter().flatten().collect())
+        }
+        crate::eval::Operand::Scalar(Value::Error(k)) => Err(k),
+        crate::eval::Operand::Scalar(v) => Ok(vec![v]),
+        // A computed block reads as a vector too, so LOOKUP and XMATCH work
+        // over the output of UNIQUE or SORT without a spilled copy on the
+        // grid first.
+        crate::eval::Operand::Array(a) => Ok(a.values),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Functions that return a reference
+// ---------------------------------------------------------------------------
+
+/// The reference-producing half of the registry.
+///
+/// `None` means "not one of these", and the caller falls back to the ordinary
+/// value path. Keeping the two apart means `OFFSET` used as a scalar and
+/// `OFFSET` used as a range argument go through the same code and cannot
+/// disagree — the range is produced once, and a scalar context reads its
+/// top-left cell exactly as a written reference would.
+pub fn call_operand(ctx: &EvalCtx, name: &str, args: &[Expr]) -> Option<Operand> {
+    match name {
+        "OFFSET" => Some(offset(ctx, args)),
+        "INDIRECT" => Some(indirect(ctx, args)),
+        _ => None,
+    }
+}
+
+fn err(k: ErrorKind) -> Operand {
+    Operand::Scalar(Value::Error(k))
+}
+
+/// OFFSET(reference, rows, cols, [height], [width]).
+///
+/// VOLATILE, and it has to be: the dependency graph is built from the
+/// references written in the formula, and this one does not say where it
+/// points until it runs.
+fn offset(ctx: &EvalCtx, args: &[Expr]) -> Operand {
+    if args.len() < 3 || args.len() > 5 {
+        return err(ErrorKind::Value);
+    }
+    let (sheet, base) = match reference_of(ctx, &args[0]) {
+        Ok(r) => r,
+        Err(k) => return err(k),
+    };
+    let numbers: Result<Vec<f64>, ErrorKind> =
+        args[1..].iter().map(|a| ctx.eval_number(a)).collect();
+    let numbers = match numbers {
+        Ok(n) => n,
+        Err(k) => return err(k),
+    };
+    let (rows, cols) = (numbers[0].trunc() as i64, numbers[1].trunc() as i64);
+    let height = numbers
+        .get(2)
+        .map(|n| n.trunc() as i64)
+        .unwrap_or((base.end.row - base.start.row) as i64 + 1);
+    let width = numbers
+        .get(3)
+        .map(|n| n.trunc() as i64)
+        .unwrap_or((base.end.col - base.start.col) as i64 + 1);
+    if height <= 0 || width <= 0 {
+        // Excel refuses a zero or negative size rather than returning an empty
+        // reference, which there is no way to represent.
+        return err(ErrorKind::Ref);
+    }
+
+    let top = base.start.row as i64 + rows;
+    let left = base.start.col as i64 + cols;
+    if top < 0 || left < 0 {
+        return err(ErrorKind::Ref);
+    }
+    let (Some(start), Some(end)) = (
+        checked_addr(top, left),
+        checked_addr(top + height - 1, left + width - 1),
+    ) else {
+        // Off the edge of the grid is #REF!, the same answer as deleting the
+        // cells a reference pointed at.
+        return err(ErrorKind::Ref);
+    };
+    Operand::Range {
+        sheet,
+        range: RangeAddr::new(start, end),
+    }
+}
+
+/// INDIRECT(text): the reference a string spells out.
+///
+/// VOLATILE for the same reason as OFFSET, and more so: nothing about the
+/// formula text says which cells this depends on.
+fn indirect(ctx: &EvalCtx, args: &[Expr]) -> Operand {
+    if args.len() != 1 {
+        return err(ErrorKind::Value);
+    }
+    // The second argument (A1 vs R1C1 style) is not supported; R1C1 is not a
+    // syntax this engine reads anywhere, and accepting the flag while ignoring
+    // it would silently return the wrong cells.
+    let text = match ctx.eval_text(&args[0]) {
+        Ok(t) => t,
+        Err(k) => return err(k),
+    };
+    let (sheet_name, body) = match text.rsplit_once('!') {
+        Some((s, rest)) => (Some(s.trim_matches('\'').to_string()), rest.to_string()),
+        None => (None, text.clone()),
+    };
+    let sheet = match ctx.resolve_sheet(&sheet_name) {
+        Ok(s) => s,
+        Err(k) => return err(k),
+    };
+    // A string that is not a reference is #REF!, not #VALUE!: the argument was
+    // fine, the thing it named does not exist.
+    if let Some(range) = RangeAddr::parse_a1(&body) {
+        return Operand::Range { sheet, range };
+    }
+    match CellAddr::parse_a1(&body) {
+        Some(addr) => Operand::Range {
+            sheet,
+            range: RangeAddr::new(addr, addr),
+        },
+        None => err(ErrorKind::Ref),
+    }
+}
+
+/// The range an argument denotes, for functions that take a reference.
+fn reference_of(ctx: &EvalCtx, e: &Expr) -> Result<(crate::model::SheetId, RangeAddr), ErrorKind> {
+    match ctx.eval_operand(e) {
+        Operand::Range { sheet, range } => Ok((sheet, range)),
+        Operand::Scalar(Value::Error(k)) => Err(k),
+        // A lone cell has already degraded to a scalar, so its address comes
+        // from the expression — the same trick ROW and ROWS need.
+        Operand::Scalar(_) => match e {
+            Expr::Cell(c) => {
+                let sheet = ctx.resolve_sheet(&c.sheet)?;
+                let addr = c.r.addr();
+                Ok((sheet, RangeAddr::new(addr, addr)))
+            }
+            _ => Err(ErrorKind::Value),
+        },
+        // A block is not a reference and cannot be turned into one.
+        Operand::Array(_) => Err(ErrorKind::Value),
+    }
+}
+
+fn checked_addr(row: i64, col: i64) -> Option<CellAddr> {
+    let addr = CellAddr::new(u32::try_from(row).ok()?, u32::try_from(col).ok()?);
+    addr.is_valid().then_some(addr)
 }
 
 #[cfg(test)]

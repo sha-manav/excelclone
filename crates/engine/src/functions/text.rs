@@ -433,6 +433,169 @@ fn search_index(pattern: &str, hay: &str, start: usize) -> Option<usize> {
         .map(|p| p + 1)
 }
 
+// ---------------------------------------------------------------------------
+// Repetition, exact comparison, and the character/code pair
+// ---------------------------------------------------------------------------
+
+/// REPT(text, count): the text repeated. Excel caps a cell at 32767
+/// characters and answers #VALUE! past it rather than building the string.
+pub fn rept(ctx: &EvalCtx, args: &[Expr]) -> Value {
+    const MAX_CELL_CHARS: f64 = 32_767.0;
+    if let Err(k) = expect_args(args, 2, 2) {
+        return Value::Error(k);
+    }
+    text_result((|| {
+        let s = ctx.eval_text(&args[0])?;
+        let n = ctx.eval_number(&args[1])?.trunc();
+        if n < 0.0 {
+            return Err(ErrorKind::Value);
+        }
+        if s.chars().count() as f64 * n > MAX_CELL_CHARS {
+            return Err(ErrorKind::Value);
+        }
+        Ok(s.repeat(n as usize))
+    })())
+}
+
+/// EXACT(a, b): the case-sensitive comparison, which `=` is not.
+pub fn exact(ctx: &EvalCtx, args: &[Expr]) -> Value {
+    if let Err(k) = expect_args(args, 2, 2) {
+        return Value::Error(k);
+    }
+    match (ctx.eval_text(&args[0]), ctx.eval_text(&args[1])) {
+        (Ok(a), Ok(b)) => Value::Bool(a == b),
+        (Err(k), _) | (_, Err(k)) => Value::Error(k),
+    }
+}
+
+/// CHAR(code): the character for a code point, 1..=255.
+///
+/// Excel's range is a byte because the function predates Unicode; UNICHAR is
+/// the one that goes further, and we do not have it yet.
+pub fn char_fn(ctx: &EvalCtx, args: &[Expr]) -> Value {
+    if let Err(k) = expect_args(args, 1, 1) {
+        return Value::Error(k);
+    }
+    text_result((|| {
+        let n = ctx.eval_number(&args[0])?.trunc();
+        if !(1.0..=255.0).contains(&n) {
+            return Err(ErrorKind::Value);
+        }
+        char::from_u32(n as u32)
+            .map(String::from)
+            .ok_or(ErrorKind::Value)
+    })())
+}
+
+/// CODE(text): the code point of the first character. Empty text is #VALUE!.
+pub fn code(ctx: &EvalCtx, args: &[Expr]) -> Value {
+    if let Err(k) = expect_args(args, 1, 1) {
+        return Value::Error(k);
+    }
+    num_result((|| {
+        let s = ctx.eval_text(&args[0])?;
+        s.chars()
+            .next()
+            .map(|c| c as u32 as f64)
+            .ok_or(ErrorKind::Value)
+    })())
+}
+
+/// CLEAN(text): strip the non-printing characters a mainframe export leaves
+/// behind. Excel removes the first 32 ASCII control codes and nothing else.
+pub fn clean(ctx: &EvalCtx, args: &[Expr]) -> Value {
+    map_text(ctx, args, |s| {
+        s.chars().filter(|c| (*c as u32) >= 32).collect()
+    })
+}
+
+/// TEXTBEFORE(text, delimiter, [instance]) — everything up to the delimiter.
+///
+/// `#N/A` when the delimiter is not there, rather than the whole string:
+/// "before something that is not present" has no answer, and returning the
+/// input would look like a successful split.
+pub fn textbefore(ctx: &EvalCtx, args: &[Expr]) -> Value {
+    split_at_delimiter(ctx, args, true)
+}
+
+/// TEXTAFTER(text, delimiter, [instance]) — everything past it.
+pub fn textafter(ctx: &EvalCtx, args: &[Expr]) -> Value {
+    split_at_delimiter(ctx, args, false)
+}
+
+fn split_at_delimiter(ctx: &EvalCtx, args: &[Expr], before: bool) -> Value {
+    if let Err(k) = expect_args(args, 2, 3) {
+        return Value::Error(k);
+    }
+    text_result((|| {
+        let text = ctx.eval_text(&args[0])?;
+        let delim = ctx.eval_text(&args[1])?;
+        let instance = match args.get(2) {
+            Some(a) => ctx.eval_number(a)?.trunc() as i64,
+            None => 1,
+        };
+        if delim.is_empty() || instance == 0 {
+            return Err(ErrorKind::Value);
+        }
+        // A negative instance counts from the end, which is how you take the
+        // file extension off a path without knowing how many dots it has.
+        let positions: Vec<usize> = text.match_indices(delim.as_str()).map(|(i, _)| i).collect();
+        let index = if instance > 0 {
+            positions.get(instance as usize - 1).copied()
+        } else {
+            let from_end = (-instance) as usize;
+            positions
+                .len()
+                .checked_sub(from_end)
+                .and_then(|i| positions.get(i).copied())
+        };
+        let at = index.ok_or(ErrorKind::NA)?;
+        Ok(if before {
+            text[..at].to_string()
+        } else {
+            text[at + delim.len()..].to_string()
+        })
+    })())
+}
+
+/// NUMBERVALUE(text, [decimal_sep], [group_sep]): parse a number written to
+/// somebody else's conventions.
+///
+/// The reason it exists beside VALUE is imported data: a European export
+/// writes 1.234,56 and VALUE, which follows the locale, cannot read it.
+pub fn numbervalue(ctx: &EvalCtx, args: &[Expr]) -> Value {
+    if let Err(k) = expect_args(args, 1, 3) {
+        return Value::Error(k);
+    }
+    num_result((|| {
+        let text = ctx.eval_text(&args[0])?;
+        let decimal = match args.get(1) {
+            Some(a) => ctx.eval_text(a)?.chars().next().unwrap_or('.'),
+            None => '.',
+        };
+        let group = match args.get(2) {
+            Some(a) => ctx.eval_text(a)?.chars().next().unwrap_or(','),
+            None => ',',
+        };
+        let mut cleaned = String::with_capacity(text.len());
+        for c in text.chars() {
+            if c == group || c.is_whitespace() {
+                continue;
+            }
+            cleaned.push(if c == decimal { '.' } else { c });
+        }
+        // A trailing percent scales, which Excel does here and VALUE does not.
+        let (body, scale) = match cleaned.strip_suffix('%') {
+            Some(rest) => (rest.to_string(), 0.01),
+            None => (cleaned, 1.0),
+        };
+        body.trim()
+            .parse::<f64>()
+            .map(|n| n * scale)
+            .map_err(|_| ErrorKind::Value)
+    })())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

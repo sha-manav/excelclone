@@ -4,12 +4,101 @@
 
 use crate::addr::{CellAddr, RangeAddr};
 use crate::engine::{ApplyError, Engine, FilterSpec, PasteMode, SortKey, UndoState};
+use crate::format::{FormatId, FormatPatch};
 use crate::model::{Cell, CellContent, SheetId};
 use crate::refs::{self, Axis, MoveShift, StructuralShift};
 use crate::value::Value;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
+
+/// One cell's previous format, for undo.
+type FormatPatchRecord = (SheetId, CellAddr, Option<FormatId>);
 
 impl Engine {
+    /// Apply presentation patches across a range, returning the previous
+    /// format of every cell touched.
+    pub(crate) fn op_format(
+        &mut self,
+        sheet: SheetId,
+        range: RangeAddr,
+        patches: &[FormatPatch],
+    ) -> Vec<FormatPatchRecord> {
+        let mut undo = Vec::new();
+        for addr in range.iter_cells() {
+            if !addr.is_valid() {
+                continue;
+            }
+            let before = self.wb.sheet(sheet).expect("sheet exists").format_id(addr);
+            let mut f = self.wb.formats.resolve(before);
+            for p in patches {
+                p.apply_to(&mut f, range, addr.row, addr.col);
+            }
+            let after = self.wb.formats.intern(f);
+            if after == before {
+                continue;
+            }
+            let s = self.wb.sheet_mut(sheet).unwrap();
+            match after {
+                Some(id) => s.formats.insert(addr, id),
+                None => s.formats.remove(&addr),
+            };
+            undo.push((sheet, addr, before));
+        }
+        undo
+    }
+
+    /// Move a block of formats from one place to another, mirroring what
+    /// `op_paste` does to the contents. Returns the previous format of every
+    /// destination (and, for a cut, every vacated source).
+    fn move_formats(
+        &mut self,
+        src_sheet: SheetId,
+        src: RangeAddr,
+        dst_sheet: SheetId,
+        dst: RangeAddr,
+        tiles: (u32, u32),
+        cut: bool,
+    ) -> Vec<FormatPatchRecord> {
+        let (tile_rows, tile_cols) = tiles;
+        let src_formats: Vec<(CellAddr, Option<FormatId>)> = src
+            .iter_cells()
+            .map(|a| {
+                (
+                    a,
+                    self.wb.sheet(src_sheet).expect("sheet exists").format_id(a),
+                )
+            })
+            .collect();
+        let mut prev = Vec::new();
+        if cut {
+            for (a, _) in &src_formats {
+                let old = self.wb.sheet_mut(src_sheet).unwrap().formats.remove(a);
+                prev.push((src_sheet, *a, old));
+            }
+        }
+        for tr in 0..tile_rows {
+            for tc in 0..tile_cols {
+                for (sa, id) in &src_formats {
+                    let da = CellAddr::new(
+                        dst.start.row + tr * src.rows() + (sa.row - src.start.row),
+                        dst.start.col + tc * src.cols() + (sa.col - src.start.col),
+                    );
+                    if !da.is_valid() {
+                        continue;
+                    }
+                    let s = self.wb.sheet_mut(dst_sheet).unwrap();
+                    let old = match id {
+                        Some(i) => s.formats.insert(da, *i),
+                        None => s.formats.remove(&da),
+                    };
+                    if old != *id {
+                        prev.push((dst_sheet, da, old));
+                    }
+                }
+            }
+        }
+        prev
+    }
+
     /// Clear every cell in a range.
     pub(crate) fn op_range_clear(
         &mut self,
@@ -116,7 +205,17 @@ impl Engine {
             prev.append(&mut touched);
         }
 
-        Ok(UndoState::Cells(prev))
+        // Formatting travels with a normal paste and a cut, but not with
+        // paste-values: "paste values" means the numbers without the dressing.
+        if matches!(mode, PasteMode::Values) {
+            return Ok(UndoState::Cells(prev));
+        }
+        let formats =
+            self.move_formats(src_sheet, src, dst_sheet, dst, (tile_rows, tile_cols), cut);
+        Ok(UndoState::Compound(vec![
+            UndoState::Cells(prev),
+            UndoState::Formats(formats),
+        ]))
     }
 
     /// Fill a source block across a target range, extending series.
@@ -128,6 +227,7 @@ impl Engine {
     ) -> Result<UndoState, ApplyError> {
         let down = dst.end.row > src.end.row || dst.start.row < src.start.row;
         let mut prev = Vec::new();
+        let mut prev_formats: Vec<FormatPatchRecord> = Vec::new();
 
         // Each line (column when filling down, row when filling right) is an
         // independent series seeded by the source cells on that line.
@@ -156,20 +256,26 @@ impl Engine {
             // Target positions on this line, outside the source block,
             // ordered outward from the source so step counts are correct.
             let (before, after) = fill_targets(src, dst, line, down);
-            for (step, addr) in after {
-                let old = self.write_series_cell(sheet, &seeds, &seed_addrs, &series, step, addr);
+            for (step, addr) in after.into_iter().chain(before) {
+                let (old, fmt) =
+                    self.write_series_cell(sheet, &seeds, &seed_addrs, &series, step, addr);
                 prev.push((sheet, addr, old));
-            }
-            for (step, addr) in before {
-                let old = self.write_series_cell(sheet, &seeds, &seed_addrs, &series, step, addr);
-                prev.push((sheet, addr, old));
+                if let Some(f) = fmt {
+                    prev_formats.push(f);
+                }
             }
         }
-        Ok(UndoState::Cells(prev))
+        Ok(UndoState::Compound(vec![
+            UndoState::Cells(prev),
+            UndoState::Formats(prev_formats),
+        ]))
     }
 
     /// Write one filled cell; `step` is signed distance from the source block
-    /// (1, 2, 3... after the block; -1, -2... before it).
+    /// (1, 2, 3... after the block; -1, -2... before it). Returns the cell
+    /// that was there and, when the fill also changed the cell's formatting,
+    /// the format it had.
+    #[allow(clippy::type_complexity)]
     fn write_series_cell(
         &mut self,
         sheet: SheetId,
@@ -178,7 +284,7 @@ impl Engine {
         series: &Series,
         step: i64,
         addr: CellAddr,
-    ) -> Option<Cell> {
+    ) -> (Option<Cell>, Option<FormatPatchRecord>) {
         let n = seeds.len() as i64;
         // Which seed this position repeats, cycling through the block.
         let idx = if step > 0 {
@@ -203,10 +309,20 @@ impl Engine {
             }
             CellContent::Literal(v) => Cell::literal(series.extend(v, step, n)),
         });
-        match new_cell {
+        // A fill drags the seed's formatting along with its value, which is
+        // what makes dragging a formatted total row down do the right thing.
+        let seed_format = self.wb.sheet(sheet).unwrap().format_id(src_addr);
+        let s = self.wb.sheet_mut(sheet).unwrap();
+        let old_format = match seed_format {
+            Some(id) => s.formats.insert(addr, id),
+            None => s.formats.remove(&addr),
+        };
+        let format_record = (old_format != seed_format).then_some((sheet, addr, old_format));
+        let old_cell = match new_cell {
             Some(nc) => self.wb.sheet_mut(sheet).unwrap().cells.insert(addr, nc),
             None => self.wb.sheet_mut(sheet).unwrap().cells.remove(&addr),
-        }
+        };
+        (old_cell, format_record)
     }
 
     /// Insert or delete rows/columns, remapping the sheet's cells and every
@@ -250,6 +366,45 @@ impl Engine {
             }
         }
         s.cells = moved_cells;
+
+        // Formats move with the rows and columns they sit on. Cells shifted
+        // off the end of the sheet drop their formatting the same way they
+        // drop their contents.
+        let mut moved_formats: BTreeMap<CellAddr, FormatId> = BTreeMap::new();
+        for (addr, id) in std::mem::take(&mut s.formats) {
+            let idx = match axis {
+                Axis::Row => addr.row,
+                Axis::Col => addr.col,
+            };
+            if let Some(new_idx) = shift.map_index(idx) {
+                let new_addr = match axis {
+                    Axis::Row => CellAddr::new(new_idx, addr.col),
+                    Axis::Col => CellAddr::new(addr.row, new_idx),
+                };
+                if new_addr.is_valid() {
+                    moved_formats.insert(new_addr, id);
+                }
+            }
+        }
+        s.formats = moved_formats;
+
+        // A column's width belongs to the column, so it travels with it:
+        // inserting in front of a widened column and finding the width left
+        // behind on its neighbour is the sort of thing that makes a sheet
+        // subtly wrong in a way nobody can point at.
+        let bound = match axis {
+            Axis::Row => crate::addr::MAX_ROWS,
+            Axis::Col => crate::addr::MAX_COLS,
+        };
+        let sizes = match axis {
+            Axis::Row => &mut s.row_heights,
+            Axis::Col => &mut s.col_widths,
+        };
+        *sizes = std::mem::take(sizes)
+            .into_iter()
+            .filter_map(|(i, px)| Some((shift.map_index(i)?, px)))
+            .filter(|(i, _)| *i < bound)
+            .collect();
 
         // Merged regions move with their cells; fully-deleted ones vanish.
         s.merged = s
@@ -316,6 +471,25 @@ impl Engine {
             })
             .collect();
 
+        // Formatting belongs to the row, not to the position: sorting a table
+        // whose total row is bold must move the bold with it.
+        let row_formats: HashMap<u32, Vec<Option<FormatId>>> = rows
+            .iter()
+            .map(|(r, _)| {
+                (
+                    *r,
+                    (range.start.col..=range.end.col)
+                        .map(|c| {
+                            self.wb
+                                .sheet(sheet)
+                                .unwrap()
+                                .format_id(CellAddr::new(*r, c))
+                        })
+                        .collect(),
+                )
+            })
+            .collect();
+
         let sort_values: HashMap<u32, Vec<Value>> = rows
             .iter()
             .map(|(r, cells)| {
@@ -363,11 +537,22 @@ impl Engine {
         // Write the rows back in their new order, shifting formula refs by
         // the distance each row travelled.
         let mut prev = Vec::new();
+        let mut prev_formats: Vec<FormatPatchRecord> = Vec::new();
         for (new_i, (old_row, cells)) in rows.into_iter().enumerate() {
             let new_row = first_row + new_i as u32;
             let dr = new_row as i64 - old_row as i64;
+            let formats = &row_formats[&old_row];
             for (ci, cell) in cells.into_iter().enumerate() {
                 let addr = CellAddr::new(new_row, range.start.col + ci as u32);
+                let want = formats.get(ci).copied().flatten();
+                let s = self.wb.sheet_mut(sheet).unwrap();
+                let had = match want {
+                    Some(id) => s.formats.insert(addr, id),
+                    None => s.formats.remove(&addr),
+                };
+                if had != want {
+                    prev_formats.push((sheet, addr, had));
+                }
                 let new_cell = cell.map(|c| match &c.content {
                     CellContent::Formula { ast, .. } if dr != 0 => {
                         let new_ast = refs::offset(ast, dr, 0);
@@ -388,7 +573,10 @@ impl Engine {
                 prev.push((sheet, addr, old));
             }
         }
-        Ok(UndoState::Cells(prev))
+        Ok(UndoState::Compound(vec![
+            UndoState::Cells(prev),
+            UndoState::Formats(prev_formats),
+        ]))
     }
 
     /// Apply a value filter: rows whose key cell is not in the allowed set

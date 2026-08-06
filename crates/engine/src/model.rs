@@ -2,9 +2,10 @@
 
 use crate::addr::{CellAddr, RangeAddr};
 use crate::ast::Expr;
+use crate::format::{FormatId, FormatTable};
 use crate::value::Value;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 /// Stable sheet identifier: survives renames and reorders.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -66,7 +67,13 @@ impl Cell {
 pub struct Sheet {
     pub id: SheetId,
     pub name: String,
+    #[serde(with = "a1_keys")]
     pub cells: HashMap<CellAddr, Cell>,
+    /// Presentation, keyed by address and independent of whether the cell
+    /// holds anything. Ordered so iteration — and therefore export and the
+    /// state snapshot — is deterministic. Only non-default formats appear.
+    #[serde(default, with = "a1_keys")]
+    pub formats: BTreeMap<CellAddr, FormatId>,
     /// Merged regions; anchor (top-left) holds the value.
     pub merged: Vec<RangeAddr>,
     /// Active value filter, if any.
@@ -75,6 +82,48 @@ pub struct Sheet {
     /// Rows hidden by the active filter, ascending. View state only.
     #[serde(default)]
     pub hidden_rows: Vec<u32>,
+    /// Column widths in pixels, for the columns that are not the default.
+    ///
+    /// In the model rather than in the grid's React state, because a width is
+    /// something the user *did*: it has to survive a save, and it has to be
+    /// visible to the capture pipeline. Only non-default entries are stored,
+    /// so an untouched sheet carries none.
+    #[serde(default)]
+    pub col_widths: BTreeMap<u32, f64>,
+    /// Row heights in pixels, on the same terms.
+    #[serde(default)]
+    pub row_heights: BTreeMap<u32, f64>,
+    /// Conditional formatting rules, in priority order: the first to set an
+    /// attribute keeps it.
+    #[serde(default)]
+    pub conditional: Vec<crate::cond::CondRule>,
+    /// What those rules currently say, per cell. Derived like `spill`:
+    /// recalculation rebuilds it and nothing else writes to it, which is what
+    /// keeps "why is this cell red" answerable with a rule.
+    #[serde(skip)]
+    pub cond_formats: BTreeMap<CellAddr, crate::format::CellFormat>,
+    /// Rows and columns held still while the rest of the sheet scrolls.
+    ///
+    /// View state, like `hidden_rows` — it changes nothing about any value —
+    /// but it is something the user *did*, so it lives on the single mutation
+    /// path and is written to the file rather than kept in the browser.
+    #[serde(default)]
+    pub frozen_rows: u32,
+    #[serde(default)]
+    pub frozen_cols: u32,
+    /// Blocks produced by formulas on this sheet, keyed by the cell that
+    /// produced them.
+    ///
+    /// Derived: recalculation rebuilds it, so it is not serialized and a
+    /// workbook read back from disk is recalculated before anyone looks.
+    #[serde(skip)]
+    pub arrays: BTreeMap<CellAddr, crate::eval::Array>,
+    /// Where each spilled value landed: address -> (the anchor that put it
+    /// there, the value). Derived from `arrays` in one deterministic sweep,
+    /// so two paths to the same workbook place spills identically even when
+    /// they evaluated the formulas in different orders.
+    #[serde(skip)]
+    pub spill: BTreeMap<CellAddr, (CellAddr, Value)>,
 }
 
 impl Sheet {
@@ -83,38 +132,102 @@ impl Sheet {
             id,
             name: name.into(),
             cells: HashMap::new(),
+            formats: BTreeMap::new(),
             merged: Vec::new(),
             filter: None,
             hidden_rows: Vec::new(),
+            col_widths: BTreeMap::new(),
+            row_heights: BTreeMap::new(),
+            conditional: Vec::new(),
+            cond_formats: BTreeMap::new(),
+            frozen_rows: 0,
+            frozen_cols: 0,
+            arrays: BTreeMap::new(),
+            spill: BTreeMap::new(),
         }
     }
 
     pub fn value(&self, addr: CellAddr) -> Value {
-        self.cells
+        if let Some(c) = self.cells.get(&addr) {
+            return c.value().clone();
+        }
+        // Spilled values have no cell of their own. Checked after `cells`
+        // because the anchor is a real cell and holds the first element.
+        self.spill
             .get(&addr)
-            .map(|c| c.value().clone())
+            .map(|(_, v)| v.clone())
             .unwrap_or(Value::Empty)
     }
 
-    /// The bounding box of populated cells, if any.
-    pub fn used_range(&self) -> Option<RangeAddr> {
-        let mut it = self.cells.keys();
-        let first = *it.next()?;
-        let mut r = RangeAddr::single(first);
-        for a in it {
-            r.start.row = r.start.row.min(a.row);
-            r.start.col = r.start.col.min(a.col);
-            r.end.row = r.end.row.max(a.row);
-            r.end.col = r.end.col.max(a.col);
-        }
-        Some(r)
+    /// The anchor whose block put a value here, if this cell is spilled into.
+    pub fn spill_anchor(&self, addr: CellAddr) -> Option<CellAddr> {
+        self.spill.get(&addr).map(|(a, _)| *a)
     }
+
+    /// The bounding box of populated cells, if any.
+    ///
+    /// Deliberately blind to formatting: this is the *data* extent, and it is
+    /// what CSV export and whole-sheet formula ranges mean. A bold empty
+    /// column is not data.
+    pub fn used_range(&self) -> Option<RangeAddr> {
+        // Spilled cells are data: they are what the user sees, and leaving
+        // them out would make Ctrl+Down stop at the anchor and CSV export
+        // drop everything below it.
+        bounds(self.cells.keys().copied().chain(self.spill.keys().copied()))
+    }
+
+    /// The bounding box of everything the grid has to draw — cells, formats
+    /// and merges. Larger than [`Sheet::used_range`] when the user has
+    /// formatted or merged cells they have not typed into yet.
+    pub fn painted_range(&self) -> Option<RangeAddr> {
+        bounds(
+            self.cells
+                .keys()
+                .copied()
+                .chain(self.spill.keys().copied())
+                .chain(self.formats.keys().copied())
+                .chain(self.merged.iter().flat_map(|m| [m.start, m.end])),
+        )
+    }
+
+    /// The format id at an address, if the cell carries one.
+    pub fn format_id(&self, addr: CellAddr) -> Option<FormatId> {
+        self.formats.get(&addr).copied()
+    }
+}
+
+fn bounds(addrs: impl Iterator<Item = CellAddr>) -> Option<RangeAddr> {
+    let mut it = addrs;
+    let first = it.next()?;
+    let mut r = RangeAddr::single(first);
+    for a in it {
+        r.start.row = r.start.row.min(a.row);
+        r.start.col = r.start.col.min(a.col);
+        r.end.row = r.end.row.max(a.row);
+        r.end.col = r.end.col.max(a.col);
+    }
+    Some(r)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Workbook {
     pub sheets: Vec<Sheet>,
+    /// The palette every `Sheet::formats` entry indexes into. Workbook-level
+    /// rather than per-sheet so a format survives a cut-and-paste across
+    /// sheets, and append-only so ids recorded for undo stay valid.
+    #[serde(default)]
+    pub formats: FormatTable,
     next_sheet_id: u32,
+    /// Defined names, uppercased, mapped to what they refer to — an A1
+    /// range, usually sheet-qualified and absolute (`Sheet1!$A$1:$B$4`),
+    /// exactly as xlsx spells it.
+    ///
+    /// The text rather than a parsed range, because that is what round-trips:
+    /// a name can refer to things this engine does not model, and keeping the
+    /// string means writing back what was read rather than an approximation
+    /// of it. Evaluation parses it on use.
+    #[serde(default)]
+    pub names: BTreeMap<String, String>,
     /// The original xlsx package this workbook was imported from, kept so
     /// export can patch only the parts we model and write everything else
     /// back unchanged. Bulk binary: never serialized.
@@ -133,7 +246,9 @@ impl Workbook {
     pub fn new() -> Self {
         let mut wb = Workbook {
             sheets: Vec::new(),
+            formats: FormatTable::default(),
             next_sheet_id: 0,
+            names: BTreeMap::new(),
             preserved: None,
         };
         wb.add_sheet("Sheet1");
@@ -193,18 +308,142 @@ impl Workbook {
                         )
                     })
                     .collect();
+                // Formats resolve to their values rather than their ids. An
+                // id is an artefact of the order formats happened to be
+                // interned, which differs between two paths to the same
+                // workbook — exactly the difference the replay suite must
+                // *not* see.
+                let formats: serde_json::Map<String, serde_json::Value> = s
+                    .formats
+                    .iter()
+                    .map(|(a, id)| {
+                        (
+                            a.to_a1(),
+                            serde_json::to_value(self.formats.resolve(Some(*id)))
+                                .unwrap_or(serde_json::Value::Null),
+                        )
+                    })
+                    .collect();
                 let mut merged: Vec<String> = s.merged.iter().map(|r| r.to_a1()).collect();
                 merged.sort();
                 let mut hidden = s.hidden_rows.clone();
                 hidden.sort_unstable();
+                // Sizes as runs rather than one entry per index. A file
+                // saying "every column is 90 wide" imports as sixteen
+                // thousand entries, and a snapshot is meant to be read.
                 serde_json::json!({
                     "name": s.name,
                     "cells": cells,
+                    "formats": formats,
                     "merged": merged,
                     "hidden_rows": hidden,
+                    "frozen": [s.frozen_rows, s.frozen_cols],
+                    // The rules and what they currently paint: a workbook
+                    // whose cells are the same but whose colours are not is
+                    // not the same workbook.
+                    "conditional": s
+                        .conditional
+                        .iter()
+                        .map(|r| {
+                            serde_json::json!({
+                                "range": r.range.to_a1(),
+                                "rule": r.summary(),
+                                "format": serde_json::to_value(&r.format)
+                                    .unwrap_or(serde_json::Value::Null),
+                            })
+                        })
+                        .collect::<Vec<_>>(),
+                    "cond_formats": s
+                        .cond_formats
+                        .iter()
+                        .map(|(a, f)| {
+                            (
+                                a.to_a1(),
+                                serde_json::to_value(f).unwrap_or(serde_json::Value::Null),
+                            )
+                        })
+                        .collect::<serde_json::Map<String, serde_json::Value>>(),
+                    "col_widths": size_runs(&s.col_widths),
+                    "row_heights": size_runs(&s.row_heights),
+                    // Spilled cells are state the user can see and formulas
+                    // can read, so a snapshot that left them out would call
+                    // two different workbooks identical.
+                    "spill": s
+                        .spill
+                        .iter()
+                        .map(|(a, (anchor, v))| {
+                            (
+                                a.to_a1(),
+                                serde_json::json!({
+                                    "from": anchor.to_a1(),
+                                    "value": v.display(),
+                                }),
+                            )
+                        })
+                        .collect::<serde_json::Map<String, serde_json::Value>>(),
                 })
             })
             .collect();
         serde_json::json!({ "sheets": sheets })
     }
+}
+
+/// Collapse a size map into `[first, last, pixels]` runs.
+/// Serialize a `CellAddr`-keyed map by its A1 spelling.
+///
+/// Two reasons, and the first is not optional: JSON map keys must be strings,
+/// and `CellAddr` is a struct, so a workbook containing one simply cannot be
+/// written as JSON without this. The second is that `"B7"` is what a person
+/// reading a stored snapshot expects to see, and a snapshot is the unit a
+/// dataset gets debugged in.
+///
+/// Keys are ordered by their A1 text rather than by address — so `A10`
+/// precedes `A2` — which is odd to read but deterministic, and determinism is
+/// the property the snapshot hash depends on.
+mod a1_keys {
+    use std::collections::BTreeMap;
+
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    use crate::addr::CellAddr;
+
+    pub fn serialize<'a, V, M, S>(map: &'a M, s: S) -> Result<S::Ok, S::Error>
+    where
+        V: Serialize + 'a,
+        S: Serializer,
+        &'a M: IntoIterator<Item = (&'a CellAddr, &'a V)>,
+    {
+        let by_a1: BTreeMap<String, &V> = map.into_iter().map(|(a, v)| (a.to_a1(), v)).collect();
+        by_a1.serialize(s)
+    }
+
+    pub fn deserialize<'de, V, M, D>(d: D) -> Result<M, D::Error>
+    where
+        V: Deserialize<'de>,
+        M: FromIterator<(CellAddr, V)>,
+        D: Deserializer<'de>,
+    {
+        let by_a1: BTreeMap<String, V> = BTreeMap::deserialize(d)?;
+        by_a1
+            .into_iter()
+            .map(|(k, v)| {
+                CellAddr::parse_a1(&k)
+                    .map(|a| (a, v))
+                    .ok_or_else(|| serde::de::Error::custom(format!("bad cell address `{k}`")))
+            })
+            .collect()
+    }
+}
+
+fn size_runs(sizes: &BTreeMap<u32, f64>) -> Vec<serde_json::Value> {
+    let mut runs: Vec<(u32, u32, f64)> = Vec::new();
+    for (&i, &px) in sizes {
+        match runs.last_mut() {
+            Some((_, end, size)) if *end + 1 == i && *size == px => *end = i,
+            _ => runs.push((i, i, px)),
+        }
+    }
+    runs.into_iter()
+        .map(|(a, b, px)| serde_json::json!([a, b, px]))
+        .collect()
 }

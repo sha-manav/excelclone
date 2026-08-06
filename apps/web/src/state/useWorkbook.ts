@@ -57,7 +57,10 @@ export interface WorkbookApi {
   commitEdit: (move: MoveDirection) => void
   cancelEdit: () => void
   dismissError: () => void
+  reportError: (message: string) => void
   setWarnings: (w: ImportWarning[]) => void
+  /** Re-read everything after the engine's workbook was replaced by an import. */
+  reset: (sheet: string) => void
 }
 
 const MAX_ROW = 1_048_575
@@ -222,6 +225,24 @@ export function useWorkbook(): WorkbookApi {
 
   const cancelEdit = useCallback(() => setEditing(null), [])
 
+  /**
+   * An import replaces the whole workbook behind the handle, so every piece of
+   * view state that referred to the old one — selection, edit in progress,
+   * active sheet — has to be dropped rather than reinterpreted against the new
+   * sheets.
+   */
+  const reset = useCallback(
+    (sheet: string) => {
+      setEditing(null)
+      editingRef.current = null
+      setActiveSheetState(sheet)
+      setSelection({ anchor: mkAddr(0, 0), range: singleRange(mkAddr(0, 0)) })
+      setError(null)
+      refresh()
+    },
+    [refresh],
+  )
+
   return {
     engine: engineRef.current,
     ready,
@@ -245,6 +266,8 @@ export function useWorkbook(): WorkbookApi {
     commitEdit,
     cancelEdit,
     dismissError: () => setError(null),
+    reportError: setError,
     setWarnings,
+    reset,
   }
 }

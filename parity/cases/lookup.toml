@@ -1,0 +1,189 @@
+# Lookup: exact and approximate, and what happens when nothing matches.
+#
+# Approximate matching is where implementations diverge quietly, because Excel
+# performs a binary search that *assumes* the range is sorted. On sorted data
+# every implementation agrees; on unsorted data the answer is a property of
+# the search, not of the data, and that case is recorded as `open`.
+
+[[case]]
+id = "lookup.vlookup-exact"
+given = { A1 = "'basic", B1 = "120", A2 = "'plus", B2 = "300", A3 = "'pro", B3 = "750" }
+formula = "=VLOOKUP(\"plus\",A1:B3,2,FALSE)"
+expect = "300"
+source = "known"
+functions = ["VLOOKUP"]
+note = "The ordinary case, pinned so the ordinary case cannot break unnoticed."
+
+[[case]]
+id = "lookup.vlookup-exact-miss-is-na"
+given = { A1 = "'basic", B1 = "120" }
+formula = "=VLOOKUP(\"gold\",A1:B3,2,FALSE)"
+expect = "#N/A"
+source = "known"
+functions = ["VLOOKUP"]
+note = "#N/A specifically: 'the value is not available', not #VALUE!."
+
+[[case]]
+id = "lookup.vlookup-is-case-insensitive"
+given = { A1 = "'Plus", B1 = "300" }
+formula = "=VLOOKUP(\"plus\",A1:B3,2,FALSE)"
+expect = "300"
+source = "known"
+functions = ["VLOOKUP"]
+note = "Text matching in lookups follows = , which ignores case."
+
+[[case]]
+id = "lookup.vlookup-column-out-of-range-is-ref"
+given = { A1 = "'a", B1 = "1" }
+formula = "=VLOOKUP(\"a\",A1:B3,5,FALSE)"
+expect = "#REF!"
+source = "known"
+functions = ["VLOOKUP"]
+note = """
+Asking for a column the range does not have is #REF!, not #VALUE!. Column
+index 0 or negative is #VALUE!, which is a different mistake.
+"""
+
+[[case]]
+id = "lookup.vlookup-zero-column-is-value"
+given = { A1 = "'a", B1 = "1" }
+formula = "=VLOOKUP(\"a\",A1:B3,0,FALSE)"
+expect = "#VALUE!"
+source = "known"
+functions = ["VLOOKUP"]
+note = "Column indexes are 1-based; 0 is a malformed argument, not a missing one."
+
+[[case]]
+id = "lookup.vlookup-approximate-takes-the-last-not-greater"
+given = { A1 = "1", B1 = "'low", A2 = "10", B2 = "'mid", A3 = "20", B3 = "'high" }
+formula = "=VLOOKUP(15,A1:B3,2,TRUE)"
+expect = "mid"
+source = "known"
+functions = ["VLOOKUP"]
+note = """
+Approximate match on ascending data returns the row with the largest key that
+is not greater than the lookup value. This is the tax-bracket idiom and the
+main reason the fourth argument exists.
+"""
+
+[[case]]
+id = "lookup.vlookup-approximate-below-the-first-key-is-na"
+given = { A1 = "10", B1 = "'mid", A2 = "20", B2 = "'high" }
+formula = "=VLOOKUP(5,A1:B3,2,TRUE)"
+expect = "#N/A"
+source = "known"
+functions = ["VLOOKUP"]
+note = "Nothing is not greater than the lookup value, so there is no answer."
+
+[[case]]
+id = "lookup.vlookup-approximate-is-the-default"
+given = { A1 = "1", B1 = "'low", A2 = "10", B2 = "'mid" }
+formula = "=VLOOKUP(15,A1:B2,2)"
+expect = "mid"
+source = "known"
+functions = ["VLOOKUP"]
+note = """
+Omitting the fourth argument means TRUE, which is the wrong default for the
+way most people use VLOOKUP and the reason so many sheets return a plausible
+neighbour instead of #N/A.
+"""
+
+[[case]]
+id = "lookup.hlookup-exact"
+given = { A1 = "'a", B1 = "'b", A2 = "1", B2 = "2" }
+formula = "=HLOOKUP(\"b\",A1:B2,2,FALSE)"
+expect = "2"
+source = "known"
+functions = ["HLOOKUP"]
+note = "The same rules with the axes swapped."
+
+[[case]]
+id = "lookup.match-exact-returns-a-position"
+given = { A1 = "'x", A2 = "'y", A3 = "'z" }
+formula = "=MATCH(\"y\",A1:A3,0)"
+expect = "2"
+source = "known"
+functions = ["MATCH"]
+note = "A 1-based offset within the range, not a row number on the sheet."
+
+[[case]]
+id = "lookup.match-exact-miss-is-na"
+given = { A1 = "'x" }
+formula = "=MATCH(\"q\",A1:A3,0)"
+expect = "#N/A"
+source = "known"
+functions = ["MATCH"]
+note = "As VLOOKUP."
+
+[[case]]
+id = "lookup.match-ascending-takes-the-last-not-greater"
+given = { A1 = "1", A2 = "10", A3 = "20" }
+formula = "=MATCH(15,A1:A3,1)"
+expect = "2"
+source = "known"
+functions = ["MATCH"]
+note = "Type 1 assumes ascending order and behaves as approximate VLOOKUP does."
+
+[[case]]
+id = "lookup.match-descending-takes-the-last-not-less"
+given = { A1 = "20", A2 = "10", A3 = "1" }
+formula = "=MATCH(15,A1:A3,-1)"
+expect = "1"
+source = "known"
+functions = ["MATCH"]
+note = "Type -1 assumes descending order and mirrors type 1."
+
+[[case]]
+id = "lookup.index-by-row-and-column"
+given = { A1 = "1", B1 = "2", A2 = "3", B2 = "4" }
+formula = "=INDEX(A1:B2,2,2)"
+expect = "4"
+source = "known"
+functions = ["INDEX"]
+note = "Offsets within the range, both 1-based."
+
+[[case]]
+id = "lookup.index-out-of-range-is-ref"
+given = { A1 = "1", B1 = "2" }
+formula = "=INDEX(A1:B1,1,5)"
+expect = "#REF!"
+source = "known"
+functions = ["INDEX"]
+note = "Asking outside the range is #REF!, consistent with VLOOKUP."
+
+[[case]]
+id = "lookup.choose-picks-by-position"
+formula = "=CHOOSE(2,\"a\",\"b\",\"c\")"
+expect = "b"
+source = "known"
+functions = ["CHOOSE"]
+note = "1-based, like every other index in the language."
+
+[[case]]
+id = "lookup.choose-out-of-range-is-value"
+formula = "=CHOOSE(5,\"a\",\"b\")"
+expect = "#VALUE!"
+source = "known"
+functions = ["CHOOSE"]
+note = "#VALUE!, not #REF! — the argument is wrong rather than the reference."
+
+[[case]]
+id = "lookup.xlookup-not-found-default"
+given = { A1 = "'a", B1 = "1" }
+formula = "=XLOOKUP(\"q\",A1:A3,B1:B3,\"none\")"
+expect = "none"
+source = "known"
+functions = ["XLOOKUP"]
+note = """
+XLOOKUP's fourth argument is the not-found value, which is the whole reason it
+replaced IFERROR(VLOOKUP(...)) in new sheets.
+"""
+
+[[case]]
+id = "lookup.xlookup-without-a-default-is-na"
+given = { A1 = "'a", B1 = "1" }
+formula = "=XLOOKUP(\"q\",A1:A3,B1:B3)"
+expect = "#N/A"
+source = "known"
+functions = ["XLOOKUP"]
+note = "Omitted, it falls back to #N/A."

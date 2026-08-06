@@ -3,8 +3,10 @@
 //! Function names are uppercase at parse time; unknown names evaluate to
 //! `#NAME?` (fail loudly, never silently).
 
-mod condagg;
+pub(crate) mod condagg;
 mod date;
+mod dynamic;
+mod finance;
 mod logic;
 mod lookup;
 mod math;
@@ -14,6 +16,165 @@ mod text;
 use crate::ast::Expr;
 use crate::eval::{EvalCtx, Operand};
 use crate::value::{ErrorKind, Value};
+
+/// Every function name `call` answers to, in dispatch order.
+///
+/// Exists so the parity harness can ask what is implemented without guessing,
+/// and so "we support N functions" is a list somebody can read rather than a
+/// number somebody remembers. `the_list_matches_the_dispatcher` keeps it from
+/// drifting away from the `match` below.
+pub const IMPLEMENTED: &[&str] = &[
+    // Math
+    "SUM",
+    "PRODUCT",
+    "AVERAGE",
+    "MIN",
+    "MAX",
+    "COUNT",
+    "COUNTA",
+    "COUNTBLANK",
+    "ROUND",
+    "ROUNDUP",
+    "ROUNDDOWN",
+    "ABS",
+    "INT",
+    "MOD",
+    "POWER",
+    "SQRT",
+    "CEILING",
+    "FLOOR",
+    "MROUND",
+    "TRUNC",
+    "SIGN",
+    "EXP",
+    "LN",
+    "LOG",
+    "LOG10",
+    "GCD",
+    "LCM",
+    "MEDIAN",
+    "LARGE",
+    "SMALL",
+    "RANK",
+    "SUMPRODUCT",
+    "MODE",
+    "STDEV",
+    "LET",
+    "SUBTOTAL",
+    "AGGREGATE",
+    "PMT",
+    "FV",
+    "PV",
+    "NPER",
+    "RATE",
+    "NPV",
+    "IRR",
+    // Logic
+    "IF",
+    "IFS",
+    "AND",
+    "OR",
+    "NOT",
+    "IFERROR",
+    "ISBLANK",
+    "ISNUMBER",
+    "ISTEXT",
+    "ISERROR",
+    "ISNA",
+    "ISERR",
+    "ISLOGICAL",
+    "IFNA",
+    "NA",
+    "TYPE",
+    "ISREF",
+    // Lookup
+    "VLOOKUP",
+    "HLOOKUP",
+    "INDEX",
+    "MATCH",
+    "XLOOKUP",
+    "CHOOSE",
+    "ROW",
+    "COLUMN",
+    "ROWS",
+    "COLUMNS",
+    "XMATCH",
+    "LOOKUP",
+    "OFFSET",
+    "INDIRECT",
+    "UNIQUE",
+    "SORT",
+    "SORTBY",
+    "FILTER",
+    "SEQUENCE",
+    "TRANSPOSE",
+    "TEXTSPLIT",
+    // Text
+    "CONCAT",
+    "CONCATENATE",
+    "TEXTJOIN",
+    "LEFT",
+    "RIGHT",
+    "MID",
+    "LEN",
+    "TRIM",
+    "UPPER",
+    "LOWER",
+    "PROPER",
+    "SUBSTITUTE",
+    "REPLACE",
+    "FIND",
+    "SEARCH",
+    "TEXT",
+    "VALUE",
+    "REPT",
+    "EXACT",
+    "CHAR",
+    "CODE",
+    "CLEAN",
+    "TEXTBEFORE",
+    "TEXTAFTER",
+    "NUMBERVALUE",
+    // Conditional aggregation
+    "COUNTIF",
+    "COUNTIFS",
+    "SUMIF",
+    "SUMIFS",
+    "AVERAGEIF",
+    "AVERAGEIFS",
+    // Date/time
+    "TODAY",
+    "NOW",
+    "DATE",
+    "YEAR",
+    "MONTH",
+    "DAY",
+    "EOMONTH",
+    "DATEDIF",
+    "WEEKDAY",
+    "RAND",
+    "RANDBETWEEN",
+    "TIME",
+    "HOUR",
+    "MINUTE",
+    "SECOND",
+    "DATEVALUE",
+    "EDATE",
+    "DAYS",
+    "TIMEVALUE",
+    "NETWORKDAYS",
+    "WORKDAY",
+    "YEARFRAC",
+];
+
+/// The functions that produce something other than a value — a reference or
+/// a block — asked before the value ones.
+///
+/// One door for `eval_operand` to knock on; which functions those are lives
+/// beside their code, in `lookup` and `dynamic` respectively.
+pub fn call_operand(ctx: &EvalCtx, name: &str, args: &[Expr]) -> Option<Operand> {
+    lookup::call_operand(ctx, name, args).or_else(|| dynamic::call_operand(ctx, name, args))
+}
 
 pub fn call(ctx: &EvalCtx, name: &str, args: &[Expr]) -> Value {
     match name {
@@ -34,6 +195,35 @@ pub fn call(ctx: &EvalCtx, name: &str, args: &[Expr]) -> Value {
         "MOD" => math::mod_fn(ctx, args),
         "POWER" => math::power(ctx, args),
         "SQRT" => math::sqrt(ctx, args),
+        "CEILING" => math::ceiling(ctx, args),
+        "FLOOR" => math::floor(ctx, args),
+        "MROUND" => math::mround(ctx, args),
+        "TRUNC" => math::trunc(ctx, args),
+        "SIGN" => math::sign(ctx, args),
+        "EXP" => math::exp(ctx, args),
+        "LN" => math::ln(ctx, args),
+        "LOG" => math::log(ctx, args),
+        "LOG10" => math::log10(ctx, args),
+        "GCD" => math::gcd(ctx, args),
+        "LCM" => math::lcm(ctx, args),
+        "MEDIAN" => math::median(ctx, args),
+        "LARGE" => math::large(ctx, args),
+        "SMALL" => math::small(ctx, args),
+        "RANK" => math::rank(ctx, args),
+        "SUMPRODUCT" => math::sumproduct(ctx, args),
+        "MODE" => math::mode(ctx, args),
+        "STDEV" => math::stdev(ctx, args),
+        "LET" => logic::let_fn(ctx, args),
+        "SUBTOTAL" => math::subtotal(ctx, args),
+        "AGGREGATE" => math::aggregate(ctx, args),
+        // Finance
+        "PMT" => finance::pmt(ctx, args),
+        "FV" => finance::fv(ctx, args),
+        "PV" => finance::pv(ctx, args),
+        "NPER" => finance::nper(ctx, args),
+        "RATE" => finance::rate(ctx, args),
+        "NPV" => finance::npv(ctx, args),
+        "IRR" => finance::irr(ctx, args),
         // Logic
         "IF" => logic::if_fn(ctx, args),
         "IFS" => logic::ifs(ctx, args),
@@ -45,6 +235,13 @@ pub fn call(ctx: &EvalCtx, name: &str, args: &[Expr]) -> Value {
         "ISNUMBER" => logic::isnumber(ctx, args),
         "ISTEXT" => logic::istext(ctx, args),
         "ISERROR" => logic::iserror(ctx, args),
+        "ISNA" => logic::isna(ctx, args),
+        "ISERR" => logic::iserr(ctx, args),
+        "ISLOGICAL" => logic::islogical(ctx, args),
+        "IFNA" => logic::ifna(ctx, args),
+        "NA" => logic::na(ctx, args),
+        "TYPE" => logic::type_of(ctx, args),
+        "ISREF" => logic::isref(ctx, args),
         // Lookup
         "VLOOKUP" => lookup::vlookup(ctx, args),
         "HLOOKUP" => lookup::hlookup(ctx, args),
@@ -52,6 +249,26 @@ pub fn call(ctx: &EvalCtx, name: &str, args: &[Expr]) -> Value {
         "MATCH" => lookup::match_fn(ctx, args),
         "XLOOKUP" => lookup::xlookup(ctx, args),
         "CHOOSE" => lookup::choose(ctx, args),
+        "ROW" => lookup::row(ctx, args),
+        "COLUMN" => lookup::column(ctx, args),
+        "ROWS" => lookup::rows(ctx, args),
+        "COLUMNS" => lookup::columns(ctx, args),
+        "XMATCH" => lookup::xmatch(ctx, args),
+        "LOOKUP" => lookup::lookup(ctx, args),
+        // These two reach here only in a scalar position; `eval_operand`
+        // tries the reference path first. One name per arm, because the test
+        // that keeps `IMPLEMENTED` honest reads these lines.
+        "OFFSET" => reference_as_scalar(ctx, "OFFSET", args),
+        "INDIRECT" => reference_as_scalar(ctx, "INDIRECT", args),
+        // Dynamic arrays. These reach `call` only from a position that wants
+        // one value, where a block degrades exactly as a range does.
+        "UNIQUE" => reference_as_scalar(ctx, "UNIQUE", args),
+        "SORT" => reference_as_scalar(ctx, "SORT", args),
+        "SORTBY" => reference_as_scalar(ctx, "SORTBY", args),
+        "FILTER" => reference_as_scalar(ctx, "FILTER", args),
+        "SEQUENCE" => reference_as_scalar(ctx, "SEQUENCE", args),
+        "TRANSPOSE" => reference_as_scalar(ctx, "TRANSPOSE", args),
+        "TEXTSPLIT" => reference_as_scalar(ctx, "TEXTSPLIT", args),
         // Text
         "CONCAT" => text::concat(ctx, args),
         "CONCATENATE" => text::concatenate(ctx, args),
@@ -70,6 +287,14 @@ pub fn call(ctx: &EvalCtx, name: &str, args: &[Expr]) -> Value {
         "SEARCH" => text::search(ctx, args),
         "TEXT" => text::text(ctx, args),
         "VALUE" => text::value(ctx, args),
+        "REPT" => text::rept(ctx, args),
+        "EXACT" => text::exact(ctx, args),
+        "CHAR" => text::char_fn(ctx, args),
+        "CODE" => text::code(ctx, args),
+        "CLEAN" => text::clean(ctx, args),
+        "TEXTBEFORE" => text::textbefore(ctx, args),
+        "TEXTAFTER" => text::textafter(ctx, args),
+        "NUMBERVALUE" => text::numbervalue(ctx, args),
         // Conditional aggregation
         "COUNTIF" => condagg::countif(ctx, args),
         "COUNTIFS" => condagg::countifs(ctx, args),
@@ -89,7 +314,27 @@ pub fn call(ctx: &EvalCtx, name: &str, args: &[Expr]) -> Value {
         "WEEKDAY" => date::weekday(ctx, args),
         "RAND" => date::rand(ctx, args),
         "RANDBETWEEN" => date::randbetween(ctx, args),
+        "TIME" => date::time(ctx, args),
+        "HOUR" => date::hour(ctx, args),
+        "MINUTE" => date::minute(ctx, args),
+        "SECOND" => date::second(ctx, args),
+        "DATEVALUE" => date::datevalue(ctx, args),
+        "EDATE" => date::edate(ctx, args),
+        "DAYS" => date::days(ctx, args),
+        "TIMEVALUE" => date::timevalue(ctx, args),
+        "NETWORKDAYS" => date::networkdays(ctx, args),
+        "WORKDAY" => date::workday(ctx, args),
+        "YEARFRAC" => date::yearfrac(ctx, args),
         _ => Value::Error(ErrorKind::Name),
+    }
+}
+
+/// Collapse a reference-returning function to a scalar, for the positions
+/// where a reference is not what the caller can use.
+fn reference_as_scalar(ctx: &EvalCtx, name: &str, args: &[Expr]) -> Value {
+    match call_operand(ctx, name, args) {
+        Some(op) => ctx.scalar_of(op),
+        None => Value::Error(ErrorKind::Name),
     }
 }
 
@@ -116,6 +361,21 @@ pub fn gather(ctx: &EvalCtx, args: &[Expr]) -> Vec<Gathered> {
             }),
             Operand::Range { sheet, range } => {
                 for v in ctx.range_values(sheet, range) {
+                    out.push(Gathered {
+                        value: v,
+                        from_range: true,
+                    });
+                }
+            }
+            // A computed block counts as a reference for the same reason a
+            // range does: `AVERAGE(UNIQUE(A1:A3))` over text is #DIV/0!, not
+            // #VALUE!, because the text came from cells rather than the
+            // formula. Empty entries are dropped, as range gathering does.
+            Operand::Array(a) => {
+                for v in a.values {
+                    if v.is_empty() {
+                        continue;
+                    }
                     out.push(Gathered {
                         value: v,
                         from_range: true,
@@ -161,5 +421,47 @@ pub fn num_result(r: Result<f64, ErrorKind>) -> Value {
         Ok(n) if n.is_finite() => Value::Number(n),
         Ok(_) => Value::Error(ErrorKind::Num),
         Err(k) => Value::Error(k),
+    }
+}
+
+#[cfg(test)]
+mod registry_tests {
+    use super::IMPLEMENTED;
+
+    /// `IMPLEMENTED` is a hand-written copy of the dispatcher's arms. If it
+    /// drifts, the parity report starts lying about what exists — in either
+    /// direction — so the two are compared against each other here.
+    #[test]
+    fn the_list_matches_the_dispatcher() {
+        let source = include_str!("mod.rs");
+        let body = source
+            .split_once("pub fn call(")
+            .expect("the dispatcher")
+            .1
+            .split_once("_ => Value::Error(ErrorKind::Name)")
+            .expect("the fallthrough")
+            .0;
+        let mut dispatched: Vec<&str> = body
+            .lines()
+            .filter_map(|line| {
+                let line = line.trim();
+                let rest = line.strip_prefix('"')?;
+                let (name, tail) = rest.split_once('"')?;
+                tail.trim_start().starts_with("=>").then_some(name)
+            })
+            .collect();
+        dispatched.sort_unstable();
+        dispatched.dedup();
+
+        let mut listed: Vec<&str> = IMPLEMENTED.to_vec();
+        listed.sort_unstable();
+        let before = listed.len();
+        listed.dedup();
+        assert_eq!(before, listed.len(), "IMPLEMENTED lists a name twice");
+
+        assert_eq!(
+            dispatched, listed,
+            "IMPLEMENTED has drifted from the dispatcher"
+        );
     }
 }

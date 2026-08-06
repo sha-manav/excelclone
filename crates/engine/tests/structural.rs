@@ -1,7 +1,8 @@
 //! M2 integration tests: copy/cut/paste, fill, insert/delete, sort, filter,
 //! merge, and undo/redo. Expected values are Excel-verified.
 
-use engine::{Action, CellAddr, Engine, FilterSpec, PasteMode, RangeAddr, SortKey, Value};
+use engine::{Action, Axis, CellAddr, Engine, FilterSpec, PasteMode, RangeAddr, SortKey, Value};
+use std::collections::BTreeMap;
 
 fn a1(s: &str) -> CellAddr {
     CellAddr::parse_a1(s).unwrap()
@@ -566,4 +567,138 @@ fn structural_actions_replay_deterministically() {
         replayed.apply(op).unwrap();
     }
     assert_eq!(live.wb.state_snapshot(), replayed.wb.state_snapshot());
+}
+
+// ---------------------------------------------------------------------------
+// Resize
+// ---------------------------------------------------------------------------
+
+fn resize(
+    e: &mut Engine,
+    axis: Axis,
+    at: u32,
+    count: u32,
+    size: Option<f64>,
+) -> Vec<engine::Event> {
+    e.apply(&Action::Resize {
+        sheet: "Sheet1".into(),
+        axis,
+        at,
+        count,
+        size,
+    })
+    .unwrap()
+}
+
+fn widths(e: &Engine) -> BTreeMap<u32, f64> {
+    e.wb.sheet_by_name("Sheet1").unwrap().col_widths.clone()
+}
+
+#[test]
+fn a_resize_covers_the_run_it_names_and_undoes_as_one_step() {
+    let mut e = Engine::new();
+    resize(&mut e, Axis::Col, 1, 3, Some(150.0));
+    assert_eq!(
+        widths(&e),
+        BTreeMap::from([(1, 150.0), (2, 150.0), (3, 150.0)])
+    );
+
+    // Dragging three column borders at once is one gesture, so one Ctrl+Z.
+    e.apply(&Action::Undo).unwrap();
+    assert!(widths(&e).is_empty());
+    e.apply(&Action::Redo).unwrap();
+    assert_eq!(widths(&e).len(), 3);
+}
+
+#[test]
+fn clearing_a_size_restores_the_default_rather_than_recording_one() {
+    let mut e = Engine::new();
+    resize(&mut e, Axis::Col, 0, 1, Some(150.0));
+    resize(&mut e, Axis::Col, 0, 1, None);
+    // Not "the default width, written down": absent. A file written from this
+    // sheet must carry no <col> for column A at all.
+    assert!(widths(&e).is_empty());
+    e.apply(&Action::Undo).unwrap();
+    assert_eq!(widths(&e).get(&0), Some(&150.0));
+}
+
+#[test]
+fn a_resize_that_changes_nothing_is_not_an_undo_step() {
+    let mut e = Engine::new();
+    set(&mut e, "A1", "keep me");
+    // Clearing a size that was never set, and setting the size a column
+    // already has. Neither is a change, and neither may bury the cell edit
+    // under a no-op the next Ctrl+Z would spend itself on.
+    assert!(resize(&mut e, Axis::Col, 0, 1, None).is_empty());
+    resize(&mut e, Axis::Col, 0, 1, Some(150.0));
+    assert!(resize(&mut e, Axis::Col, 0, 1, Some(150.0)).is_empty());
+
+    e.apply(&Action::Undo).unwrap();
+    assert!(widths(&e).is_empty(), "undo skipped past the resize");
+    e.apply(&Action::Undo).unwrap();
+    assert_eq!(e.value_at("Sheet1", "A1"), Value::Empty);
+}
+
+#[test]
+fn a_size_must_be_a_size() {
+    let mut e = Engine::new();
+    for bad in [0.0, -10.0, f64::NAN, f64::INFINITY] {
+        assert!(
+            e.apply(&Action::Resize {
+                sheet: "Sheet1".into(),
+                axis: Axis::Col,
+                at: 0,
+                count: 1,
+                size: Some(bad),
+            })
+            .is_err(),
+            "{bad} was accepted as a width"
+        );
+    }
+    // Hiding a column is a separate feature; a zero width must not become the
+    // back door into it.
+    assert!(widths(&e).is_empty());
+}
+
+#[test]
+fn widths_travel_with_the_columns_they_belong_to() {
+    let mut e = Engine::new();
+    resize(&mut e, Axis::Col, 2, 1, Some(150.0));
+    e.apply(&Action::ColInsert {
+        sheet: "Sheet1".into(),
+        at: 0,
+        count: 2,
+    })
+    .unwrap();
+    assert_eq!(
+        widths(&e),
+        BTreeMap::from([(4, 150.0)]),
+        "the width stayed behind on the wrong column"
+    );
+
+    // And a deleted column takes its width with it rather than leaving it for
+    // whoever slides into the slot.
+    e.apply(&Action::ColDelete {
+        sheet: "Sheet1".into(),
+        at: 4,
+        count: 1,
+    })
+    .unwrap();
+    assert!(widths(&e).is_empty());
+}
+
+#[test]
+fn row_heights_shift_with_inserted_rows() {
+    let mut e = Engine::new();
+    resize(&mut e, Axis::Row, 5, 1, Some(40.0));
+    e.apply(&Action::RowInsert {
+        sheet: "Sheet1".into(),
+        at: 0,
+        count: 3,
+    })
+    .unwrap();
+    let heights = &e.wb.sheet_by_name("Sheet1").unwrap().row_heights;
+    assert_eq!(*heights, BTreeMap::from([(8, 40.0)]));
+    // The columns were not the axis, so they were not touched.
+    assert!(widths(&e).is_empty());
 }

@@ -115,9 +115,19 @@
           "value": "50"
         }
       },
+      "col_widths": [],
+      "cond_formats": {},
+      "conditional": [],
+      "formats": {},
+      "frozen": [
+        0,
+        0
+      ],
       "hidden_rows": [],
       "merged": [],
-      "name": "Sheet1"
+      "name": "Sheet1",
+      "row_heights": [],
+      "spill": {}
     }
   ]
 }

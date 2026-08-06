@@ -12,6 +12,13 @@ pub enum ErrorKind {
     NA,
     Num,
     Circ,
+    /// A dynamic array had nowhere to land: something is already sitting in
+    /// the cells it would have filled.
+    Spill,
+    /// A block calculation produced nothing — FILTER matched no rows, UNIQUE
+    /// was handed nothing. An empty block is not a value, so Excel says this
+    /// rather than showing a blank that looks like a working formula.
+    Calc,
 }
 
 impl ErrorKind {
@@ -24,6 +31,8 @@ impl ErrorKind {
             ErrorKind::NA => "#N/A",
             ErrorKind::Num => "#NUM!",
             ErrorKind::Circ => "#CIRC!",
+            ErrorKind::Spill => "#SPILL!",
+            ErrorKind::Calc => "#CALC!",
         }
     }
 
@@ -36,6 +45,8 @@ impl ErrorKind {
             "#N/A" => Some(ErrorKind::NA),
             "#NUM!" => Some(ErrorKind::Num),
             "#CIRC!" => Some(ErrorKind::Circ),
+            "#SPILL!" => Some(ErrorKind::Spill),
+            "#CALC!" => Some(ErrorKind::Calc),
             _ => None,
         }
     }

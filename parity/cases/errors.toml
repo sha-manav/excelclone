@@ -1,0 +1,126 @@
+# Errors: which one, and how far it travels.
+#
+# Getting the *kind* right matters as much as erroring at all. A sheet author
+# reads #REF! as "I deleted something" and #VALUE! as "I typed something
+# wrong", and an engine that returns the wrong one sends them looking in the
+# wrong place.
+
+[[case]]
+id = "error.unknown-function-is-name"
+formula = "=NOSUCHFUNCTION(1)"
+expect = "#NAME?"
+source = "known"
+note = """
+An unrecognised name is #NAME?, never a silent zero. This is also how a
+workbook using a function we have not implemented announces itself.
+"""
+
+[[case]]
+id = "error.iferror-catches"
+formula = "=IFERROR(1/0,\"caught\")"
+expect = "caught"
+source = "known"
+functions = ["IFERROR"]
+note = "The only ordinary way to stop propagation."
+
+[[case]]
+id = "error.iferror-passes-a-good-value-through"
+formula = "=IFERROR(6,\"caught\")"
+expect = "6"
+source = "known"
+functions = ["IFERROR"]
+note = "It is not a coalesce: a non-error is returned unchanged."
+
+[[case]]
+id = "error.iserror-is-true-for-any-error"
+formula = "=ISERROR(1/0)"
+expect = "TRUE"
+source = "known"
+functions = ["ISERROR"]
+note = "ISERROR covers every error kind including #N/A; ISERR excludes #N/A."
+
+[[case]]
+id = "error.the-first-error-wins"
+given = { A1 = "=1/0", A2 = "=NOSUCHFUNCTION()" }
+formula = "=A1+A2"
+expect = "#DIV/0!"
+source = "known"
+note = """
+Two errors in one expression: the one reached first propagates, so the
+left-hand operand's #DIV/0! is what surfaces rather than the #NAME?.
+"""
+
+[[case]]
+id = "error.a-reference-to-a-deleted-sheet-is-ref"
+formula = "=NoSuchSheet!A1"
+expect = "#REF!"
+source = "known"
+note = """
+A reference that cannot be resolved to a place is #REF!. Contrast with
+#NAME?, which is a symbol that is not a reference at all.
+"""
+
+[[case]]
+id = "error.isblank-is-false-for-empty-text"
+given = { A1 = "" }
+formula = "=ISBLANK(A1)"
+expect = "TRUE"
+source = "known"
+functions = ["ISBLANK"]
+note = """
+Setting a cell to empty text leaves it blank. A cell holding a formula that
+returns "" is *not* blank, which is the distinction ISBLANK exists to draw —
+but a cleared cell is.
+"""
+
+[[case]]
+id = "error.a-formula-returning-empty-text-is-not-blank"
+given = { A1 = "=\"\"" }
+formula = "=ISBLANK(A1)"
+expect = "FALSE"
+source = "known"
+functions = ["ISBLANK"]
+note = "The other half: the cell holds a formula, so it is not blank."
+
+[[case]]
+id = "error.not-of-a-number-coerces"
+formula = "=NOT(0)"
+expect = "TRUE"
+source = "known"
+functions = ["NOT"]
+note = "0 is FALSE and anything else is TRUE when a logical function coerces."
+
+[[case]]
+id = "error.and-with-no-logical-values-is-a-value-error"
+formula = "=AND(\"x\")"
+expect = "#VALUE!"
+source = "known"
+functions = ["AND"]
+note = "Text that is not a number cannot be coerced to a logical value."
+
+[[case]]
+id = "error.if-returns-false-branch-for-zero"
+formula = "=IF(0,\"yes\",\"no\")"
+expect = "no"
+source = "known"
+functions = ["IF"]
+note = "The condition is coerced, and 0 is FALSE."
+
+[[case]]
+id = "error.if-with-no-false-branch-returns-false"
+formula = "=IF(1=2,\"yes\")"
+expect = "FALSE"
+source = "known"
+functions = ["IF"]
+note = """
+Omitting the third argument gives the boolean FALSE, not an empty cell and not
+"". A surprising default, and one people rely on without noticing.
+"""
+
+[[case]]
+id = "error.ifs-with-no-match-is-na"
+formula = "=IFS(1=2,\"a\",2=3,\"b\")"
+expect = "#N/A"
+source = "known"
+functions = ["IFS"]
+note = "IFS has no else; falling off the end is #N/A."

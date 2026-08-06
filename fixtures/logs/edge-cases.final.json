@@ -61,11 +61,65 @@
         "H2": {
           "input": "=IFERROR(E2,\"caught\")",
           "value": "caught"
+        },
+        "I2": {
+          "input": "=IF(TRUE,\"ISSUED\",\"FINAL\")",
+          "value": "ISSUED"
         }
       },
+      "col_widths": [],
+      "cond_formats": {},
+      "conditional": [],
+      "formats": {
+        "I4": {
+          "font_color": "#b3261e"
+        },
+        "J7": {
+          "borders": {
+            "bottom": true,
+            "left": true,
+            "right": true,
+            "top": true
+          },
+          "italic": true
+        },
+        "J8": {
+          "borders": {
+            "bottom": true,
+            "left": true,
+            "right": true,
+            "top": true
+          },
+          "italic": true
+        },
+        "K7": {
+          "borders": {
+            "bottom": true,
+            "left": true,
+            "right": true,
+            "top": true
+          },
+          "italic": true
+        },
+        "K8": {
+          "borders": {
+            "bottom": true,
+            "left": true,
+            "right": true,
+            "top": true
+          },
+          "italic": true
+        }
+      },
+      "frozen": [
+        0,
+        0
+      ],
       "hidden_rows": [],
       "merged": [],
-      "name": "Sheet1"
+      "name": "Sheet1",
+      "row_heights": [],
+      "spill": {}
     }
   ]
 }

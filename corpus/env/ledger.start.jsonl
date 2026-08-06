@@ -1,0 +1,19 @@
+{"action": "cell_edit", "sheet": "Sheet1", "addr": {"row": 0, "col": 0}, "input": "Item"}
+{"action": "cell_edit", "sheet": "Sheet1", "addr": {"row": 0, "col": 1}, "input": "Qty"}
+{"action": "cell_edit", "sheet": "Sheet1", "addr": {"row": 0, "col": 2}, "input": "Price"}
+{"action": "cell_edit", "sheet": "Sheet1", "addr": {"row": 0, "col": 3}, "input": "Total"}
+{"action": "cell_edit", "sheet": "Sheet1", "addr": {"row": 1, "col": 0}, "input": "Hex bolt M8"}
+{"action": "cell_edit", "sheet": "Sheet1", "addr": {"row": 1, "col": 1}, "input": "120"}
+{"action": "cell_edit", "sheet": "Sheet1", "addr": {"row": 1, "col": 2}, "input": "0.42"}
+{"action": "cell_edit", "sheet": "Sheet1", "addr": {"row": 2, "col": 0}, "input": "Washer M8"}
+{"action": "cell_edit", "sheet": "Sheet1", "addr": {"row": 2, "col": 1}, "input": "400"}
+{"action": "cell_edit", "sheet": "Sheet1", "addr": {"row": 2, "col": 2}, "input": "0.03"}
+{"action": "cell_edit", "sheet": "Sheet1", "addr": {"row": 3, "col": 0}, "input": "Nyloc nut M8"}
+{"action": "cell_edit", "sheet": "Sheet1", "addr": {"row": 3, "col": 1}, "input": "120"}
+{"action": "cell_edit", "sheet": "Sheet1", "addr": {"row": 3, "col": 2}, "input": "0.11"}
+{"action": "cell_edit", "sheet": "Sheet1", "addr": {"row": 4, "col": 0}, "input": "Threadlock 50ml"}
+{"action": "cell_edit", "sheet": "Sheet1", "addr": {"row": 4, "col": 1}, "input": "6"}
+{"action": "cell_edit", "sheet": "Sheet1", "addr": {"row": 4, "col": 2}, "input": "7.95"}
+{"action": "cell_edit", "sheet": "Sheet1", "addr": {"row": 5, "col": 0}, "input": "Anti-seize 100g"}
+{"action": "cell_edit", "sheet": "Sheet1", "addr": {"row": 5, "col": 1}, "input": "3"}
+{"action": "cell_edit", "sheet": "Sheet1", "addr": {"row": 5, "col": 2}, "input": "12.40"}

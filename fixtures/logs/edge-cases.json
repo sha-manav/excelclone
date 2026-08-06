@@ -157,10 +157,162 @@
     "name": "Renamed"
   },
   {
+    "action": "format_apply",
+    "sheet": "Sheet1",
+    "range": {
+      "start": {
+        "row": 7,
+        "col": 9
+      },
+      "end": {
+        "row": 8,
+        "col": 10
+      }
+    },
+    "patches": [
+      {
+        "set": "italic",
+        "value": true
+      },
+      {
+        "set": "border",
+        "value": "all"
+      }
+    ]
+  },
+  {
+    "action": "cell_edit",
+    "sheet": "Sheet1",
+    "addr": {
+      "row": 4,
+      "col": 8
+    },
+    "input": "keep the format"
+  },
+  {
+    "action": "cell_edit",
+    "sheet": "Sheet1",
+    "addr": {
+      "row": 4,
+      "col": 9
+    },
+    "input": "lose the format"
+  },
+  {
+    "action": "format_apply",
+    "sheet": "Sheet1",
+    "range": {
+      "start": {
+        "row": 4,
+        "col": 8
+      },
+      "end": {
+        "row": 4,
+        "col": 9
+      }
+    },
+    "patches": [
+      {
+        "set": "font_color",
+        "value": "#B3261E"
+      }
+    ]
+  },
+  {
+    "action": "range_clear",
+    "sheet": "Sheet1",
+    "range": {
+      "start": {
+        "row": 4,
+        "col": 8
+      },
+      "end": {
+        "row": 4,
+        "col": 9
+      }
+    }
+  },
+  {
+    "action": "format_clear",
+    "sheet": "Sheet1",
+    "range": {
+      "start": {
+        "row": 4,
+        "col": 9
+      },
+      "end": {
+        "row": 4,
+        "col": 9
+      }
+    }
+  },
+  {
+    "action": "cell_edit",
+    "sheet": "Sheet1",
+    "addr": {
+      "row": 2,
+      "col": 8
+    },
+    "input": "=IF(TRUE,\"DRAFT\",\"FINAL\")"
+  },
+  {
+    "action": "find_replace",
+    "sheet": "Sheet1",
+    "range": null,
+    "find": "draft",
+    "replace": "ISSUED",
+    "match_case": false,
+    "whole_cell": false
+  },
+  {
     "action": "row_delete",
     "sheet": "Sheet1",
     "at": 0,
     "count": 1
+  },
+  {
+    "action": "format_apply",
+    "sheet": "NoSuchSheet",
+    "range": {
+      "start": {
+        "row": 0,
+        "col": 0
+      },
+      "end": {
+        "row": 0,
+        "col": 0
+      }
+    },
+    "patches": [
+      {
+        "set": "bold",
+        "value": true
+      }
+    ]
+  },
+  {
+    "action": "format_apply",
+    "sheet": "Sheet1",
+    "range": {
+      "start": {
+        "row": 0,
+        "col": 0
+      },
+      "end": {
+        "row": 0,
+        "col": 0
+      }
+    },
+    "patches": []
+  },
+  {
+    "action": "find_replace",
+    "sheet": "Sheet1",
+    "range": null,
+    "find": "",
+    "replace": "x",
+    "match_case": false,
+    "whole_cell": false
   },
   {
     "action": "cell_edit",

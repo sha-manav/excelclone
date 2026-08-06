@@ -6,22 +6,29 @@
 
 pub mod addr;
 pub mod ast;
+pub mod cond;
 pub mod deps;
 pub mod engine;
 pub mod eval;
+pub mod format;
 pub mod functions;
 pub mod io;
 pub mod model;
 pub mod ops;
 pub mod parser;
 pub mod refs;
+pub mod routine;
 pub mod serial;
 pub mod telemetry;
 pub mod value;
 
 pub use addr::{CellAddr, RangeAddr};
+pub use cond::{CondOp, CondRule, CondTest};
 pub use engine::{Action, ApplyError, Engine, Event, FilterSpec, PasteMode, SortKey};
+pub use format::{BorderPreset, Borders, CellFormat, FormatId, FormatPatch, FormatTable, HAlign};
 pub use model::{Cell, CellContent, CellKey, Sheet, SheetId, Workbook};
+pub use refs::Axis;
+pub use routine::{CellChange, DryRun, Requirement, Routine};
 pub use telemetry::{EventEnvelope, PrivacyMode};
 pub use value::{ErrorKind, Value};
 

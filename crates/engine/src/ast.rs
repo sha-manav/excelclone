@@ -64,6 +64,10 @@ pub enum Expr {
     Range(RangeRef),
     /// Uppercased function name + args.
     Func(String, Vec<Expr>),
+    /// A bare identifier that is not a reference: a name LET bound, or — once
+    /// defined names exist — one of those. Unbound, it evaluates to #NAME?,
+    /// which is what an unknown identifier used to parse as directly.
+    Name(String),
     Binary(BinOp, Box<Expr>, Box<Expr>),
     Neg(Box<Expr>),
     /// Unary plus is kept so source can round-trip.
@@ -79,6 +83,7 @@ impl Expr {
             Expr::Text(s) => format!("\"{}\"", s.replace('"', "\"\"")),
             Expr::Bool(b) => if *b { "TRUE" } else { "FALSE" }.to_string(),
             Expr::Error(e) => e.code().to_string(),
+            Expr::Name(n) => n.clone(),
             Expr::Cell(c) => format_sheet_prefix(&c.sheet) + &c.r.to_a1(),
             Expr::Range(r) => {
                 format!(
@@ -129,11 +134,47 @@ impl Expr {
     pub fn is_volatile(&self) -> bool {
         match self {
             Expr::Func(name, args) => {
-                matches!(name.as_str(), "NOW" | "TODAY" | "RAND" | "RANDBETWEEN")
-                    || args.iter().any(|a| a.is_volatile())
+                // OFFSET and INDIRECT are volatile for a different reason from the
+                // clock functions: the dependency graph is built from the
+                // references written in the formula, and neither of these says
+                // where it points until it runs. Recalculating them every pass
+                // is how Excel solves the same problem.
+                matches!(
+                    name.as_str(),
+                    "NOW" | "TODAY" | "RAND" | "RANDBETWEEN" | "OFFSET" | "INDIRECT"
+                ) || args.iter().any(|a| a.is_volatile())
             }
+            // A defined name points somewhere the dependency graph cannot
+            // see: `visit_refs` walks the expression, and the expression says
+            // `Total`, not `Sheet1!$A$1:$A$9`. Same problem OFFSET and
+            // INDIRECT have and the same answer — recalculate it every pass —
+            // at the same cost, which is why the resolution belongs in the
+            // graph eventually and is recorded as a gap rather than hidden.
+            Expr::Name(_) => true,
             Expr::Binary(_, l, r) => l.is_volatile() || r.is_volatile(),
             Expr::Neg(e) | Expr::Pos(e) | Expr::Percent(e) => e.is_volatile(),
+            _ => false,
+        }
+    }
+
+    /// True if the expression computes a reference — `OFFSET` or `INDIRECT`
+    /// — rather than writing one down.
+    ///
+    /// Distinct from [`Expr::is_volatile`], which also covers the clock and
+    /// random functions. Those recalculate every pass but read nothing, so
+    /// their answer cannot be stale; these read cells the dependency graph
+    /// never saw, which is a different problem and needs a different fix.
+    pub fn has_dynamic_reference(&self) -> bool {
+        match self {
+            Expr::Func(name, args) => {
+                matches!(name.as_str(), "OFFSET" | "INDIRECT")
+                    || args.iter().any(|a| a.has_dynamic_reference())
+            }
+            // A name reads cells the graph never saw, so a pass can evaluate
+            // it before the cells it names — the stale-read hazard OFFSET has.
+            Expr::Name(_) => true,
+            Expr::Binary(_, l, r) => l.has_dynamic_reference() || r.has_dynamic_reference(),
+            Expr::Neg(e) | Expr::Pos(e) | Expr::Percent(e) => e.has_dynamic_reference(),
             _ => false,
         }
     }

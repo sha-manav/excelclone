@@ -1,0 +1,203 @@
+# Numbers: how they are displayed, and where Excel departs from IEEE 754 on
+# purpose.
+#
+# This is the file the harness earned its keep on. Every recorded difference
+# below was found by running it, not by reading the code.
+
+[[case]]
+id = "number.general-shows-fifteen-significant-digits"
+formula = "=1/3"
+expect = "0.333333333333333"
+source = "known"
+note = """
+Excel carries a double but shows at most 15 significant decimal digits under
+General. An engine printing the shortest round-tripping representation would
+show 0.3333333333333333 — seventeen digits — and every number in the grid
+would look subtly unlike Excel's.
+"""
+
+[[case]]
+id = "number.overflow-is-a-num-error"
+formula = "=1E+308*10"
+expect = "#NUM!"
+source = "known"
+note = """
+Excel answers an overflow with #NUM!. Gridline used to return the IEEE
+infinity, which is not a spreadsheet value at all: it would have travelled
+from the grid into the state snapshot, the event log and the exported dataset.
+Found by this harness and fixed in the same commit that added it — every
+operator except `^` was affected.
+"""
+
+[[case]]
+id = "number.a-comparison-of-nearly-equal-sums-is-true"
+formula = "=0.1+0.2=0.3"
+expect = "TRUE"
+source = "known"
+note = """
+Excel carries 15 significant digits, so 0.1+0.2 and 0.3 test equal even though
+the doubles differ in the last bit. This is the difference people notice
+first, because "why does my spreadsheet say these aren't equal" is a question
+nobody asks of Excel.
+
+Recorded as a difference through P1-P3 because the rule has to be applied at
+the same point Excel applies it. Closed in P4 by applying it at the
+comparison — two numbers that agree to every digit Excel claims to know are
+equal — rather than by rounding every stored value, which would throw away
+precision later arithmetic still wants.
+"""
+
+[[case]]
+id = "number.subtracting-nearly-equal-sums-gives-zero"
+formula = "=SUM(0.1,0.2)-0.3"
+expect = "0"
+source = "known"
+note = """
+The same rule from the other side: a subtraction of two numbers Excel
+considers equal is exactly zero, not the 5.55e-17 the doubles leave behind.
+Both cases fall out of one rule applied in two places, which is why they were
+recorded as one difference rather than two.
+"""
+
+[[case]]
+id = "number.general-switches-to-scientific-when-large"
+formula = "=100000000000000000000"
+expect = "1E+20"
+source = "open"
+candidates = [
+  "1E+20 (what a default-width column shows)",
+  "100000000000000000000 (what a wide enough column shows)",
+]
+note = """
+Written as a known difference and reclassified after checking it. Excel's
+General format switches to scientific notation when the number does not fit
+the column, so what it shows depends on the column width — widen the column
+and the digits come back. Gridline's `display()` has no width, so there is no
+width-independent answer for the case to assert, and asserting one anyway
+would have manufactured a difference out of a question the corpus cannot ask.
+
+The width-independent part of the rule — whether Excel switches unconditionally
+above some magnitude, and where — is what needs settling, and it needs Excel.
+Gridline currently prints the digits at every magnitude.
+"""
+
+[[case]]
+id = "number.text-of-a-negative-uses-the-second-format-section"
+formula = "=TEXT(-5,\"0;(0)\")"
+expect = "(5)"
+source = "known"
+functions = ["TEXT"]
+note = """
+A number format code has up to four sections separated by semicolons —
+positive; negative; zero; text — and the negative section is how accountants
+get parentheses instead of a minus sign. The negative section formats the
+*absolute* value: the parentheses carry the sign, so a minus as well would
+say it twice.
+"""
+
+[[case]]
+id = "number.a-positive-uses-the-first-section"
+formula = "=TEXT(5,\"0;(0)\")"
+expect = "5"
+source = "known"
+functions = ["TEXT"]
+note = "The other side of the same code."
+
+[[case]]
+id = "number.two-sections-put-zero-with-the-positives"
+formula = "=TEXT(0,\"0;(0)\")"
+expect = "0"
+source = "known"
+functions = ["TEXT"]
+note = """
+With two sections the first covers positives *and* zero; a separate zero
+section only exists once there are three.
+"""
+
+[[case]]
+id = "number.a-third-section-catches-zero"
+formula = '=TEXT(0,"0;(0);""zero""")'
+expect = "zero"
+source = "known"
+functions = ["TEXT"]
+note = """
+A section with no digit placeholder in it is a literal, which is how a sheet
+shows a word where a zero would be.
+"""
+
+[[case]]
+id = "number.an-empty-section-shows-nothing"
+formula = "=TEXT(0,\"0;(0);\")"
+expect = ""
+source = "known"
+functions = ["TEXT"]
+note = "An empty third section is the idiom for hiding zeros."
+
+[[case]]
+id = "number.a-fourth-section-formats-text"
+formula = '=TEXT("abc","0;(0);0;@ (text)")'
+expect = "abc (text)"
+source = "known"
+functions = ["TEXT"]
+note = "@ stands for the text, and the fourth section applies to nothing else."
+
+[[case]]
+id = "number.a-single-section-keeps-the-minus-sign"
+formula = "=TEXT(-5,\"0\")"
+expect = "-5"
+source = "known"
+functions = ["TEXT"]
+note = """
+Without a negative section the sign is printed as usual — the absolute-value
+rule belongs to the section, not to the formatter.
+"""
+
+[[case]]
+id = "number.sections-work-with-a-full-currency-code"
+formula = "=TEXT(-1234.5,\"$#,##0.00;($#,##0.00)\")"
+expect = "($1,234.50)"
+source = "known"
+functions = ["TEXT"]
+note = "The accounting code people actually write, end to end."
+
+[[case]]
+id = "number.percent-of-a-negative"
+formula = "=TEXT(-0.5,\"0%\")"
+expect = "-50%"
+source = "known"
+functions = ["TEXT"]
+note = "A single-section code applies to negatives with the sign in front."
+
+[[case]]
+id = "number.a-difference-inside-the-15th-digit-is-still-a-difference"
+formula = "=1.00000000000001=1"
+expect = "FALSE"
+source = "known"
+note = """
+The other side of the resolution rule, and the one that keeps it honest. The
+two differ in the 15th significant digit, which is inside what Excel claims
+to know, so they are not equal. A rule implemented with a loose epsilon
+passes the equality case above and fails this one.
+"""
+
+[[case]]
+id = "number.a-difference-past-the-15th-digit-is-not"
+formula = "=1.0000000000000002=1"
+expect = "TRUE"
+source = "known"
+note = """
+Sixteen digits in, which is past Excel's resolution. The pair with the case
+above pins where the line is rather than that there is one.
+"""
+
+[[case]]
+id = "number.the-rule-does-not-swallow-a-real-small-number"
+formula = "=0.000000000000001-0"
+expect = "0.000000000000001"
+source = "known"
+note = """
+1e-15 is a perfectly good number and subtracting zero from it must leave it
+alone. A near-zero rule written as an absolute threshold rather than a
+relative one would return 0 here, and a column of small measurements would
+quietly become a column of zeroes.
+"""

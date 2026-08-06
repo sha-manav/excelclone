@@ -18,7 +18,14 @@ import {
   hitTest,
   isRowHidden,
   lastVisibleRow,
+  colViewportX,
+  frozenHeight,
+  frozenWidth,
+  MergeMap,
+  rowViewportY,
+  scrollableHeight,
   moveAddr,
+  moveWithMerges,
   nextVisibleRow,
   overflowHashes,
   pageJump,
@@ -301,6 +308,20 @@ describe('hitTest', () => {
     expect(hitTest(5, HH + 30, 0, 0, filtered)).toEqual({ kind: 'row-header', row: 3 })
   })
 
+  it('reports a row border from either side and attributes it to the row above', () => {
+    expect(hitTest(5, HH + 22, 0, 0, plain)).toEqual({ kind: 'row-border', row: 0 })
+    expect(hitTest(5, HH + 26, 0, 0, plain)).toEqual({ kind: 'row-border', row: 0 })
+    // The top edge of row 1 is not a border anyone can drag.
+    expect(hitTest(5, HH + 1, 0, 0, plain)).toEqual({ kind: 'row-header', row: 0 })
+  })
+
+  it('does not offer a border for a row a filter has hidden', () => {
+    // Rows 1 and 2 are hidden in `filtered`, so every pixel they would have
+    // occupied belongs to row 3 — and the border there resizes row 3, not the
+    // invisible row 2, which the user cannot see to judge.
+    expect(hitTest(5, HH + 25, 0, 0, filtered)).toEqual({ kind: 'row-header', row: 3 })
+  })
+
   it('respects a custom tolerance', () => {
     expect(hitTest(HW + 90, 5, 0, 0, plain, 12)).toEqual({ kind: 'col-border', col: 0 })
     expect(hitTest(HW + 90, 5, 0, 0, plain, 2)).toEqual({ kind: 'col-header', col: 0 })
@@ -483,6 +504,47 @@ describe('selection helpers', () => {
   })
 })
 
+describe('moveWithMerges', () => {
+  // A1:C1 merged, with a second block below it so a vertical step has
+  // something to arrive in.
+  const merges = MergeMap.fromA1(['A1:C1', 'B3:B4'])
+
+  it('leaves a merged block from its far edge', () => {
+    // Right from inside A1:C1 has to reach D1, not B1, which is covered.
+    expect(moveWithMerges(plain, merges, { row: 0, col: 0 }, 'right')).toEqual({
+      row: 0,
+      col: 3,
+    })
+  })
+
+  it('lands on a merge anchor rather than a cell nobody can see', () => {
+    expect(moveWithMerges(plain, merges, { row: 0, col: 3 }, 'left')).toEqual({
+      row: 0,
+      col: 0,
+    })
+    // Arriving in B3:B4 from below stops at B3, its top-left.
+    expect(moveWithMerges(plain, merges, { row: 4, col: 1 }, 'up')).toEqual({
+      row: 2,
+      col: 1,
+    })
+  })
+
+  it('steps down from the bottom of a block, not from where the cursor was', () => {
+    expect(moveWithMerges(plain, merges, { row: 2, col: 1 }, 'down')).toEqual({
+      row: 4,
+      col: 1,
+    })
+  })
+
+  it('behaves exactly like moveAddr when nothing is merged', () => {
+    const none = new MergeMap([])
+    for (const dir of ['up', 'down', 'left', 'right'] as const) {
+      const from = { row: 5, col: 5 }
+      expect(moveWithMerges(plain, none, from, dir)).toEqual(moveAddr(plain, from, dir))
+    }
+  })
+})
+
 describe('moveAddr', () => {
   it('moves in each direction', () => {
     const from = { row: 5, col: 5 }
@@ -570,5 +632,69 @@ describe('text helpers', () => {
   it('clamps column widths to the minimum', () => {
     expect(clampColWidth(4)).toBe(24)
     expect(clampColWidth(120.4)).toBe(120)
+  })
+})
+
+describe('frozen panes', () => {
+  // Two header rows and one label column held still. Default sizes: 24px
+  // rows, 100px columns.
+  const frozen = createMetrics({ frozenRows: 2, frozenCols: 1, rowCount: 500 })
+
+  it('measures the band from the sizes of the rows in it', () => {
+    expect(frozenHeight(frozen)).toBe(48)
+    expect(frozenWidth(frozen)).toBe(100)
+    // Nothing frozen is a band of zero, which is what makes every formula
+    // here degrade to the unfrozen one rather than needing a branch.
+    expect(frozenHeight(plain)).toBe(0)
+    expect(frozenWidth(plain)).toBe(0)
+  })
+
+  it('holds the frozen rows still while the rest scrolls', () => {
+    // Row 0 is where it always is, however far down the sheet has gone.
+    expect(rowViewportY(frozen, 0, 0)).toBe(HH)
+    expect(rowViewportY(frozen, 0, 1000)).toBe(HH)
+    expect(rowViewportY(frozen, 1, 1000)).toBe(HH + 24)
+    // ...and the first scrolling row sits immediately under the band.
+    expect(rowViewportY(frozen, 2, 0)).toBe(HH + 48)
+    // Scrolled by exactly one row, row 2 has gone and row 3 is at the top of
+    // the scrolling region.
+    expect(rowViewportY(frozen, 3, 24)).toBe(HH + 48)
+  })
+
+  it('holds the frozen columns still too', () => {
+    expect(colViewportX(frozen, 0, 900)).toBe(HW)
+    expect(colViewportX(frozen, 1, 0)).toBe(HW + 100)
+    expect(colViewportX(frozen, 2, 100)).toBe(HW + 100)
+  })
+
+  it('starts the visible range past the band and leaves room for it', () => {
+    const vis = visibleRange(0, 0, HW + 400, HH + 120, frozen)
+    // 120px of content, 48 of it frozen: three scrolling rows fit, starting
+    // at the first one that is not frozen.
+    expect(vis.firstRow).toBe(2)
+    expect(vis.lastRow).toBe(4)
+    expect(vis.firstCol).toBe(1)
+  })
+
+  it('hit tests through the band rather than past it', () => {
+    // 10px below the header is inside the frozen band and is row 0 however
+    // far the sheet is scrolled — this is the case that made clicking a
+    // scrolled cell land on the wrong row before the band existed.
+    expect(hitTest(HW + 10, HH + 10, 1000, 0, frozen)).toEqual({
+      kind: 'cell',
+      row: 0,
+      col: 0,
+    })
+    // Just below the band, with the sheet scrolled by two rows: row 4.
+    expect(hitTest(HW + 150, HH + 50, 48, 0, frozen)).toEqual({
+      kind: 'cell',
+      row: 4,
+      col: 1,
+    })
+  })
+
+  it('takes the band out of what there is to scroll through', () => {
+    expect(scrollableHeight(frozen)).toBe(totalHeight(frozen) - 48)
+    expect(scrollableHeight(plain)).toBe(totalHeight(plain))
   })
 })

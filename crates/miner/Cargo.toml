@@ -4,6 +4,14 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[lib]
+name = "miner"
+path = "src/lib.rs"
+
+[[bin]]
+name = "gridline-miner"
+path = "src/main.rs"
+
 [dependencies]
 engine = { path = "../engine" }
 serde = { workspace = true }
@@ -11,3 +19,12 @@ serde_json = { workspace = true }
 chrono = { workspace = true }
 ulid = { workspace = true }
 thiserror = { workspace = true }
+# The miner writes the `routines` table directly, which is what the server's
+# own doc comment says it does: "the miner writes rows here; the server only
+# serves them back and records feedback". Going through an HTTP endpoint
+# instead would mean an admin credential and a second copy of the schema.
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
+tokio = { version = "1", features = ["rt", "macros"] }
+# State digests for the demonstration dataset.
+sha2 = "0.10"
+hex = "0.4"

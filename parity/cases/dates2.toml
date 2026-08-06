@@ -1,0 +1,147 @@
+# Working days, times written as text, and the day-count conventions.
+#
+# The expectations were computed independently (a calendar walk in another
+# language for the working-day counts, the convention arithmetic by hand)
+# rather than read off the implementation.
+
+[[case]]
+id = "d2.timevalue"
+formula = '=TIMEVALUE("13:45")'
+expect = "0.572916666666667"
+source = "known"
+functions = ["TIMEVALUE"]
+note = "A time is the fractional part of a serial: 13:45 is 49500/86400 of a day."
+
+[[case]]
+id = "d2.timevalue-twelve-hour"
+formula = '=HOUR(TIMEVALUE("1:45 PM"))'
+expect = "13"
+source = "known"
+functions = ["TIMEVALUE", "HOUR"]
+note = "A meridiem suffix is accepted, as it is when typing a time into a cell."
+
+[[case]]
+id = "d2.timevalue-midnight-is-not-noon"
+formula = '=HOUR(TIMEVALUE("12:30 AM"))'
+expect = "0"
+source = "known"
+functions = ["TIMEVALUE"]
+note = """
+12 AM is midnight and 12 PM is noon — the one place a 12-hour clock is not
+simply "add twelve", and the one an implementation gets wrong.
+"""
+
+[[case]]
+id = "d2.networkdays-counts-both-ends"
+formula = "=NETWORKDAYS(DATE(2024,1,1),DATE(2024,1,31))"
+expect = "23"
+source = "known"
+functions = ["NETWORKDAYS", "DATE"]
+note = """
+January 2024 has 23 weekdays, both ends inclusive. Verified by walking the
+calendar independently rather than by counting weeks.
+"""
+
+[[case]]
+id = "d2.networkdays-is-signed"
+formula = "=NETWORKDAYS(DATE(2024,1,31),DATE(2024,1,1))"
+expect = "-23"
+source = "known"
+functions = ["NETWORKDAYS"]
+note = """
+Negative when the end is before the start. Worth reproducing: a schedule that
+subtracts in the wrong order gets a sign rather than a silent zero.
+"""
+
+[[case]]
+id = "d2.networkdays-skips-holidays"
+given = { A1 = "=DATE(2024,1,1)" }
+formula = "=NETWORKDAYS(DATE(2024,1,1),DATE(2024,1,31),A1)"
+expect = "22"
+source = "known"
+functions = ["NETWORKDAYS"]
+note = "New Year's Day is a Monday in 2024, so listing it removes a working day."
+
+[[case]]
+id = "d2.workday-never-counts-the-start"
+formula = "=DAY(WORKDAY(DATE(2024,1,5),1))"
+expect = "8"
+source = "known"
+functions = ["WORKDAY", "DAY"]
+note = """
+2024-01-05 is a Friday, so one working day later is Monday the 8th. This case
+caught a real bug: the first version counted weekends with `serial mod 7`,
+which is a day out because Excel's serial line contains a phantom
+1900-02-29 — it answered Sunday the 7th. Weekends are now asked of the
+calendar date, the same place WEEKDAY asks.
+"""
+
+[[case]]
+id = "d2.yearfrac-defaults-to-thirty-360"
+formula = "=YEARFRAC(DATE(2024,1,1),DATE(2024,7,1))"
+expect = "0.5"
+source = "known"
+functions = ["YEARFRAC", "DATE"]
+note = "Six months of thirty days each is exactly half a 360-day year."
+
+[[case]]
+id = "d2.yearfrac-actual-360"
+formula = "=YEARFRAC(DATE(2024,1,1),DATE(2024,1,31),2)"
+expect = "0.0833333333333333"
+source = "known"
+functions = ["YEARFRAC"]
+note = "Basis 2 counts real days over a 360-day year: 30/360."
+
+[[case]]
+id = "d2.yearfrac-actual-365"
+formula = "=YEARFRAC(DATE(2024,1,1),DATE(2024,1,31),3)"
+expect = "0.0821917808219178"
+source = "known"
+functions = ["YEARFRAC"]
+note = """
+Basis 3 is the same numerator over 365. The gap between this and basis 2 is
+about 1.4% of a year's interest, which is why the conventions are named
+rather than assumed.
+"""
+
+[[case]]
+id = "d2.yearfrac-european-thirty-360"
+formula = "=YEARFRAC(DATE(2024,1,31),DATE(2024,3,31),4)"
+expect = "0.166666666666667"
+source = "known"
+functions = ["YEARFRAC"]
+note = """
+Basis 4 caps both day numbers at 30, so 31 January to 31 March is two clean
+months. Basis 0 reaches the same answer here by a different route — it caps
+the *end* only because the start was already at 30 or 31 — which is why the
+pair needs a case where they agree as well as one where they would not.
+"""
+
+[[case]]
+id = "d2.yearfrac-us-thirty-360-on-the-same-dates"
+formula = "=YEARFRAC(DATE(2024,1,31),DATE(2024,3,31),0)"
+expect = "0.166666666666667"
+source = "known"
+functions = ["YEARFRAC"]
+note = "The US rule, agreeing with the European one on these dates."
+
+[[case]]
+id = "d2.yearfrac-actual-actual"
+formula = "=YEARFRAC(DATE(2024,1,1),DATE(2025,1,1),1)"
+expect = "1.00136798905609"
+source = "open"
+candidates = [
+  "1.00136798905609 (366 days over the mean of 366 and 365)",
+  "1 (366 days over 366, the year the range starts in)",
+  "1.00273972602740 (366 days over 365)",
+]
+functions = ["YEARFRAC"]
+note = """
+Basis 1 is actual/actual, and what Excel divides by is the one day-count rule
+whose exact definition is genuinely disputed. Gridline uses the average length
+of the calendar years the span touches, which is the behaviour Microsoft's
+documentation describes; the other two candidates are what the common
+alternative readings give. Excluded from the score until somebody can check
+it against Excel, because a confident-looking wrong number here is a bond
+priced wrong.
+"""

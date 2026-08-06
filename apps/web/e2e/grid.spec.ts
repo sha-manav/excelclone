@@ -55,17 +55,17 @@ test.beforeEach(async ({ page }) => {
 test('grid renders with headers and sheet tabs', async ({ page }) => {
   await expect(page.locator('canvas')).toBeVisible()
   await expect(page.locator('.sheet-tab', { hasText: 'Sheet1' })).toBeVisible()
-  await expect(page.locator('.formula-bar__address')).toHaveText('A1')
+  await expect(page.locator('.formula-bar__address')).toHaveValue('A1')
 })
 
 test('typing a value stores it and moves down', async ({ page }) => {
   await clickCell(page, 0, 0)
   await typeInCell(page, '42')
   // Enter moved the selection to A2.
-  await expect(page.locator('.formula-bar__address')).toHaveText('A2')
+  await expect(page.locator('.formula-bar__address')).toHaveValue('A2')
   // Re-select A1 and confirm the engine kept the value.
   await clickCell(page, 0, 0)
-  await expect(page.locator('.formula-bar__address')).toHaveText('A1')
+  await expect(page.locator('.formula-bar__address')).toHaveValue('A1')
   await expect(formulaInput(page)).toHaveValue('42')
 })
 
@@ -87,7 +87,7 @@ test('formulas recalculate live', async ({ page }) => {
   await expect(formulaInput(page)).toHaveValue('=SUM(A1:A2)')
   // Read the computed value straight off the engine via the rendered canvas
   // check below; the address label proves selection is where we think.
-  await expect(page.locator('.formula-bar__address')).toHaveText('B1')
+  await expect(page.locator('.formula-bar__address')).toHaveValue('B1')
 })
 
 test('undo and redo walk the history', async ({ page }) => {
@@ -138,13 +138,13 @@ test('cross-sheet formulas resolve', async ({ page }) => {
 test('keyboard navigation moves the selection', async ({ page }) => {
   await clickCell(page, 0, 0)
   await page.keyboard.press('ArrowRight')
-  await expect(page.locator('.formula-bar__address')).toHaveText('B1')
+  await expect(page.locator('.formula-bar__address')).toHaveValue('B1')
   await page.keyboard.press('ArrowDown')
-  await expect(page.locator('.formula-bar__address')).toHaveText('B2')
+  await expect(page.locator('.formula-bar__address')).toHaveValue('B2')
   await page.keyboard.press('Tab')
-  await expect(page.locator('.formula-bar__address')).toHaveText('C2')
+  await expect(page.locator('.formula-bar__address')).toHaveValue('C2')
   await page.keyboard.press('ControlOrMeta+Home')
-  await expect(page.locator('.formula-bar__address')).toHaveText('A1')
+  await expect(page.locator('.formula-bar__address')).toHaveValue('A1')
 })
 
 test('delete clears the selected range', async ({ page }) => {
@@ -161,4 +161,209 @@ test('a bad formula surfaces an error instead of failing silently', async ({
   await clickCell(page, 0, 0)
   await typeInCell(page, '=1+')
   await expect(page.locator('.error-toast')).toBeVisible()
+})
+
+test('a column resize moves the columns and comes back with undo', async ({ page }) => {
+  const canvas = page.locator('canvas')
+  const box = await canvas.boundingBox()
+  if (!box) throw new Error('canvas has no box')
+  const HEADER_W = 46
+  const HEADER_H = 24
+  const COL_W = 100
+
+  // Drag the A/B border 100px to the right, so column A is 200 wide.
+  const border = { x: box.x + HEADER_W + COL_W, y: box.y + HEADER_H / 2 }
+  await page.mouse.move(border.x, border.y)
+  await page.mouse.down()
+  await page.mouse.move(border.x + 100, border.y, { steps: 10 })
+  await page.mouse.up()
+
+  // The proof is where the columns now are, not what the canvas looks like:
+  // 250px from the left edge was column C and is now column B.
+  await page.mouse.click(box.x + HEADER_W + 250, box.y + HEADER_H + 12)
+  await expect(page.locator('.formula-bar__address')).toHaveValue('B1')
+
+  // A resize is an action like any other, so Ctrl+Z has to take it back.
+  await page.keyboard.press('Control+z')
+  await page.mouse.click(box.x + HEADER_W + 250, box.y + HEADER_H + 12)
+  await expect(page.locator('.formula-bar__address')).toHaveValue('C1')
+})
+
+test('a row resize moves the rows', async ({ page }) => {
+  const canvas = page.locator('canvas')
+  const box = await canvas.boundingBox()
+  if (!box) throw new Error('canvas has no box')
+  const HEADER_W = 46
+  const HEADER_H = 24
+  const ROW_H = 24
+
+  // Drag the 1/2 border down 24px, so row 1 is 48 tall.
+  const border = { x: box.x + HEADER_W / 2, y: box.y + HEADER_H + ROW_H }
+  await page.mouse.move(border.x, border.y)
+  await page.mouse.down()
+  await page.mouse.move(border.x, border.y + 24, { steps: 10 })
+  await page.mouse.up()
+
+  // 60px down used to be row 3 and is now row 2.
+  await page.mouse.click(box.x + HEADER_W + 40, box.y + HEADER_H + 60)
+  await expect(page.locator('.formula-bar__address')).toHaveValue('A2')
+})
+
+test('copying puts tab-separated text on the system clipboard', async ({ page, context }) => {
+  await context.grantPermissions(['clipboard-read', 'clipboard-write'])
+  await clickCell(page, 0, 0)
+  await typeInCell(page, 'a')
+  await typeInCell(page, 'b')
+  await clickCell(page, 0, 1)
+  await typeInCell(page, '1')
+  await typeInCell(page, '2')
+
+  // Select A1:B2 and copy.
+  await clickCell(page, 0, 0)
+  await page.keyboard.down('Shift')
+  await clickCell(page, 1, 1)
+  await page.keyboard.up('Shift')
+  await page.keyboard.press('Control+c')
+
+  const text = await page.evaluate(() => navigator.clipboard.readText())
+  expect(text).toBe('a\t1\nb\t2')
+})
+
+test('pasting text from outside lands as cells in one undo step', async ({ page, context }) => {
+  await context.grantPermissions(['clipboard-read', 'clipboard-write'])
+  // Text nothing in this app produced: the point is that it comes from
+  // somewhere else, the way a paste out of Excel does.
+  await page.evaluate(() => navigator.clipboard.writeText('10\t20\n30\t40\n'))
+
+  await clickCell(page, 1, 1)
+  await page.keyboard.press('Control+v')
+
+  await clickCell(page, 1, 1)
+  await expect(formulaInput(page)).toHaveValue('10')
+  await clickCell(page, 2, 2)
+  await expect(formulaInput(page)).toHaveValue('40')
+
+  // Four cells, one Ctrl+Z.
+  await page.keyboard.press('Control+z')
+  await clickCell(page, 1, 1)
+  await expect(formulaInput(page)).toHaveValue('')
+  await clickCell(page, 2, 2)
+  await expect(formulaInput(page)).toHaveValue('')
+})
+
+test('pasting a block we copied keeps its formulas and moves their references', async ({
+  page,
+  context,
+}) => {
+  await context.grantPermissions(['clipboard-read', 'clipboard-write'])
+  await clickCell(page, 0, 0)
+  await typeInCell(page, '5')
+  await clickCell(page, 0, 1)
+  await typeInCell(page, '=A1*2')
+
+  await clickCell(page, 0, 1)
+  await page.keyboard.press('Control+c')
+  await clickCell(page, 1, 1)
+  await page.keyboard.press('Control+v')
+
+  // The system clipboard holds "10". An internal paste is the one that can
+  // bring the formula across and repoint it a row down.
+  await clickCell(page, 1, 1)
+  await expect(formulaInput(page)).toHaveValue('=A2*2')
+})
+
+test('a dynamic array spills into the cells below and they read back', async ({ page }) => {
+  await clickCell(page, 0, 0)
+  await typeInCell(page, 'b')
+  await typeInCell(page, 'a')
+  await typeInCell(page, 'b')
+
+  await clickCell(page, 0, 2)
+  await typeInCell(page, '=UNIQUE(A1:A3)')
+
+  // C2 holds a value nothing was ever typed into, and it has no formula: the
+  // formula bar is empty there while the grid shows the spilled value.
+  await clickCell(page, 1, 2)
+  await expect(page.locator('.formula-bar__address')).toHaveValue('C2')
+  await expect(formulaInput(page)).toHaveValue('a')
+
+  // Typing over a spilled cell breaks the block rather than being ignored.
+  await typeInCell(page, 'mine')
+  await clickCell(page, 0, 2)
+  await expect(formulaInput(page)).toHaveValue('=UNIQUE(A1:A3)')
+})
+
+test('the name box defines a name and then navigates to it', async ({ page }) => {
+  const nameBox = page.getByTestId('name-box')
+
+  await clickCell(page, 0, 0)
+  await typeInCell(page, '10')
+  await typeInCell(page, '20')
+
+  // Select A1:A2 and name it.
+  await clickCell(page, 0, 0)
+  await page.keyboard.down('Shift')
+  await clickCell(page, 1, 0)
+  await page.keyboard.up('Shift')
+  await nameBox.fill('Amounts')
+  await nameBox.press('Enter')
+
+  // The name is usable in a formula...
+  await clickCell(page, 0, 2)
+  await typeInCell(page, '=SUM(Amounts)')
+  await clickCell(page, 0, 2)
+  await expect(formulaInput(page)).toHaveValue('=SUM(Amounts)')
+
+  // ...and typing it into the box goes there.
+  await nameBox.fill('Amounts')
+  await nameBox.press('Enter')
+  await expect(page.locator('.formula-bar__address')).toHaveValue('A1')
+
+  // An address still navigates, which is what the box did before it had names.
+  await nameBox.fill('B7')
+  await nameBox.press('Enter')
+  await expect(page.locator('.formula-bar__address')).toHaveValue('B7')
+})
+
+test('freezing the top row keeps it on screen while the rest scrolls', async ({ page }) => {
+  const scrollTop = () =>
+    page.evaluate(
+      () => (document.querySelector('[data-testid="grid-scroll"]') as HTMLElement).scrollTop,
+    )
+
+  await clickCell(page, 0, 0)
+  await typeInCell(page, 'header')
+
+  // Freeze the first row: put the cursor in row 2 and press Freeze. The
+  // sheet has to be at the top for the click to land where it looks, which
+  // is what the name box guarantees.
+  await page.getByTestId('name-box').fill('A2')
+  await page.getByTestId('name-box').press('Enter')
+  await page.getByRole('button', { name: 'Freeze panes' }).click()
+  await expect(page.getByRole('button', { name: 'Unfreeze panes' })).toBeVisible()
+
+  await page.evaluate(() => {
+    ;(document.querySelector('[data-testid="grid-scroll"]') as HTMLElement).scrollTop = 600
+  })
+  await page.waitForTimeout(150)
+  expect(await scrollTop(), 'the grid did not scroll, so this proves nothing').toBe(600)
+
+  const box = (await page.locator('canvas').boundingBox())!
+  // The header is still drawn in the first row of the grid...
+  await page.mouse.click(box.x + 46 + 40, box.y + 24 + 12)
+  await expect(page.locator('.formula-bar__address')).toHaveValue('A1')
+  await expect(formulaInput(page)).toHaveValue('header')
+  // ...and selecting it did not drag the sheet back to the top, which a
+  // scroll-into-view that does not know about the band would have done.
+  expect(await scrollTop(), 'selecting a frozen cell scrolled the sheet').toBe(600)
+
+  // Directly below the band is a scrolled row, not row 2.
+  await page.mouse.click(box.x + 46 + 40, box.y + 24 + 24 + 12)
+  await expect(page.locator('.formula-bar__address')).toHaveValue('A27')
+
+  // Unfreezing puts the sheet back to one region: the top row is now whatever
+  // the scroll says it is.
+  await page.getByRole('button', { name: 'Unfreeze panes' }).click()
+  await page.mouse.click(box.x + 46 + 40, box.y + 24 + 12)
+  await expect(page.locator('.formula-bar__address')).toHaveValue('A26')
 })

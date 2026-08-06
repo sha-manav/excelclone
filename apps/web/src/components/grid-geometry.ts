@@ -22,6 +22,7 @@ export const DEFAULT_ROW_HEIGHT = 24
 export const HEADER_WIDTH = 46
 export const HEADER_HEIGHT = 24
 export const MIN_COL_WIDTH = 24
+export const MIN_ROW_HEIGHT = 12
 /** Half-width of the draggable strip straddling a column-header border. */
 export const RESIZE_HANDLE_PX = 4
 export const FILL_HANDLE_PX = 7
@@ -43,6 +44,9 @@ export interface GridMetrics {
   /** Exclusive bounds of the scrollable virtual extent. */
   readonly rowCount: number
   readonly colCount: number
+  /** Rows and columns held still while the rest of the sheet scrolls. */
+  readonly frozenRows: number
+  readonly frozenCols: number
 }
 
 export interface MetricsInit {
@@ -55,6 +59,8 @@ export interface MetricsInit {
   headerHeight?: number
   rowCount?: number
   colCount?: number
+  frozenRows?: number
+  frozenCols?: number
 }
 
 const EMPTY_SIZES: ReadonlyMap<number, number> = new Map()
@@ -70,6 +76,8 @@ export function createMetrics(init: MetricsInit = {}): GridMetrics {
     headerHeight: init.headerHeight ?? HEADER_HEIGHT,
     rowCount: init.rowCount ?? EXTENT_ROW_PAD,
     colCount: init.colCount ?? EXTENT_COL_PAD,
+    frozenRows: init.frozenRows ?? 0,
+    frozenCols: init.frozenCols ?? 0,
   }
 }
 
@@ -137,10 +145,52 @@ export function rowTop(m: GridMetrics, row: number): number {
   return y
 }
 
+/* ----------------------------------------------------------------- frozen */
+
+/**
+ * Height of the frozen band, in content pixels.
+ *
+ * The frozen rows are drawn where they are and never move; everything below
+ * them scrolls in the space that is left. Every viewport coordinate in this
+ * file is one of those two cases, which is why they go through
+ * {@link rowViewportY} and {@link colViewportX} rather than subtracting a
+ * scroll offset directly.
+ */
+export function frozenHeight(m: GridMetrics): number {
+  return rowTop(m, m.frozenRows)
+}
+
+export function frozenWidth(m: GridMetrics): number {
+  return columnLeft(m, m.frozenCols)
+}
+
+/** Viewport y of a row's top edge. Frozen rows ignore the scroll. */
+export function rowViewportY(m: GridMetrics, row: number, scrollTop: number): number {
+  if (row < m.frozenRows) return m.headerHeight + rowTop(m, row)
+  return m.headerHeight + frozenHeight(m) + (rowTop(m, row) - frozenHeight(m)) - scrollTop
+}
+
+export function colViewportX(m: GridMetrics, col: number, scrollLeft: number): number {
+  if (col < m.frozenCols) return m.headerWidth + columnLeft(m, col)
+  return m.headerWidth + frozenWidth(m) + (columnLeft(m, col) - frozenWidth(m)) - scrollLeft
+}
+
 export function totalWidth(m: GridMetrics): number {
   let w = m.colCount * m.defaultColWidth
   for (const [c, cw] of m.colWidths) if (c < m.colCount) w += cw - m.defaultColWidth
   return w
+}
+
+/**
+ * The scrollable extent, which excludes the frozen band: those rows are
+ * always on screen, so scrolling past them is not a thing the user can do.
+ */
+export function scrollableHeight(m: GridMetrics): number {
+  return Math.max(0, totalHeight(m) - frozenHeight(m))
+}
+
+export function scrollableWidth(m: GridMetrics): number {
+  return Math.max(0, totalWidth(m) - frozenWidth(m))
 }
 
 export function totalHeight(m: GridMetrics): number {
@@ -223,15 +273,19 @@ export function visibleRange(
   viewportHeight: number,
   m: GridMetrics,
 ): VisibleRange {
-  const contentW = viewportWidth - m.headerWidth
-  const contentH = viewportHeight - m.headerHeight
-  const firstRow = rowAtY(m, Math.max(0, scrollTop))
-  const firstCol = columnAtX(m, Math.max(0, scrollLeft))
+  // The frozen band eats into the space the scrolling region has, and the
+  // scrolling region starts at the first row past it rather than at zero.
+  const fh = frozenHeight(m)
+  const fw = frozenWidth(m)
+  const contentW = viewportWidth - m.headerWidth - fw
+  const contentH = viewportHeight - m.headerHeight - fh
+  const firstRow = Math.max(m.frozenRows, rowAtY(m, fh + Math.max(0, scrollTop)))
+  const firstCol = Math.max(m.frozenCols, columnAtX(m, fw + Math.max(0, scrollLeft)))
   if (contentW <= 0 || contentH <= 0) {
     return { firstRow, lastRow: firstRow - 1, firstCol, lastCol: firstCol - 1 }
   }
-  const lastRow = Math.max(firstRow, rowAtY(m, scrollTop + contentH - 1))
-  const lastCol = Math.max(firstCol, columnAtX(m, scrollLeft + contentW - 1))
+  const lastRow = Math.max(firstRow, rowAtY(m, fh + scrollTop + contentH - 1))
+  const lastCol = Math.max(firstCol, columnAtX(m, fw + scrollLeft + contentW - 1))
   return { firstRow, lastRow, firstCol, lastCol }
 }
 
@@ -243,6 +297,8 @@ export type GridHit =
   /** The border on the *right* edge of `col`; dragging it resizes `col`. */
   | { kind: 'col-border'; col: number }
   | { kind: 'row-header'; row: number }
+  /** The border on the *bottom* edge of `row`; dragging it resizes `row`. */
+  | { kind: 'row-border'; row: number }
   | { kind: 'cell'; row: number; col: number }
 
 /**
@@ -261,7 +317,7 @@ export function hitTest(
   if (inColHeader && inRowHeader) return { kind: 'corner' }
 
   if (inColHeader) {
-    const cx = x - m.headerWidth + scrollLeft
+    const cx = contentX(m, x, scrollLeft)
     const col = columnAtX(m, cx)
     const left = columnLeft(m, col)
     // A border belongs to the column on its left, so the strip just inside the
@@ -272,14 +328,48 @@ export function hitTest(
   }
 
   if (inRowHeader) {
-    return { kind: 'row-header', row: rowAtY(m, y - m.headerHeight + scrollTop) }
+    const cy = contentY(m, y, scrollTop)
+    const row = rowAtY(m, cy)
+    const top = rowTop(m, row)
+    // Mirror of the column rule: the strip just inside the top edge of row N
+    // resizes row N-1. A hidden row has no height, so its border is the one
+    // above it and dragging there would resize something invisible.
+    if (row > 0 && cy - top <= tolerance && !isRowHidden(m, row - 1)) {
+      return { kind: 'row-border', row: row - 1 }
+    }
+    if (!isRowHidden(m, row) && top + rowHeight(m, row) - cy <= tolerance) {
+      return { kind: 'row-border', row }
+    }
+    return { kind: 'row-header', row }
   }
 
   return {
     kind: 'cell',
-    row: rowAtY(m, y - m.headerHeight + scrollTop),
-    col: columnAtX(m, x - m.headerWidth + scrollLeft),
+    row: rowAtY(m, contentY(m, y, scrollTop)),
+    col: columnAtX(m, contentX(m, x, scrollLeft)),
   }
+}
+
+/**
+ * Viewport y back to content y, honouring the frozen band: a point inside it
+ * is where it looks, and a point below it is offset by the scroll.
+ *
+ * The inverse of {@link rowViewportY}, and the reason hit testing keeps
+ * working when rows are frozen — without it, clicking a scrolled cell landed
+ * on whatever row happened to be that far down the unscrolled sheet.
+ */
+export function contentY(m: GridMetrics, y: number, scrollTop: number): number {
+  const local = y - m.headerHeight
+  const fh = frozenHeight(m)
+  if (local < fh) return Math.max(0, local)
+  return local + scrollTop
+}
+
+export function contentX(m: GridMetrics, x: number, scrollLeft: number): number {
+  const local = x - m.headerWidth
+  const fw = frozenWidth(m)
+  if (local < fw) return Math.max(0, local)
+  return local + scrollLeft
 }
 
 export interface Rect {
@@ -298,8 +388,8 @@ export function cellRect(
   scrollLeft: number,
 ): Rect {
   return {
-    x: m.headerWidth + columnLeft(m, col) - scrollLeft,
-    y: m.headerHeight + rowTop(m, row) - scrollTop,
+    x: colViewportX(m, col, scrollLeft),
+    y: rowViewportY(m, row, scrollTop),
     w: colWidth(m, col),
     h: rowHeight(m, row),
   }
@@ -399,19 +489,26 @@ export function scrollToInclude(
   viewportHeight: number,
   m: GridMetrics,
 ): ScrollOffsets {
-  const contentW = viewportWidth - m.headerWidth
-  const contentH = viewportHeight - m.headerHeight
+  // A frozen cell is on screen by definition, so scrolling to reach it would
+  // move the sheet under the user for no reason — and selecting a frozen
+  // header would snap the whole sheet back to the top.
+  const fh = frozenHeight(m)
+  const fw = frozenWidth(m)
+  const contentW = viewportWidth - m.headerWidth - fw
+  const contentH = viewportHeight - m.headerHeight - fh
   let top = scrollTop
   let left = scrollLeft
 
-  if (contentW > 0) {
-    const x = columnLeft(m, col)
+  if (contentW > 0 && col >= m.frozenCols) {
+    // Positions are measured from the start of the scrolling region, which is
+    // where a scroll offset of zero puts you.
+    const x = columnLeft(m, col) - fw
     const w = colWidth(m, col)
     if (x < left) left = x
     else if (x + w > left + contentW) left = x + w - contentW
   }
-  if (contentH > 0) {
-    const y = rowTop(m, row)
+  if (contentH > 0 && row >= m.frozenRows) {
+    const y = rowTop(m, row) - fh
     const h = rowHeight(m, row)
     if (y < top) top = y
     else if (y + h > top + contentH) top = y + h - contentH
@@ -474,6 +571,37 @@ export function moveAddr(m: GridMetrics, from: Addr, dir: MoveDirection): Addr {
 }
 
 /**
+ * An arrow key, with merges taken into account.
+ *
+ * Two rules, both Excel's. Leaving a merged block steps from its *far* edge,
+ * so pressing Right in a block spanning A1:C1 lands on D1 rather than on B1,
+ * which the user cannot see. Arriving in one lands on its anchor, so the
+ * selection never sits on a covered cell.
+ *
+ * Without this, arrowing across a merged header walked invisibly through its
+ * covered cells and the selection appeared to stop moving.
+ */
+export function moveWithMerges(
+  m: GridMetrics,
+  merges: MergeMap,
+  from: Addr,
+  dir: MoveDirection,
+): Addr {
+  const here = merges.at(from.row, from.col)
+  const edge = here
+    ? {
+        up: { row: here.start.row, col: here.start.col },
+        down: { row: here.end.row, col: here.start.col },
+        left: { row: here.start.row, col: here.start.col },
+        right: { row: here.start.row, col: here.end.col },
+        none: from,
+      }[dir]
+    : from
+  const landed = moveAddr(m, edge, dir)
+  return merges.anchor(landed.row, landed.col)
+}
+
+/**
  * Ctrl/Cmd+Arrow: jump to the edge of the used range in that direction, which
  * is where Excel lands when the run of cells continues to the boundary.
  */
@@ -516,11 +644,172 @@ export function virtualExtent(
   }
 }
 
-export type CellAlign = 'left' | 'right'
+export type CellAlign = 'left' | 'right' | 'center'
 
 /** Numbers, booleans and errors hug the right edge; everything else the left. */
 export function cellAlign(kind: number): CellAlign {
   return kind === 2 || kind === 0 ? 'left' : 'right'
+}
+
+/**
+ * A cell's alignment: an explicit format wins, otherwise the value's type
+ * decides. Excel behaves the same way, which is why a number that arrives as
+ * text suddenly jumps to the left and gives itself away.
+ */
+export function resolvedAlign(kind: number, align?: string): CellAlign {
+  if (align === 'left' || align === 'right' || align === 'center') return align
+  return cellAlign(kind)
+}
+
+/* ---------------------------------------------------------------- merges */
+
+/**
+ * Merged regions of the active sheet, in the form the painter needs.
+ *
+ * Lookup is a linear scan: a sheet has tens of merges, not thousands, and a
+ * per-cell index would cost more to build every repaint than it saves.
+ */
+export class MergeMap {
+  readonly ranges: readonly Range[]
+
+  constructor(ranges: readonly Range[]) {
+    this.ranges = ranges
+  }
+
+  /** Parse the A1 strings the engine reports. */
+  static fromA1(list: readonly string[]): MergeMap {
+    const out: Range[] = []
+    for (const text of list) {
+      const r = parseRangeA1(text)
+      if (r) out.push(r)
+    }
+    return new MergeMap(out)
+  }
+
+  get isEmpty(): boolean {
+    return this.ranges.length === 0
+  }
+
+  /** The merge covering an address, if any. */
+  at(row: number, col: number): Range | null {
+    for (const r of this.ranges) {
+      if (row >= r.start.row && row <= r.end.row && col >= r.start.col && col <= r.end.col) {
+        return r
+      }
+    }
+    return null
+  }
+
+  /**
+   * Where a click on this address should actually land. Clicking anywhere in
+   * a merged block selects the whole block, so the selection can never sit on
+   * a covered cell the user cannot see.
+   */
+  anchor(row: number, col: number): Addr {
+    const m = this.at(row, col)
+    return m ? m.start : { row, col }
+  }
+
+  /** Grow a selection so it contains every merge it partially overlaps. */
+  expand(range: Range): Range {
+    let out = range
+    // One pass is not enough: absorbing a merge can bring the range into
+    // contact with another one.
+    for (let i = 0; i < this.ranges.length; i++) {
+      let grew = false
+      for (const m of this.ranges) {
+        if (
+          m.start.row > out.end.row ||
+          m.end.row < out.start.row ||
+          m.start.col > out.end.col ||
+          m.end.col < out.start.col
+        ) {
+          continue
+        }
+        const next = {
+          start: {
+            row: Math.min(out.start.row, m.start.row),
+            col: Math.min(out.start.col, m.start.col),
+          },
+          end: {
+            row: Math.max(out.end.row, m.end.row),
+            col: Math.max(out.end.col, m.end.col),
+          },
+        }
+        if (
+          next.start.row !== out.start.row ||
+          next.start.col !== out.start.col ||
+          next.end.row !== out.end.row ||
+          next.end.col !== out.end.col
+        ) {
+          out = next
+          grew = true
+        }
+      }
+      if (!grew) break
+    }
+    return out
+  }
+}
+
+const A1_CELL = /^\$?([A-Za-z]+)\$?(\d+)$/
+
+function parseAddrA1(text: string): Addr | null {
+  const m = A1_CELL.exec(text.trim())
+  if (!m) return null
+  let col = 0
+  for (const ch of m[1].toUpperCase()) col = col * 26 + (ch.charCodeAt(0) - 64)
+  const row = Number(m[2])
+  if (!Number.isFinite(row) || row < 1) return null
+  return { row: row - 1, col: col - 1 }
+}
+
+/** "B2" or "B2:D4" as the engine spells them. */
+export function parseRangeA1(text: string): Range | null {
+  const [a, b] = text.split(':')
+  const start = parseAddrA1(a ?? '')
+  if (!start) return null
+  if (b === undefined) return { start, end: start }
+  const end = parseAddrA1(b)
+  if (!end) return null
+  return mkRange(start, end)
+}
+
+/* ------------------------------------------------------------ autoscroll */
+
+/** How fast a drag past the edge scrolls, in CSS pixels per frame. */
+export const AUTOSCROLL_MAX_PX = 24
+/** How far past the edge counts as "asking to scroll". */
+export const AUTOSCROLL_BAND_PX = 32
+
+/**
+ * Scroll delta for a drag whose pointer has left the content box.
+ *
+ * The speed ramps with distance so nudging the edge creeps and dragging well
+ * past it moves quickly — a fixed step makes selecting a long range either
+ * unbearably slow or impossible to stop on the right row.
+ */
+export function autoscrollDelta(
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  m: GridMetrics,
+): { dx: number; dy: number } {
+  const axis = (pos: number, lo: number, hi: number): number => {
+    if (pos < lo) return -ramp(lo - pos)
+    if (pos > hi) return ramp(pos - hi)
+    return 0
+  }
+  return {
+    dx: axis(x, m.headerWidth, width),
+    dy: axis(y, m.headerHeight, height),
+  }
+}
+
+function ramp(over: number): number {
+  const t = Math.min(1, over / AUTOSCROLL_BAND_PX)
+  return Math.max(1, Math.round(t * AUTOSCROLL_MAX_PX))
 }
 
 /**
@@ -535,4 +824,8 @@ export function overflowHashes(available: number, hashWidth: number): string {
 
 export function clampColWidth(w: number): number {
   return Math.max(MIN_COL_WIDTH, Math.round(w))
+}
+
+export function clampRowHeight(h: number): number {
+  return Math.max(MIN_ROW_HEIGHT, Math.round(h))
 }

@@ -1,0 +1,231 @@
+# The reference family, SUMPRODUCT, and the rest of the date arithmetic.
+
+# --- ROW / COLUMN / ROWS / COLUMNS ------------------------------------------
+
+[[case]]
+id = "t2b.row-of-the-cell-itself"
+at = "C7"
+formula = "=ROW()"
+expect = "7"
+source = "known"
+functions = ["ROW"]
+note = """
+With no argument ROW is asking about the cell holding the formula, which is
+what makes `=ROW()-1` the idiom for numbering a table as it is filled down.
+"""
+
+[[case]]
+id = "t2b.column-of-the-cell-itself"
+at = "C7"
+formula = "=COLUMN()"
+expect = "3"
+source = "known"
+functions = ["COLUMN"]
+note = "Column A is 1, so C is 3. Not zero-based anywhere in the language."
+
+[[case]]
+id = "t2b.row-of-a-reference"
+formula = "=ROW(B5)"
+expect = "5"
+source = "known"
+functions = ["ROW"]
+note = "With a reference it reports that reference's row, not its own."
+
+[[case]]
+id = "t2b.row-of-a-range-is-its-first"
+formula = "=ROW(B5:D9)"
+expect = "5"
+source = "known"
+functions = ["ROW"]
+note = """
+The top-left cell's row. In Excel this spills a whole column of numbers; with
+no dynamic arrays the first is what a single cell shows, which is also what
+Excel showed before spilling existed.
+"""
+
+[[case]]
+id = "t2b.rows-counts-the-height"
+formula = "=ROWS(B5:D9)"
+expect = "5"
+source = "known"
+functions = ["ROWS"]
+note = "How many, where ROW says which."
+
+[[case]]
+id = "t2b.columns-counts-the-width"
+formula = "=COLUMNS(B5:D9)"
+expect = "3"
+source = "known"
+functions = ["COLUMNS"]
+note = "B to D inclusive."
+
+[[case]]
+id = "t2b.rows-of-a-single-cell-is-one"
+formula = "=ROWS(B5)"
+expect = "1"
+source = "known"
+functions = ["ROWS"]
+note = """
+A single cell is a 1x1 range. Inside the engine a lone reference has already
+degraded to a scalar by the time a function sees it, so this case is the one
+that keeps that degradation from turning into #VALUE!.
+"""
+
+[[case]]
+id = "t2b.rows-of-a-number-is-a-value-error"
+formula = "=ROWS(3)"
+expect = "#VALUE!"
+source = "known"
+functions = ["ROWS"]
+note = "A number is not a reference, and the mistake is worth being loud about."
+
+# --- SUMPRODUCT -------------------------------------------------------------
+
+[[case]]
+id = "t2b.sumproduct-multiplies-pairwise"
+given = { A1 = "1", A2 = "2", A3 = "3", B1 = "10", B2 = "20", B3 = "30" }
+formula = "=SUMPRODUCT(A1:A3,B1:B3)"
+expect = "140"
+source = "known"
+functions = ["SUMPRODUCT"]
+note = "1×10 + 2×20 + 3×30. The weighted-total idiom in one function."
+
+[[case]]
+id = "t2b.sumproduct-of-one-range-is-a-sum"
+given = { A1 = "1", A2 = "2", A3 = "3" }
+formula = "=SUMPRODUCT(A1:A3)"
+expect = "6"
+source = "known"
+functions = ["SUMPRODUCT"]
+note = "With nothing to multiply by it totals what it has."
+
+[[case]]
+id = "t2b.sumproduct-counts-a-condition"
+given = { A1 = "1", A2 = "5", A3 = "9" }
+formula = "=SUMPRODUCT((A1:A3>2)*1)"
+expect = "2"
+source = "known"
+functions = ["SUMPRODUCT"]
+note = """
+A comparison against a range yields TRUE/FALSE per cell, and multiplying makes
+them 1 and 0 — the idiom people used for conditional counting before COUNTIFS
+existed, and still use when the condition is too complex for it.
+
+Recorded as a difference until P4, when operators became element-wise over
+anything wider than a cell. It is the same model change dynamic arrays need,
+which is why it was not worth bolting onto one function.
+"""
+
+[[case]]
+id = "t2b.sumproduct-treats-text-as-zero"
+given = { A1 = "1", A2 = "'x", B1 = "10", B2 = "20" }
+formula = "=SUMPRODUCT(A1:A2,B1:B2)"
+expect = "10"
+source = "known"
+functions = ["SUMPRODUCT"]
+note = """
+Text is 0 rather than an error, which is the difference between SUMPRODUCT and
+multiplying two cells directly. It is also why a stray label in a column makes
+a SUMPRODUCT quietly under-count instead of complaining.
+"""
+
+[[case]]
+id = "t2b.sumproduct-refuses-mismatched-shapes"
+given = { A1 = "1", A2 = "2", A3 = "3", B1 = "10", B2 = "20" }
+formula = "=SUMPRODUCT(A1:A3,B1:B2)"
+expect = "#VALUE!"
+source = "known"
+functions = ["SUMPRODUCT"]
+note = """
+Excel refuses rather than aligning what it has: two columns of different
+length nearly always means one of them points at the wrong rows.
+"""
+
+# --- time of day ------------------------------------------------------------
+
+[[case]]
+id = "t2b.time-is-a-fraction-of-a-day"
+formula = "=TIME(12,0,0)"
+expect = "0.5"
+source = "known"
+functions = ["TIME"]
+note = "Midday is half a day. A time is the fractional part of a serial."
+
+[[case]]
+id = "t2b.time-wraps-past-midnight"
+formula = "=HOUR(TIME(25,0,0))"
+expect = "1"
+source = "known"
+functions = ["TIME", "HOUR"]
+note = """
+Excel wraps rather than erroring: a time of day has nowhere else to go, so
+25:00 is 1am.
+"""
+
+[[case]]
+id = "t2b.hour-minute-second-of-a-time"
+formula = "=HOUR(TIME(13,45,30))*10000+MINUTE(TIME(13,45,30))*100+SECOND(TIME(13,45,30))"
+expect = "134530"
+source = "known"
+functions = ["HOUR", "MINUTE", "SECOND", "TIME"]
+note = """
+All three in one case, packed into a number so a single expectation pins them
+together — separately each would need its own round trip through TIME.
+"""
+
+# --- date arithmetic --------------------------------------------------------
+
+[[case]]
+id = "t2b.datevalue-parses-a-date"
+formula = "=DATEVALUE(\"2024-01-01\")"
+expect = "45292"
+source = "known"
+functions = ["DATEVALUE"]
+note = "The inverse of formatting a serial as a date."
+
+[[case]]
+id = "t2b.datevalue-of-nonsense-is-a-value-error"
+formula = "=DATEVALUE(\"not a date\")"
+expect = "#VALUE!"
+source = "known"
+functions = ["DATEVALUE"]
+note = "Loud, not zero — a failed date parse is usually a column of bad data."
+
+[[case]]
+id = "t2b.edate-clamps-to-the-month-length"
+formula = "=DAY(EDATE(DATE(2024,1,31),1))"
+expect = "29"
+source = "known"
+functions = ["EDATE", "DAY", "DATE"]
+note = """
+A month on from 31 January is 29 February in a leap year, never 2 March.
+EDATE clamps; adding 30 days does not, which is why the function exists.
+"""
+
+[[case]]
+id = "t2b.edate-goes-backwards"
+formula = "=MONTH(EDATE(DATE(2024,3,15),-2))"
+expect = "1"
+source = "known"
+functions = ["EDATE", "MONTH"]
+note = "A negative count walks back."
+
+[[case]]
+id = "t2b.days-is-end-minus-start"
+formula = "=DAYS(DATE(2024,1,31),DATE(2024,1,1))"
+expect = "30"
+source = "known"
+functions = ["DAYS", "DATE"]
+note = """
+Note the argument order: end first, which is the opposite of DATEDIF and of
+every other two-date function. Getting it backwards gives a negative number
+rather than an error, so nothing tells you.
+"""
+
+[[case]]
+id = "t2b.days-can-be-negative"
+formula = "=DAYS(DATE(2024,1,1),DATE(2024,1,31))"
+expect = "-30"
+source = "known"
+functions = ["DAYS"]
+note = "Signed, which is the consequence of that argument order."

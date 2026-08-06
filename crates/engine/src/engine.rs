@@ -5,12 +5,34 @@ use crate::addr::{CellAddr, RangeAddr};
 use crate::ast::{Expr, RefVisit};
 use crate::deps::DepGraph;
 use crate::eval::EvalCtx;
+use crate::format::{FormatId, FormatPatch};
 use crate::model::{Cell, CellContent, CellKey, Sheet, SheetId, Workbook};
 use crate::parser::parse_formula;
 use crate::refs::Axis;
 use crate::value::{ErrorKind, Value};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
+
+/// The most cells one formatting action may touch.
+///
+/// We model formatting per cell, not per row or column as xlsx does, so
+/// "bold this whole column" would otherwise materialise a million map
+/// entries. The limit fails loudly instead of quietly eating memory; raising
+/// it properly means adding row and column format defaults, which v1 does not
+/// have.
+pub const MAX_FORMAT_CELLS: u64 = 200_000;
+
+/// How many extra recalculation passes a sheet using OFFSET or INDIRECT may
+/// take before the engine stops chasing the answer.
+///
+/// Three is enough for any chain a human writes; a sheet that still has not
+/// settled is one where a computed reference points at another computed
+/// reference several deep, and the alternative to a bound is a hang.
+const MAX_DYNAMIC_REFERENCE_PASSES: usize = 3;
+
+/// How many times spilled blocks may be laid out and re-read before the
+/// engine stops. Same bound and the same reasoning as above.
+const MAX_SPILL_PASSES: usize = 4;
 
 /// What a paste carries over from the source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -115,6 +137,29 @@ pub enum Action {
         sheet: String,
         range: RangeAddr,
     },
+    /// Change presentation over a range. Each patch names one attribute, so
+    /// bolding a range leaves its fill colour alone.
+    FormatApply {
+        sheet: String,
+        range: RangeAddr,
+        patches: Vec<FormatPatch>,
+    },
+    /// Strip all formatting from a range, leaving contents untouched.
+    FormatClear {
+        sheet: String,
+        range: RangeAddr,
+    },
+    /// Replace text across a range (the whole sheet when `range` is None),
+    /// matching against what the formula bar would show — so a formula is
+    /// matched and rewritten by its source, never by its result.
+    FindReplace {
+        sheet: String,
+        range: Option<RangeAddr>,
+        find: String,
+        replace: String,
+        match_case: bool,
+        whole_cell: bool,
+    },
     SheetAdd {
         name: String,
     },
@@ -123,6 +168,47 @@ pub enum Action {
         to: String,
     },
     SheetDelete {
+        name: String,
+    },
+    /// Resize columns or rows. `size` is in pixels; `None` restores the
+    /// default, which is how a "reset width" gesture is expressed without a
+    /// second action.
+    Resize {
+        sheet: String,
+        axis: Axis,
+        /// First index, then how many. A drag resizes one; a multi-column
+        /// selection resizes the run, and autofit resizes each to its own
+        /// width, which arrives as several of these in one batch.
+        at: u32,
+        count: u32,
+        size: Option<f64>,
+    },
+    /// Add a conditional-formatting rule. Rules apply in the order they were
+    /// added, and the first to set an attribute keeps it.
+    CondAdd {
+        sheet: String,
+        rule: crate::cond::CondRule,
+    },
+    /// Drop every rule whose range lies inside `range`.
+    CondClear {
+        sheet: String,
+        range: RangeAddr,
+    },
+    /// Hold the first `rows` rows and `cols` columns still while the rest of
+    /// the sheet scrolls. Zero and zero unfreezes, which is how "unfreeze
+    /// panes" is expressed without a second action.
+    FreezePanes {
+        sheet: String,
+        rows: u32,
+        cols: u32,
+    },
+    /// Define a workbook-level name, or redefine one. `refers_to` is an A1
+    /// range as xlsx spells it — usually sheet-qualified and absolute.
+    NameDefine {
+        name: String,
+        refers_to: String,
+    },
+    NameDelete {
         name: String,
     },
     Undo,
@@ -203,6 +289,21 @@ pub enum Event {
         sheet: String,
         range: RangeAddr,
     },
+    FormatApplied {
+        sheet: String,
+        range: RangeAddr,
+        attributes: Vec<String>,
+        cells: u32,
+    },
+    FormatCleared {
+        sheet: String,
+        range: RangeAddr,
+        cells: u32,
+    },
+    Replaced {
+        sheet: String,
+        cells: u32,
+    },
     SheetAdded {
         name: String,
     },
@@ -218,6 +319,39 @@ pub enum Event {
     },
     Redone {
         label: String,
+    },
+    CondAdded {
+        sheet: String,
+        range: RangeAddr,
+        /// The rule in words. No cell values: the operands are formula text.
+        rule: String,
+    },
+    CondCleared {
+        sheet: String,
+        range: RangeAddr,
+        removed: u32,
+    },
+    PanesFrozen {
+        sheet: String,
+        rows: u32,
+        cols: u32,
+    },
+    NameDefined {
+        name: String,
+        refers_to: String,
+        /// What it meant before, when this replaced an existing definition.
+        prev: Option<String>,
+    },
+    NameDeleted {
+        name: String,
+    },
+    Resized {
+        sheet: String,
+        axis: Axis,
+        at: u32,
+        count: u32,
+        /// None when the run went back to the default size.
+        size: Option<f64>,
     },
     /// Cells whose computed value changed due to recalculation (derived
     /// state; informational for the UI, not required for replay).
@@ -252,7 +386,42 @@ pub enum ApplyError {
 #[derive(Debug, Clone)]
 pub enum UndoState {
     Cells(Vec<(SheetId, CellAddr, Option<Cell>)>),
+    /// Format ids, not formats: the palette is append-only, so an id recorded
+    /// here still resolves after any number of intervening changes.
+    Formats(Vec<(SheetId, CellAddr, Option<FormatId>)>),
+    /// Restored in order, so an operation that moves contents *and* their
+    /// formatting undoes as one step.
+    Compound(Vec<UndoState>),
     Sheets(Vec<Sheet>),
+    /// The whole width (or height) map for one sheet. Small enough to copy
+    /// wholesale — a sheet has at most a few hundred non-default entries —
+    /// and copying it means an autofit over a selection undoes as one map
+    /// swap instead of a list of per-column patches.
+    Sizes(SheetId, Axis, BTreeMap<u32, f64>),
+    /// A sheet's conditional-formatting rules, before the change.
+    Conditional(SheetId, Vec<crate::cond::CondRule>),
+    /// A sheet's frozen row and column counts, before the change.
+    Frozen(SheetId, (u32, u32)),
+    /// The whole name table. A handful of entries at most, and swapping it
+    /// wholesale means a redefinition and a deletion undo the same way.
+    Names(BTreeMap<String, String>),
+}
+
+impl UndoState {
+    /// How many cells' contents this records, for the "n cells changed"
+    /// counts events carry. Formats are counted separately or not at all.
+    pub fn cell_count(&self) -> u32 {
+        match self {
+            UndoState::Cells(c) => c.len() as u32,
+            UndoState::Compound(parts) => parts.iter().map(|p| p.cell_count()).sum(),
+            UndoState::Formats(_)
+            | UndoState::Sheets(_)
+            | UndoState::Sizes(..)
+            | UndoState::Frozen(..)
+            | UndoState::Conditional(..)
+            | UndoState::Names(_) => 0,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -266,6 +435,10 @@ pub struct Engine {
     pub wb: Workbook,
     deps: DepGraph,
     volatile: HashSet<CellKey>,
+    /// Anchors whose block had nowhere to go at the last placement. Kept so
+    /// re-evaluating one does not flip it back to its first element for a
+    /// pass; see `place_spills`.
+    spill_blocked: HashSet<CellKey>,
     undo_stack: Vec<UndoEntry>,
     redo_stack: Vec<UndoEntry>,
     /// Injected clock for NOW/TODAY so evaluation is replayable; the shell
@@ -279,6 +452,7 @@ impl Engine {
             wb: Workbook::new(),
             deps: DepGraph::default(),
             volatile: HashSet::new(),
+            spill_blocked: HashSet::new(),
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             now_ms: 0,
@@ -296,6 +470,44 @@ impl Engine {
                 Ok(events)
             }
         }
+    }
+
+    /// Apply several actions as one user-visible gesture.
+    ///
+    /// The difference from calling [`Engine::apply`] in a loop is undo: this
+    /// coalesces everything the batch pushed into a single entry, so the
+    /// gesture comes back in one Ctrl+Z. A routine that took five actions to
+    /// express is still one thing the user asked for, and making them reject
+    /// it five times would be a good way to stop anyone using routines.
+    ///
+    /// A failure part-way through leaves the earlier actions applied, as it
+    /// does for a loop of `apply` — and, in that case, uncoalesced, because
+    /// the caller is now looking at a partial result and should be able to
+    /// step back through it.
+    pub fn apply_batch(
+        &mut self,
+        actions: &[Action],
+        label: &str,
+    ) -> Result<Vec<Event>, ApplyError> {
+        let mark = self.undo_stack.len();
+        let mut events = Vec::new();
+        for a in actions {
+            events.extend(self.apply(a)?);
+        }
+        // `>` and not `>=`: one entry is already one undo step, and an
+        // `Undo` inside the batch can leave the stack shorter than the mark.
+        if self.undo_stack.len() > mark + 1 {
+            let parts: Vec<UndoState> = self
+                .undo_stack
+                .drain(mark..)
+                .map(|entry| entry.state)
+                .collect();
+            self.undo_stack.push(UndoEntry {
+                label: label.to_string(),
+                state: UndoState::Compound(parts),
+            });
+        }
+        Ok(events)
     }
 
     fn apply_forward(&mut self, action: &Action) -> Result<Vec<Event>, ApplyError> {
@@ -338,9 +550,35 @@ impl Engine {
             Action::FilterClear { sheet } => self.filter_apply(sheet, None),
             Action::MergeApply { sheet, range } => self.merge(sheet, *range, true),
             Action::MergeClear { sheet, range } => self.merge(sheet, *range, false),
+            Action::FormatApply {
+                sheet,
+                range,
+                patches,
+            } => self.format_apply(sheet, *range, patches),
+            Action::FormatClear { sheet, range } => self.format_clear(sheet, *range),
+            Action::FindReplace {
+                sheet,
+                range,
+                find,
+                replace,
+                match_case,
+                whole_cell,
+            } => self.find_replace(sheet, *range, find, replace, *match_case, *whole_cell),
             Action::SheetAdd { name } => self.sheet_add(name),
             Action::SheetRename { from, to } => self.sheet_rename(from, to),
             Action::SheetDelete { name } => self.sheet_delete(name),
+            Action::Resize {
+                sheet,
+                axis,
+                at,
+                count,
+                size,
+            } => self.resize(sheet, *axis, *at, *count, *size),
+            Action::CondAdd { sheet, rule } => self.cond_add(sheet, rule),
+            Action::CondClear { sheet, range } => self.cond_clear(sheet, *range),
+            Action::FreezePanes { sheet, rows, cols } => self.freeze_panes(sheet, *rows, *cols),
+            Action::NameDefine { name, refers_to } => self.name_define(name, refers_to),
+            Action::NameDelete { name } => self.name_delete(name),
             Action::Undo | Action::Redo => unreachable!("handled in apply"),
         }
     }
@@ -366,9 +604,62 @@ impl Engine {
                 inverse.reverse();
                 UndoState::Cells(inverse)
             }
+            UndoState::Formats(patches) => {
+                let mut inverse = Vec::with_capacity(patches.len());
+                for (sid, addr, id) in patches.into_iter().rev() {
+                    let Some(sheet) = self.wb.sheet_mut(sid) else {
+                        continue;
+                    };
+                    let replaced = match id {
+                        Some(i) => sheet.formats.insert(addr, i),
+                        None => sheet.formats.remove(&addr),
+                    };
+                    inverse.push((sid, addr, replaced));
+                }
+                inverse.reverse();
+                UndoState::Formats(inverse)
+            }
+            UndoState::Compound(parts) => {
+                // Reverse order, so restoring undoes the parts in the
+                // opposite sequence to the one that applied them.
+                let mut inverse: Vec<UndoState> =
+                    parts.into_iter().rev().map(|p| self.restore(p)).collect();
+                inverse.reverse();
+                UndoState::Compound(inverse)
+            }
             UndoState::Sheets(sheets) => {
                 let replaced = std::mem::replace(&mut self.wb.sheets, sheets);
                 UndoState::Sheets(replaced)
+            }
+            UndoState::Conditional(sid, rules) => {
+                let Some(sheet) = self.wb.sheet_mut(sid) else {
+                    return UndoState::Conditional(sid, rules);
+                };
+                let before = std::mem::replace(&mut sheet.conditional, rules);
+                self.recalc_conditional();
+                UndoState::Conditional(sid, before)
+            }
+            UndoState::Frozen(sid, (rows, cols)) => {
+                let Some(sheet) = self.wb.sheet_mut(sid) else {
+                    return UndoState::Frozen(sid, (rows, cols));
+                };
+                let before = (sheet.frozen_rows, sheet.frozen_cols);
+                sheet.frozen_rows = rows;
+                sheet.frozen_cols = cols;
+                UndoState::Frozen(sid, before)
+            }
+            UndoState::Names(names) => {
+                UndoState::Names(std::mem::replace(&mut self.wb.names, names))
+            }
+            UndoState::Sizes(sid, axis, sizes) => {
+                let Some(sheet) = self.wb.sheet_mut(sid) else {
+                    return UndoState::Sizes(sid, axis, sizes);
+                };
+                let map = match axis {
+                    Axis::Col => &mut sheet.col_widths,
+                    Axis::Row => &mut sheet.row_heights,
+                };
+                UndoState::Sizes(sid, axis, std::mem::replace(map, sizes))
             }
         }
     }
@@ -411,6 +702,27 @@ impl Engine {
         self.rebuild_deps_and_recalc_all();
     }
 
+    /// Forget the undo and redo history, keeping the workbook.
+    ///
+    /// Import replays a file cell by cell through `apply`, which is what keeps
+    /// the importer honest — but it also means a freshly opened workbook
+    /// arrives with one undo entry per imported cell, and the user's first
+    /// Ctrl+Z un-types a cell they never typed. Opening a file is a new
+    /// starting point, not an edit.
+    pub fn clear_history(&mut self) {
+        self.undo_stack.clear();
+        self.redo_stack.clear();
+    }
+
+    /// Cells whose formulas read this one, directly.
+    ///
+    /// Exposed for the environment's observation, which needs to say where a
+    /// change would propagate without being handed the graph itself — a
+    /// policy that could walk `DepGraph` could also mutate through it.
+    pub fn dependents_of(&self, key: CellKey) -> Vec<CellKey> {
+        self.deps.dependents_of(key)
+    }
+
     pub fn can_undo(&self) -> bool {
         !self.undo_stack.is_empty()
     }
@@ -422,10 +734,7 @@ impl Engine {
     fn range_clear(&mut self, sheet: &str, range: RangeAddr) -> Result<Vec<Event>, ApplyError> {
         let sid = self.sheet_id(sheet)?;
         let undo = self.op_range_clear(sid, range)?;
-        let cleared = match &undo {
-            UndoState::Cells(c) => c.len() as u32,
-            _ => 0,
-        };
+        let cleared = undo.cell_count();
         self.push_undo("clear", undo);
         self.rebuild_deps_and_recalc_all();
         Ok(vec![Event::RangeCleared {
@@ -475,10 +784,7 @@ impl Engine {
             ));
         }
         let undo = self.op_fill(sid, src, dst)?;
-        let filled = match &undo {
-            UndoState::Cells(c) => c.len() as u32,
-            _ => 0,
-        };
+        let filled = undo.cell_count();
         self.push_undo("fill", undo);
         self.rebuild_deps_and_recalc_all();
         Ok(vec![Event::FillApplied {
@@ -577,6 +883,175 @@ impl Engine {
         } else {
             Event::MergeCleared { sheet, range }
         }])
+    }
+
+    /// Apply presentation patches over a range.
+    ///
+    /// Formatting never touches contents and never triggers a recalculation:
+    /// a number format changes how a value reads, not what it is. That is
+    /// also why `=A1&""` does not see the format — Excel behaves the same way.
+    fn format_apply(
+        &mut self,
+        sheet: &str,
+        range: RangeAddr,
+        patches: &[FormatPatch],
+    ) -> Result<Vec<Event>, ApplyError> {
+        let sid = self.sheet_id(sheet)?;
+        if patches.is_empty() {
+            return Err(ApplyError::Invalid(
+                "format needs at least one patch".into(),
+            ));
+        }
+        if range.cell_count() > MAX_FORMAT_CELLS {
+            return Err(ApplyError::Invalid(format!(
+                "formatting {} cells exceeds the {} cell limit",
+                range.cell_count(),
+                MAX_FORMAT_CELLS
+            )));
+        }
+        let undo = self.op_format(sid, range, patches);
+        let cells = undo.len() as u32;
+        self.push_undo("format", UndoState::Formats(undo));
+        Ok(vec![Event::FormatApplied {
+            sheet: sheet.to_string(),
+            range,
+            attributes: patches.iter().map(|p| p.attribute().to_string()).collect(),
+            cells,
+        }])
+    }
+
+    fn format_clear(&mut self, sheet: &str, range: RangeAddr) -> Result<Vec<Event>, ApplyError> {
+        let sid = self.sheet_id(sheet)?;
+        let s = self.wb.sheet(sid).expect("sheet exists");
+        let addrs: Vec<CellAddr> = s
+            .formats
+            .keys()
+            .copied()
+            .filter(|a| range.contains(*a))
+            .collect();
+        let mut undo = Vec::with_capacity(addrs.len());
+        for a in addrs {
+            let old = self.wb.sheet_mut(sid).unwrap().formats.remove(&a);
+            undo.push((sid, a, old));
+        }
+        let cells = undo.len() as u32;
+        self.push_undo("clear formatting", UndoState::Formats(undo));
+        Ok(vec![Event::FormatCleared {
+            sheet: sheet.to_string(),
+            range,
+            cells,
+        }])
+    }
+
+    /// Replace text across a range, matching on what the formula bar shows.
+    ///
+    /// Matching the *input* rather than the computed value is the only
+    /// coherent choice: there is no way to write a replacement back into a
+    /// formula's result, so a search that matched results would either refuse
+    /// to replace or destroy the formula that produced them. Excel's default
+    /// "Look in: Formulas" does the same thing.
+    fn find_replace(
+        &mut self,
+        sheet: &str,
+        range: Option<RangeAddr>,
+        find: &str,
+        replace: &str,
+        match_case: bool,
+        whole_cell: bool,
+    ) -> Result<Vec<Event>, ApplyError> {
+        if find.is_empty() {
+            return Err(ApplyError::Invalid("nothing to find".into()));
+        }
+        let sid = self.sheet_id(sheet)?;
+        let hits = self.matches_in(sid, range, find, match_case, whole_cell);
+
+        let mut undo = Vec::new();
+        let mut seeds = Vec::new();
+        for (addr, input) in hits {
+            let next = replace_text(&input, find, replace, match_case, whole_cell);
+            if next == input {
+                continue;
+            }
+            let key = CellKey { sheet: sid, addr };
+            let prev = self.wb.sheet(sid).unwrap().cells.get(&addr).cloned();
+            if next.is_empty() {
+                self.deps.clear(key);
+                self.volatile.remove(&key);
+                self.wb.sheet_mut(sid).unwrap().cells.remove(&addr);
+            } else {
+                // A replacement can turn a literal into a formula or the
+                // reverse, so the cell is rebuilt from its text exactly as a
+                // typed edit would be. A replacement that produces an
+                // unparseable formula leaves that cell alone rather than
+                // failing the whole operation part-way through.
+                let Ok(cell) = build_cell(&next) else {
+                    continue;
+                };
+                self.wb.sheet_mut(sid).unwrap().cells.insert(addr, cell);
+            }
+            undo.push((sid, addr, prev));
+            seeds.push(key);
+        }
+
+        let cells = undo.len() as u32;
+        self.push_undo("replace", UndoState::Cells(undo));
+        // One rebuild for the whole operation rather than one per cell.
+        self.rebuild_deps_and_recalc_all();
+        let mut events = vec![Event::Replaced {
+            sheet: sheet.to_string(),
+            cells,
+        }];
+        if !seeds.is_empty() {
+            events.push(Event::Recalced {
+                cells: self.keys_to_names(&seeds),
+            });
+        }
+        Ok(events)
+    }
+
+    /// Addresses whose formula-bar text matches, with that text. Read-only,
+    /// so the UI can drive find-next through the same matching rules that
+    /// replace uses rather than a second implementation of them.
+    pub fn matches_in(
+        &self,
+        sheet: SheetId,
+        range: Option<RangeAddr>,
+        find: &str,
+        match_case: bool,
+        whole_cell: bool,
+    ) -> Vec<(CellAddr, String)> {
+        let Some(s) = self.wb.sheet(sheet) else {
+            return Vec::new();
+        };
+        let mut hits: Vec<(CellAddr, String)> = s
+            .cells
+            .iter()
+            .filter(|(a, _)| range.map(|r| r.contains(**a)).unwrap_or(true))
+            .map(|(a, c)| (*a, c.input()))
+            .filter(|(_, input)| text_matches(input, find, match_case, whole_cell))
+            .collect();
+        // Reading order, so "find next" walks the sheet the way a user reads
+        // it rather than in hash order.
+        hits.sort_by_key(|(a, _)| *a);
+        hits
+    }
+
+    /// Find matches by sheet name, for callers outside the engine.
+    pub fn find_matches(
+        &self,
+        sheet: &str,
+        range: Option<RangeAddr>,
+        find: &str,
+        match_case: bool,
+        whole_cell: bool,
+    ) -> Vec<CellAddr> {
+        let Some(sid) = self.wb.sheet_id_by_name(sheet) else {
+            return Vec::new();
+        };
+        self.matches_in(sid, range, find, match_case, whole_cell)
+            .into_iter()
+            .map(|(a, _)| a)
+            .collect()
     }
 
     fn sheet_id(&self, name: &str) -> Result<SheetId, ApplyError> {
@@ -716,6 +1191,224 @@ impl Engine {
         }])
     }
 
+    /// Add a conditional-formatting rule.
+    fn cond_add(
+        &mut self,
+        sheet: &str,
+        rule: &crate::cond::CondRule,
+    ) -> Result<Vec<Event>, ApplyError> {
+        // Checked when the rule is written rather than on every cell it
+        // covers: a rule whose formula does not parse would otherwise fail
+        // silently, once per cell, forever.
+        for body in rule_formulas(rule) {
+            parse_formula(&body)?;
+        }
+        if rule.format.is_default() {
+            return Err(ApplyError::Invalid(
+                "a rule that changes no formatting would do nothing".into(),
+            ));
+        }
+        let sid = self.sheet_id(sheet)?;
+        let before = self
+            .wb
+            .sheet(sid)
+            .expect("sheet exists")
+            .conditional
+            .clone();
+        self.wb
+            .sheet_mut(sid)
+            .expect("sheet exists")
+            .conditional
+            .push(rule.clone());
+        self.push_undo("add rule", UndoState::Conditional(sid, before));
+        self.recalc_conditional();
+        Ok(vec![Event::CondAdded {
+            sheet: sheet.to_string(),
+            range: rule.range,
+            rule: rule.summary(),
+        }])
+    }
+
+    fn cond_clear(&mut self, sheet: &str, range: RangeAddr) -> Result<Vec<Event>, ApplyError> {
+        let sid = self.sheet_id(sheet)?;
+        let s = self.wb.sheet_mut(sid).expect("sheet exists");
+        let before = s.conditional.clone();
+        // A rule is cleared when its range lies inside the selection, not
+        // when it merely touches it: clearing one cell of a column-wide rule
+        // means "not here", and dropping the whole rule would be a surprise.
+        s.conditional.retain(|r| {
+            !(r.range.start.row >= range.start.row
+                && r.range.end.row <= range.end.row
+                && r.range.start.col >= range.start.col
+                && r.range.end.col <= range.end.col)
+        });
+        let removed = (before.len() - s.conditional.len()) as u32;
+        if removed == 0 {
+            return Ok(Vec::new());
+        }
+        self.push_undo("clear rules", UndoState::Conditional(sid, before));
+        self.recalc_conditional();
+        Ok(vec![Event::CondCleared {
+            sheet: sheet.to_string(),
+            range,
+            removed,
+        }])
+    }
+
+    /// Rebuild every sheet's conditional formats from its rules.
+    ///
+    /// Called after anything that could change a value, because a rule reads
+    /// values: the overlay is derived state and recomputing it is the only
+    /// way it can be trusted.
+    pub(crate) fn recalc_conditional(&mut self) {
+        if self.wb.sheets.iter().all(|s| s.conditional.is_empty()) {
+            // The common case, and worth the check: without it every
+            // recalculation would walk every sheet's rule list to find none.
+            for s in &mut self.wb.sheets {
+                s.cond_formats.clear();
+            }
+            return;
+        }
+        let ids: Vec<SheetId> = self.wb.sheets.iter().map(|s| s.id).collect();
+        for sid in ids {
+            let formats = crate::cond::evaluate(&self.wb, sid, self.now_ms);
+            if let Some(s) = self.wb.sheet_mut(sid) {
+                s.cond_formats = formats;
+            }
+        }
+    }
+
+    /// Freeze or unfreeze the top-left panes of a sheet.
+    fn freeze_panes(
+        &mut self,
+        sheet: &str,
+        rows: u32,
+        cols: u32,
+    ) -> Result<Vec<Event>, ApplyError> {
+        if rows >= crate::addr::MAX_ROWS || cols >= crate::addr::MAX_COLS {
+            return Err(ApplyError::Invalid(
+                "cannot freeze the whole sheet: there would be nothing left to \
+                 scroll"
+                    .into(),
+            ));
+        }
+        let sid = self.sheet_id(sheet)?;
+        let s = self.wb.sheet_mut(sid).expect("sheet exists");
+        if (s.frozen_rows, s.frozen_cols) == (rows, cols) {
+            return Ok(Vec::new());
+        }
+        let before = (s.frozen_rows, s.frozen_cols);
+        s.frozen_rows = rows;
+        s.frozen_cols = cols;
+        self.push_undo("freeze panes", UndoState::Frozen(sid, before));
+        Ok(vec![Event::PanesFrozen {
+            sheet: sheet.to_string(),
+            rows,
+            cols,
+        }])
+    }
+
+    /// Define or redefine a workbook name.
+    fn name_define(&mut self, name: &str, refers_to: &str) -> Result<Vec<Event>, ApplyError> {
+        let key = name.trim().to_ascii_uppercase();
+        if !is_valid_name(&key) {
+            return Err(ApplyError::Invalid(format!(
+                "'{name}' is not a usable name: names start with a letter or \
+                 underscore, contain no spaces, and must not look like a cell \
+                 address"
+            )));
+        }
+        // Parsed here rather than at evaluation so a typo is refused when it
+        // is made, not silently every time the name is used.
+        let body = refers_to.strip_prefix('=').unwrap_or(refers_to);
+        // A definition that parses to nothing but an error — `Sheet1!$A$`,
+        // say — is a typo the parser is willing to tolerate as an error node.
+        // Storing it would mean the name silently answers #REF! forever.
+        if matches!(parse_formula(body)?, Expr::Error(_)) {
+            return Err(ApplyError::Invalid(format!(
+                "'{refers_to}' is not something a name can refer to"
+            )));
+        }
+        let before = self.wb.names.clone();
+        let prev = self.wb.names.insert(key.clone(), refers_to.to_string());
+        if prev.as_deref() == Some(refers_to) {
+            return Ok(Vec::new());
+        }
+        self.push_undo("define name", UndoState::Names(before));
+        self.rebuild_deps_and_recalc_all();
+        Ok(vec![Event::NameDefined {
+            name: key,
+            refers_to: refers_to.to_string(),
+            prev,
+        }])
+    }
+
+    fn name_delete(&mut self, name: &str) -> Result<Vec<Event>, ApplyError> {
+        let key = name.trim().to_ascii_uppercase();
+        let before = self.wb.names.clone();
+        if self.wb.names.remove(&key).is_none() {
+            return Err(ApplyError::Invalid(format!("no name '{name}'")));
+        }
+        self.push_undo("delete name", UndoState::Names(before));
+        // Formulas using it now say #NAME?, which is the right answer and the
+        // reason deleting a name is worth an undo entry.
+        self.rebuild_deps_and_recalc_all();
+        Ok(vec![Event::NameDeleted { name: key }])
+    }
+
+    /// Set or clear a run of column widths or row heights.
+    fn resize(
+        &mut self,
+        sheet: &str,
+        axis: Axis,
+        at: u32,
+        count: u32,
+        mut size: Option<f64>,
+    ) -> Result<Vec<Event>, ApplyError> {
+        let sid = self.sheet_id(sheet)?;
+        if let Some(px) = size {
+            // A non-positive width is a hidden column in Excel, which is a
+            // different feature; refusing is better than silently rounding it
+            // up to something visible.
+            if !(px.is_finite() && px > 0.0) {
+                return Err(ApplyError::Invalid(format!("size {px} is not a width")));
+            }
+            // Whole pixels. Half a pixel is not a width the grid can draw or
+            // the file can hold, and keeping one in the model would mean a
+            // size that quietly changes the first time the workbook is saved.
+            size = Some(px.round());
+        }
+        let s = self.wb.sheet_mut(sid).expect("sheet exists");
+        let map = match axis {
+            Axis::Col => &mut s.col_widths,
+            Axis::Row => &mut s.row_heights,
+        };
+        let before = map.clone();
+        for i in at..at.saturating_add(count.max(1)) {
+            match size {
+                Some(px) => {
+                    map.insert(i, px);
+                }
+                // Removing the entry *is* the default, so a reset leaves no
+                // trace in the model or in the exported file.
+                None => {
+                    map.remove(&i);
+                }
+            }
+        }
+        if *map == before {
+            return Ok(Vec::new());
+        }
+        self.push_undo("resize", UndoState::Sizes(sid, axis, before));
+        Ok(vec![Event::Resized {
+            sheet: sheet.to_string(),
+            axis,
+            at,
+            count: count.max(1),
+            size,
+        }])
+    }
+
     /// Rewrite formulas referencing sheet `from`: rename to `to`, or replace
     /// the ref with #REF! when `to` is None (sheet deleted).
     fn rewrite_sheet_refs(&mut self, from: &str, to: Option<&str>) {
@@ -749,6 +1442,27 @@ impl Engine {
                 }
             }
         }
+        // Defined names point at sheets too. A name left saying `Sales!$A$1`
+        // after Sales was deleted is the stale `<definedName>` the handoff
+        // notes recorded as a known gap; now that names are modeled it is
+        // rewritten like any other reference.
+        let names = std::mem::take(&mut self.wb.names);
+        self.wb.names = names
+            .into_iter()
+            .map(|(name, refers_to)| {
+                let body = refers_to.strip_prefix('=').unwrap_or(&refers_to);
+                let Ok(ast) = parse_formula(body) else {
+                    return (name, refers_to);
+                };
+                let mut changed = false;
+                let new_ast = rewrite_sheet_in_expr(&ast, from, to, &mut changed);
+                if changed {
+                    (name, new_ast.to_formula())
+                } else {
+                    (name, refers_to)
+                }
+            })
+            .collect();
     }
 
     fn prev_input(&self, key: CellKey) -> Option<String> {
@@ -834,6 +1548,94 @@ impl Engine {
     /// topological order, mark cycles #CIRC!. Returns cells whose computed
     /// value changed.
     pub fn recalc(&mut self, seeds: Vec<CellKey>) -> Vec<CellKey> {
+        let mut changed = self.recalc_pass(seeds);
+
+        // Blocks are laid out after the pass, in one deterministic sweep, and
+        // whatever that moves is a value some other formula may have read.
+        // Bounded like the loop below and for the same reason: a chain of
+        // formulas reading each other's spilled cells settles in a few
+        // rounds, and a sheet that does not settle is one where the
+        // alternative to a bound is a hang.
+        if self.has_spills() {
+            for _ in 0..MAX_SPILL_PASSES {
+                let moved = self.place_spills();
+                if moved.is_empty() {
+                    break;
+                }
+                for k in &moved {
+                    if !changed.contains(k) {
+                        changed.push(*k);
+                    }
+                }
+                let again = self.recalc_pass(moved);
+                for k in again {
+                    if !changed.contains(&k) {
+                        changed.push(k);
+                    }
+                }
+            }
+        }
+
+        // A cell holding OFFSET or INDIRECT reads cells the dependency graph
+        // never saw — that is what makes it volatile — so one topological pass
+        // can evaluate it *before* the value it actually depends on, and leave
+        // it holding a stale answer. Excel settles this by iterating; so does
+        // this, seeded with what moved and bounded so a pathological sheet
+        // cannot spin.
+        //
+        // Only reference-volatile cells need it. A clock or random function
+        // recalculates every pass but reads nothing, so its answer is never
+        // stale and an extra pass would buy nothing but a different random
+        // number.
+        if self.has_dynamic_references() {
+            for _ in 0..MAX_DYNAMIC_REFERENCE_PASSES {
+                let moved: Vec<CellKey> = changed
+                    .iter()
+                    .copied()
+                    .filter(|k| !self.volatile.contains(k))
+                    .collect();
+                if moved.is_empty() {
+                    break;
+                }
+                let again = self.recalc_pass(moved);
+                let settled = again
+                    .iter()
+                    .all(|k| self.volatile.contains(k) && changed.contains(k));
+                for k in again {
+                    if !changed.contains(&k) {
+                        changed.push(k);
+                    }
+                }
+                if settled {
+                    break;
+                }
+            }
+        }
+        // A rule reads values, so anything that moved a value may have moved
+        // a colour. Derived state is only trustworthy if it is rebuilt from
+        // the same place the values were.
+        self.recalc_conditional();
+        changed
+    }
+
+    /// Whether any volatile cell computes its own references.
+    ///
+    /// Scanned rather than tracked: the volatile set is small by nature, and a
+    /// second set to keep in step with it is a second thing to forget.
+    fn has_dynamic_references(&self) -> bool {
+        self.volatile.iter().any(|k| {
+            self.wb
+                .sheet(k.sheet)
+                .and_then(|s| s.cells.get(&k.addr))
+                .map(|c| match &c.content {
+                    CellContent::Formula { ast, .. } => ast.has_dynamic_reference(),
+                    _ => false,
+                })
+                .unwrap_or(false)
+        })
+    }
+
+    fn recalc_pass(&mut self, seeds: Vec<CellKey>) -> Vec<CellKey> {
         // 1. Dirty closure.
         let mut dirty: HashSet<CellKey> = HashSet::new();
         let mut queue: Vec<CellKey> = Vec::new();
@@ -1025,11 +1827,163 @@ impl Engine {
         let ctx = EvalCtx {
             wb: &self.wb,
             sheet: key.sheet,
+            at: key.addr,
             now_ms: self.now_ms,
+            bindings: &[],
+            name_depth: 0,
         };
         let ast = ast.clone();
-        let v = ctx.eval_scalar(&ast);
-        self.store_value(key, v)
+        let operand = ctx.eval_operand(&ast);
+        // A block wider than one cell is recorded rather than placed. Where
+        // it lands depends on what every *other* block is doing, so placement
+        // is one deterministic sweep after the pass rather than a race
+        // between formulas.
+        let (value, array) = match operand {
+            crate::eval::Operand::Array(a) if !a.is_single() => {
+                // A block whose last placement was blocked keeps saying so.
+                // Without this the value flips between the first element and
+                // #SPILL! on alternate passes, and whichever pass ran last
+                // wins — which is not a rule anybody could rely on.
+                let head = if self.spill_blocked.contains(&key) {
+                    Value::Error(ErrorKind::Spill)
+                } else {
+                    a.values.first().cloned().unwrap_or(Value::Empty)
+                };
+                (head, Some(a))
+            }
+            other => (ctx.scalar_of(other), None),
+        };
+        if let Some(s) = self.wb.sheet_mut(key.sheet) {
+            match array {
+                Some(a) => s.arrays.insert(key.addr, a),
+                None => s.arrays.remove(&key.addr),
+            };
+        }
+        self.store_value(key, value)
+    }
+
+    /// Place every block on the grid, and report the addresses whose value
+    /// changed as a result.
+    ///
+    /// One sweep over all anchors in address order, on every sheet, clearing
+    /// the overlay first. Deterministic by construction: two workbooks with
+    /// the same blocks get the same layout however their formulas happened to
+    /// be scheduled, which is what the replay invariant needs. Doing it
+    /// inline as each formula evaluated would have made the layout depend on
+    /// the dependency graph.
+    fn place_spills(&mut self) -> Vec<CellKey> {
+        let mut moved = Vec::new();
+        let mut blocked_keys: HashSet<CellKey> = HashSet::new();
+        for sheet in &mut self.wb.sheets {
+            // An anchor that is no longer a formula left its block behind.
+            sheet
+                .arrays
+                .retain(|addr, _| sheet.cells.get(addr).map(|c| c.is_formula()) == Some(true));
+
+            let before = std::mem::take(&mut sheet.spill);
+            let mut blocked: Vec<CellAddr> = Vec::new();
+            let anchors: Vec<(CellAddr, (u32, u32))> = sheet
+                .arrays
+                .iter()
+                .map(|(a, arr)| (*a, (arr.rows, arr.cols)))
+                .collect();
+            for (anchor, (rows, cols)) in anchors {
+                let last_row = anchor.row as u64 + rows as u64 - 1;
+                let last_col = anchor.col as u64 + cols as u64 - 1;
+                let fits = last_row < crate::addr::MAX_ROWS as u64
+                    && last_col < crate::addr::MAX_COLS as u64;
+                let region: Vec<CellAddr> = if fits {
+                    (anchor.row..=last_row as u32)
+                        .flat_map(|r| {
+                            (anchor.col..=last_col as u32).map(move |c| CellAddr::new(r, c))
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                // Anything already in the way stops the whole block: a
+                // half-spilled array would be worse than an error, because
+                // the user could not tell which half was real.
+                let clear = fits
+                    && region.iter().all(|a| {
+                        *a == anchor
+                            || (!sheet.cells.contains_key(a) && !sheet.spill.contains_key(a))
+                    });
+                if !clear {
+                    blocked.push(anchor);
+                    continue;
+                }
+                let arr = &sheet.arrays[&anchor];
+                for (i, a) in region.into_iter().enumerate() {
+                    if a == anchor {
+                        continue;
+                    }
+                    sheet.spill.insert(a, (anchor, arr.values[i].clone()));
+                }
+            }
+
+            for (addr, (_, v)) in &sheet.spill {
+                if before.get(addr).map(|(_, b)| b) != Some(v) {
+                    moved.push(CellKey {
+                        sheet: sheet.id,
+                        addr: *addr,
+                    });
+                }
+            }
+            for addr in before.keys() {
+                if !sheet.spill.contains_key(addr) {
+                    moved.push(CellKey {
+                        sheet: sheet.id,
+                        addr: *addr,
+                    });
+                }
+            }
+
+            // The anchor's value is settled here rather than at evaluation,
+            // because whether the block fits is a fact about the whole sheet.
+            // A blocked one says #SPILL! instead of showing its first element,
+            // which would look like a working formula returning one value.
+            let sid = sheet.id;
+            let anchors: Vec<CellAddr> = sheet.arrays.keys().copied().collect();
+            for anchor in anchors {
+                let is_blocked = blocked.contains(&anchor);
+                if is_blocked {
+                    blocked_keys.insert(CellKey {
+                        sheet: sid,
+                        addr: anchor,
+                    });
+                }
+                let want = if is_blocked {
+                    Value::Error(ErrorKind::Spill)
+                } else {
+                    sheet.arrays[&anchor]
+                        .values
+                        .first()
+                        .cloned()
+                        .unwrap_or(Value::Empty)
+                };
+                if let Some(cell) = sheet.cells.get_mut(&anchor) {
+                    if let CellContent::Formula { cached, .. } = &mut cell.content {
+                        if *cached != want {
+                            *cached = want;
+                            moved.push(CellKey {
+                                sheet: sid,
+                                addr: anchor,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        self.spill_blocked = blocked_keys;
+        moved.sort();
+        moved.dedup();
+        moved
+    }
+
+    /// Whether any formula in the workbook produced a block.
+    fn has_spills(&self) -> bool {
+        self.wb.sheets.iter().any(|s| !s.arrays.is_empty())
     }
 
     fn store_value(&mut self, key: CellKey, v: Value) -> bool {
@@ -1060,6 +2014,62 @@ impl Engine {
         };
         s.value(addr)
     }
+}
+
+/// Case-insensitive matching is ASCII-only, deliberately.
+///
+/// Full Unicode case folding changes byte lengths — `İ` lowercases to two
+/// chars — so an offset found in a folded haystack does not point at the same
+/// place in the original, and splicing a replacement at it corrupts the text.
+/// `to_ascii_lowercase` maps only `A-Z`, so offsets stay valid for any input.
+/// Users who need case-insensitive matching outside ASCII get exact matching
+/// with "Match case" on rather than silently mangled cells.
+fn ascii_fold(s: &str) -> String {
+    s.to_ascii_lowercase()
+}
+
+/// Whether a cell's formula-bar text matches a search term.
+fn text_matches(input: &str, find: &str, match_case: bool, whole_cell: bool) -> bool {
+    match (whole_cell, match_case) {
+        (true, true) => input == find,
+        (true, false) => ascii_fold(input) == ascii_fold(find),
+        (false, true) => input.contains(find),
+        (false, false) => ascii_fold(input).contains(&ascii_fold(find)),
+    }
+}
+
+/// The text a cell holds after a replacement. Substring mode replaces every
+/// occurrence, as Excel's Replace All does within a cell.
+fn replace_text(
+    input: &str,
+    find: &str,
+    replace: &str,
+    match_case: bool,
+    whole_cell: bool,
+) -> String {
+    if whole_cell {
+        return replace.to_string();
+    }
+    if match_case {
+        return input.replace(find, replace);
+    }
+    let hay = ascii_fold(input);
+    let needle = ascii_fold(find);
+    debug_assert_eq!(
+        hay.len(),
+        input.len(),
+        "ascii folding must preserve offsets"
+    );
+    let mut out = String::with_capacity(input.len());
+    let mut i = 0;
+    while let Some(rel) = hay[i..].find(&needle) {
+        let at = i + rel;
+        out.push_str(&input[i..at]);
+        out.push_str(replace);
+        i = at + needle.len();
+    }
+    out.push_str(&input[i..]);
+    out
 }
 
 /// Parse raw user input into a cell (formula, number, bool, error, or text).
@@ -1238,4 +2248,43 @@ fn cyclic_nodes(nodes: &[CellKey], edges: &HashMap<CellKey, Vec<CellKey>>) -> Ha
         }
     }
     cyclic
+}
+
+/// Whether a string can be a defined name.
+///
+/// Excel's rules, minus the ones that need locale data: it must not be
+/// readable as a cell address (or `R`/`C`, which are R1C1 shorthand), must
+/// start with a letter, underscore or backslash, and must contain no spaces
+/// or operators. The address rule is the one that matters — a name spelled
+/// `A1` would shadow the cell everywhere and there would be no way to say
+/// which was meant.
+fn is_valid_name(name: &str) -> bool {
+    if name.is_empty() || name.len() > 255 {
+        return false;
+    }
+    let mut chars = name.chars();
+    let first = chars.next().unwrap();
+    if !(first.is_alphabetic() || first == '_' || first == '\\') {
+        return false;
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '_' || c == '.' || c == '\\')
+    {
+        return false;
+    }
+    if name == "R" || name == "C" {
+        return false;
+    }
+    CellAddr::parse_a1(name).is_none()
+}
+
+/// Every formula body a rule carries, so they can all be parsed once when the
+/// rule is written rather than once per cell, forever.
+fn rule_formulas(rule: &crate::cond::CondRule) -> Vec<String> {
+    match &rule.test {
+        crate::cond::CondTest::CellIs { operands, .. } => operands.clone(),
+        crate::cond::CondTest::Formula { body } => vec![body.clone()],
+        _ => Vec::new(),
+    }
 }

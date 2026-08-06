@@ -1,0 +1,117 @@
+# Functions that return a *reference* rather than a value.
+#
+# The point of these is not the scalar case — `OFFSET(A1,1,1)` reading one
+# cell is the easy half. It is that the result can be handed to something
+# expecting a range, which is what `SUM(OFFSET(...))` needs and what a
+# scalar-only implementation would fail at while looking finished.
+
+[[case]]
+id = "ref.offset-produces-a-range"
+given = { A1 = "1", A2 = "2", A3 = "3", A4 = "4" }
+formula = "=SUM(OFFSET(A1,0,0,3,1))"
+expect = "6"
+source = "known"
+functions = ["OFFSET", "SUM"]
+note = """
+Three rows starting at A1, so A4 is outside. This is the case a scalar-only
+OFFSET cannot do at all.
+"""
+
+[[case]]
+id = "ref.offset-in-a-scalar-position"
+given = { A1 = "1", B2 = "42" }
+formula = "=OFFSET(A1,1,1)"
+expect = "42"
+source = "known"
+functions = ["OFFSET"]
+note = """
+One row down and one column right of A1 is B2. With no height or width the
+result is the same shape as the base, and a one-cell reference read in a
+scalar position is its value — the same degradation a written reference gets.
+"""
+
+[[case]]
+id = "ref.offset-off-the-grid-is-ref"
+given = { A1 = "1" }
+formula = "=OFFSET(A1,-1,0)"
+expect = "#REF!"
+source = "known"
+functions = ["OFFSET"]
+note = "Above row 1 there is nothing, and that is the same #REF! a deleted range gives."
+
+[[case]]
+id = "ref.offset-with-no-height-is-ref"
+given = { A1 = "5" }
+formula = "=OFFSET(A1,0,0,0,1)"
+expect = "#REF!"
+source = "known"
+functions = ["OFFSET"]
+note = """
+Excel refuses a zero or negative size rather than returning an empty
+reference, which there is no way to represent.
+"""
+
+[[case]]
+id = "ref.offset-takes-its-size-from-a-cell"
+given = { A1 = "1", A2 = "2", A3 = "3", C1 = "2" }
+formula = "=SUM(OFFSET(A1,0,0,C1,1))"
+expect = "3"
+source = "known"
+functions = ["OFFSET"]
+note = """
+The height is computed, which is the usual reason to reach for OFFSET: a
+running total over the last N rows where N is itself a cell.
+"""
+
+[[case]]
+id = "ref.rows-of-an-offset"
+given = { A1 = "1", A2 = "2", A3 = "3" }
+formula = "=ROWS(OFFSET(A1,0,0,3,1))"
+expect = "3"
+source = "known"
+functions = ["ROWS", "OFFSET"]
+note = """
+ROWS asks the shape of a reference, so this only works if OFFSET really
+produced one rather than a value that happens to read like one.
+"""
+
+[[case]]
+id = "ref.indirect-produces-a-range"
+given = { A1 = "1", A2 = "2", A3 = "3" }
+formula = '=SUM(INDIRECT("A1:A3"))'
+expect = "6"
+source = "known"
+functions = ["INDIRECT", "SUM"]
+note = "A range spelled out in text, summed as though it had been written."
+
+[[case]]
+id = "ref.indirect-of-a-single-cell"
+given = { B2 = "7" }
+formula = '=INDIRECT("B2")'
+expect = "7"
+source = "known"
+functions = ["INDIRECT"]
+note = "The scalar half."
+
+[[case]]
+id = "ref.indirect-follows-a-cell-holding-the-address"
+given = { A1 = "7", B1 = "'A1" }
+formula = "=INDIRECT(B1)"
+expect = "7"
+source = "known"
+functions = ["INDIRECT"]
+note = """
+The address comes from a cell, which is the whole reason INDIRECT exists and
+also why nothing about the formula says which cells it depends on.
+"""
+
+[[case]]
+id = "ref.indirect-of-nonsense-is-ref"
+formula = '=INDIRECT("not a ref")'
+expect = "#REF!"
+source = "known"
+functions = ["INDIRECT"]
+note = """
+#REF! rather than #VALUE!: the argument was a perfectly good string, and the
+thing it named does not exist.
+"""

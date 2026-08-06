@@ -109,7 +109,11 @@ export function ConsentModal({ onChoose, onOpenTransparency }: Props) {
               <strong>Structural</strong> <span className="consent__badge">default</span>
               <br />
               Formulas are recorded verbatim, because a formula&rsquo;s
-              structure is the entire point of finding repeated work. Literal
+              structure is the entire point of finding repeated work — and
+              verbatim includes what is written inside them, so the words in{' '}
+              <code>=IF(A1&gt;0,&quot;paid&quot;,&quot;due&quot;)</code> and the
+              sheet name in <code>=VLOOKUP(B2,Rates!A:B,2,0)</code> are both
+              recorded. Sheet names are hashed everywhere else. Literal
               values are <strong>not</strong> recorded — in their place Gridline
               stores a salted SHA-256 hash truncated to 16 hex characters, the
               type (<code>number</code>, <code>text</code>, or <code>bool</code>),

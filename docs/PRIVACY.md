@@ -46,8 +46,20 @@ workbooks whose contents are not sensitive.
 ### `structural` — the default
 
 Formulas are recorded verbatim, because a formula's structure is the entire
-point of finding repeated work. Literal values are **not** recorded. In their
-place Gridline stores:
+point of finding repeated work. **Verbatim means verbatim**: a formula carries
+the text inside it, so `=IF(F7<=0,"settled","overdue")` records the words
+`settled` and `overdue`, and `=VLOOKUP(B7,Rates!$A$1:$B$3,2,FALSE)` records the
+sheet name `Rates`. A sheet name is hashed everywhere else — in the event's
+context and in every payload field — but a reference inside a formula is part
+of the formula. If a sheet name or a phrase in a formula is sensitive, the mode
+to choose is `off`.
+
+The mining pipeline does not see any of it: formulas are reduced to
+position-free shapes with their text literals blanked and their sheet
+qualifiers anonymised before a pattern is looked for. But the *log* holds the
+formula as typed, and so does an exported dataset.
+
+Literal values are **not** recorded. In their place Gridline stores:
 
 - a salted SHA-256 hash, truncated to 16 hex characters,
 - the type (`number`, `text`, or `bool`),
@@ -73,8 +85,10 @@ Two things, both stated up front:
    You always see a preview of exactly which cells a routine would change
    before it runs, and you can dismiss any suggestion.
 2. **Demonstration datasets.** Exported logs are intended as training data for
-   future models: sequences of state and action, in the format described in
-   `EVENTS.md`.
+   future models: sequences of state and action, described in `DATASET.md`.
+   Under `structural` capture the values in an exported dataset are *not
+   yours* — the literals were never recorded, and the replay uses
+   placeholders derived from their hashes. Every record says so.
 
 Export refuses to include any user whose consent is currently `off` or has
 been revoked. This is enforced in the exporter, not by convention, and it is
@@ -102,8 +116,10 @@ Claims in this document map to code and tests:
 
 - Consent gating on ingest — the server rejects events from a user whose mode
   is `off` (server tests).
-- Export consent filtering — `miner export --consented-only` excludes revoked
-  actors (miner tests).
+- Export consent filtering — `miner export --consented-only` excludes actors
+  with no consent, with `off`, and with a revocation, by a `WHERE` clause
+  rather than a filter over the results (miner unit tests, plus a subprocess
+  test that drives the built binary against a real database).
 - Pause actually stops network traffic — the end-to-end suite asserts no
   requests to `/v1/events` are made while capture is paused.
 - No third-party telemetry — the web app's dependency manifest contains no

@@ -23,13 +23,20 @@ use quick_xml::Reader as XmlReader;
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
+use super::package;
+use super::sizes;
+use super::styles::{StyleAdditions, StyleSheet};
 use super::{apply_cell, install_sheets};
 // Re-exported so callers can spell them `xlsx::ImportResult` too.
 pub use super::{ImportResult, ImportWarning, ImportWarningKind, IoError};
 use crate::addr::{CellAddr, RangeAddr};
 use crate::engine::{Action, Engine};
-use crate::model::{Cell, CellContent, Sheet, Workbook};
+use crate::format::CellFormat;
+use crate::model::{Cell, CellContent, Sheet, SheetId, Workbook};
 use crate::value::Value;
+
+/// The part every xlsx keeps its formatting in.
+const STYLES_PART: &str = "xl/styles.xml";
 
 /// Refuse packages whose declared uncompressed size is absurd, so a zip bomb
 /// cannot exhaust memory during import.
@@ -71,6 +78,25 @@ struct PreservedSheet {
     /// Merge ranges as found on import, so export can tell whether the model
     /// changed them.
     merged: BTreeSet<String>,
+    /// Column widths and row heights as found on import, in pixels, on the
+    /// same terms as `merged`: export compares them with the model and leaves
+    /// the original bytes alone when nothing moved.
+    col_widths: BTreeMap<u32, f64>,
+    row_heights: BTreeMap<u32, f64>,
+    /// Attributes of each `<col>` other than `min`/`max`/`width`/
+    /// `customWidth`, verbatim, so regenerating the element does not drop the
+    /// column styles and outline levels we do not model.
+    col_attrs: BTreeMap<u32, String>,
+    /// Frozen (rows, cols) as found in `<pane>`, so export can tell whether
+    /// the model changed them.
+    frozen: (u32, u32),
+    /// How many `<conditionalFormatting>` elements the file arrived with.
+    ///
+    /// The elements themselves are left in the preserved bytes and are *not*
+    /// modeled: reading them would mean parsing arbitrary `<dxf>` records with
+    /// the same fidelity as `cellXfs`, and half-reading one would be worse
+    /// than not reading it. Rules made in Gridline are appended after them.
+    cond_count: usize,
 }
 
 /// Every entry of the imported package plus the map from sheet name to
@@ -78,10 +104,25 @@ struct PreservedSheet {
 #[derive(Clone)]
 pub struct PreservedPackage {
     entries: Vec<PreservedEntry>,
-    /// Modeled worksheet name -> zip part name, in workbook order.
-    sheet_parts: Vec<(String, String)>,
+    /// Modeled sheet -> zip part name, in workbook order.
+    ///
+    /// Keyed by `SheetId` rather than by name, because a rename must stay a
+    /// rename: matching on the name would make it indistinguishable from
+    /// deleting one sheet and adding another, and the renamed sheet would lose
+    /// everything its original part held that we do not model.
+    sheet_parts: Vec<(SheetId, String)>,
     /// Part name -> detail captured from the original sheet XML.
     sheets: HashMap<String, PreservedSheet>,
+    /// Defined names as imported: the modeled ones by uppercase name, and the
+    /// raw XML of everything else — sheet-scoped names and the `_xlnm.`
+    /// built-ins like print areas, which have to be written back untouched
+    /// when the element is regenerated.
+    defined_names: BTreeMap<String, String>,
+    other_defined_names: Vec<String>,
+    /// `xl/styles.xml`, parsed down to the formatting we model, so export can
+    /// tell an untouched cell (write its original `s` back) from an edited one
+    /// (append a new `<xf>`).
+    styles: StyleSheet,
 }
 
 impl fmt::Debug for PreservedPackage {
@@ -138,6 +179,9 @@ impl PreservedPackage {
             entries,
             sheet_parts: Vec::new(),
             sheets: HashMap::new(),
+            defined_names: BTreeMap::new(),
+            other_defined_names: Vec::new(),
+            styles: StyleSheet::default(),
         })
     }
 }
@@ -255,22 +299,46 @@ pub fn import(bytes: &[u8]) -> Result<ImportResult, IoError> {
     }
 
     // Map worksheet names to zip parts and capture what lives inside
-    // <sheetData> before we regenerate it on export.
-    package.sheet_parts = resolve_sheet_parts(&package.entries)?
+    // <sheetData> before we regenerate it on export. The mapping is rekeyed to
+    // `SheetId` once the sheets exist; until then a name is all we have.
+    let named_parts: Vec<(String, String)> = resolve_sheet_parts(&package.entries)?
         .into_iter()
         .filter(|(name, _)| names.iter().any(|n| n == name))
         .collect();
-    for (_, part) in package.sheet_parts.clone() {
-        let Some(xml) = package.part(&part).map(|b| b.to_vec()) else {
+    for (_, part) in &named_parts {
+        let Some(xml) = package.part(part).map(|b| b.to_vec()) else {
             continue;
         };
         let sheet = scan_worksheet(&xml, &mut features)?;
-        package.sheets.insert(part, sheet);
+        package.sheets.insert(part.clone(), sheet);
+    }
+    // A package with no style sheet gets the default one, declared properly,
+    // before anything reads it. Doing this at import rather than at export
+    // means the rest of the code has exactly one case to handle: there is
+    // always somewhere to record a format.
+    if package.part(STYLES_PART).is_none() {
+        install_default_styles(&mut package)?;
+    }
+    // A style sheet we cannot parse is reported rather than fatal: the cells
+    // still import, they just arrive unformatted, and the original indices are
+    // preserved so an unedited round trip is still lossless.
+    if let Some(bytes) = package.part(STYLES_PART).map(|b| b.to_vec()) {
+        match StyleSheet::parse(&bytes) {
+            Ok(s) => package.styles = s,
+            Err(e) => warnings.push(ImportWarning::new(
+                ImportWarningKind::UnsupportedFeature,
+                format!("{STYLES_PART} could not be read ({e}); cell formatting was not imported"),
+            )),
+        }
     }
     warnings.extend(features.warnings());
 
     let mut engine = Engine::new();
     install_sheets(&mut engine, &names)?;
+    package.sheet_parts = named_parts
+        .into_iter()
+        .filter_map(|(name, part)| Some((engine.wb.sheet_id_by_name(&name)?, part)))
+        .collect();
 
     for name in &names {
         // Merges first: merging clears every cell but the anchor, so applying
@@ -302,8 +370,212 @@ pub fn import(bytes: &[u8]) -> Result<ImportResult, IoError> {
         }
     }
 
+    if let Some(bytes) = package.part(package::WORKBOOK_PART).map(|b| b.to_vec()) {
+        let (modeled, other) = scan_defined_names(&bytes)?;
+        package.defined_names = modeled.clone();
+        package.other_defined_names = other;
+        engine.wb.names = modeled;
+    }
+    install_formats(&mut engine, &package);
+    install_sizes(&mut engine, &package);
     engine.wb.preserved = Some(package);
+    // Opening a file is a starting point, not an edit.
+    engine.clear_history();
     Ok(ImportResult { engine, warnings })
+}
+
+/// Give a package with no `xl/styles.xml` the default one, plus the
+/// relationship and content-type override that make it a real part.
+///
+/// The records it contains are the ones every xlsx has and index 0 of each
+/// collection must be the default, because a cell with no `s` attribute means
+/// `s="0"`. Appending to empty collections instead would make the first format
+/// anyone applies the default for the whole workbook.
+fn install_default_styles(package: &mut PreservedPackage) -> Result<(), IoError> {
+    const DEFAULT_STYLES: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\r\n\
+<styleSheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">\
+<fonts count=\"1\"><font><sz val=\"11\"/><name val=\"Calibri\"/></font></fonts>\
+<fills count=\"2\"><fill><patternFill patternType=\"none\"/></fill>\
+<fill><patternFill patternType=\"gray125\"/></fill></fills>\
+<borders count=\"1\"><border><left/><right/><top/><bottom/><diagonal/></border></borders>\
+<cellStyleXfs count=\"1\"><xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\"/></cellStyleXfs>\
+<cellXfs count=\"1\"><xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\" xfId=\"0\"/></cellXfs>\
+</styleSheet>";
+    const STYLES_REL_TYPE: &str =
+        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles";
+    const STYLES_CONTENT_TYPE: &str =
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml";
+
+    let Some(rels_at) = package
+        .entries
+        .iter()
+        .position(|e| e.name == package::WORKBOOK_RELS_PART)
+    else {
+        // No workbook relationships at all: a part we added could not be
+        // referenced, so leave the package alone and let export refuse to
+        // record formatting rather than write a file nothing can open.
+        return Ok(());
+    };
+    let (rels, _) = package::add_relationship(
+        &package.entries[rels_at].data,
+        STYLES_REL_TYPE,
+        "styles.xml",
+    )?;
+    package.entries[rels_at].data = rels;
+
+    if let Some(at) = package
+        .entries
+        .iter()
+        .position(|e| e.name == package::CONTENT_TYPES_PART)
+    {
+        package.entries[at].data =
+            package::add_override(&package.entries[at].data, STYLES_PART, STYLES_CONTENT_TYPE)?;
+    }
+    package.entries.push(PreservedEntry {
+        name: STYLES_PART.to_string(),
+        data: DEFAULT_STYLES.as_bytes().to_vec(),
+        compressed: true,
+        is_dir: false,
+    });
+    Ok(())
+}
+
+/// Populate `Sheet::formats` from the original `s` indices.
+///
+/// This is written straight into the model rather than replayed as
+/// `FormatApply` actions. Formatting is not something the user did in this
+/// session, and pushing thousands of format actions onto the undo stack would
+/// make the first Ctrl+Z after opening a file unformat part of it.
+fn install_formats(engine: &mut Engine, package: &PreservedPackage) {
+    for (sid, part) in &package.sheet_parts {
+        let Some(detail) = package.sheets.get(part) else {
+            continue;
+        };
+        let sid = *sid;
+        for (addr, s) in &detail.styles {
+            let format = package.styles.format_for(Some(s));
+            if format.is_default() {
+                continue;
+            }
+            if let Some(id) = engine.wb.formats.intern(format) {
+                engine
+                    .wb
+                    .sheet_mut(sid)
+                    .expect("sheet exists")
+                    .formats
+                    .insert(*addr, id);
+            }
+        }
+    }
+}
+
+/// Read `<definedNames>` out of `xl/workbook.xml`.
+///
+/// Only workbook-scoped, non-built-in names are modeled. A name with a
+/// `localSheetId` is scoped to one sheet and a `_xlnm.` name is a print area
+/// or a filter range; both are kept as raw XML so regenerating the element
+/// does not delete them.
+fn scan_defined_names(xml: &[u8]) -> Result<(BTreeMap<String, String>, Vec<String>), IoError> {
+    let mut modeled = BTreeMap::new();
+    let mut other = Vec::new();
+    let mut reader = XmlReader::from_reader(xml);
+    let mut current: Option<(String, bool, String)> = None;
+    loop {
+        match reader.read_event().map_err(IoError::from)? {
+            Event::Eof => break,
+            Event::Start(e) if e.name().local_name().as_ref() == b"definedName" => {
+                let mut name = String::new();
+                let mut local = false;
+                let mut raw = format!("<{}", String::from_utf8_lossy(e.name().as_ref()));
+                for attr in e.attributes().flatten() {
+                    let key = String::from_utf8_lossy(attr.key.as_ref()).into_owned();
+                    let value = String::from_utf8_lossy(attr.value.as_ref()).into_owned();
+                    if key == "name" {
+                        name = attr.unescape_value().unwrap_or_default().into_owned();
+                    }
+                    if key == "localSheetId" {
+                        local = true;
+                    }
+                    raw.push_str(&format!(" {key}=\"{value}\""));
+                }
+                raw.push('>');
+                current = Some((name, local, raw));
+            }
+            Event::Text(t) => {
+                if let Some((_, _, raw)) = &mut current {
+                    raw.push_str(&String::from_utf8_lossy(t.as_ref()));
+                }
+            }
+            Event::End(e) if e.name().local_name().as_ref() == b"definedName" => {
+                let Some((name, local, mut raw)) = current.take() else {
+                    continue;
+                };
+                let body = raw
+                    .split_once('>')
+                    .map(|(_, b)| b.to_string())
+                    .unwrap_or_default();
+                raw.push_str("</definedName>");
+                if local || name.starts_with("_xlnm.") || name.is_empty() {
+                    other.push(raw);
+                } else {
+                    modeled.insert(name.to_ascii_uppercase(), unescape_xml(&body));
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok((modeled, other))
+}
+
+/// Undo the five XML entities `escape_xml` writes. The body of a
+/// `<definedName>` is a formula, and `&amp;` in it means `&`.
+fn unescape_xml(s: &str) -> String {
+    s.replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&amp;", "&")
+}
+
+/// Regenerate `<definedNames>` from the model, carrying over the entries we
+/// did not model.
+fn write_defined_names(names: &BTreeMap<String, String>, other: &[String]) -> String {
+    if names.is_empty() && other.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from("<definedNames>");
+    for (name, refers_to) in names {
+        out.push_str(&format!(
+            "<definedName name=\"{}\">{}</definedName>",
+            escape_xml(name),
+            escape_xml(refers_to.strip_prefix('=').unwrap_or(refers_to))
+        ));
+    }
+    for raw in other {
+        out.push_str(raw);
+    }
+    out.push_str("</definedNames>");
+    out
+}
+
+/// Populate `Sheet::col_widths` and `Sheet::row_heights` from the original
+/// `<cols>` and `<row ht=…>`.
+///
+/// Written straight into the model for the same reason as the formats: the
+/// widths a file arrives with are not a gesture the user made in this session,
+/// and replaying them as `Resize` actions would put them on the undo stack.
+fn install_sizes(engine: &mut Engine, package: &PreservedPackage) {
+    for (sid, part) in &package.sheet_parts {
+        let Some(detail) = package.sheets.get(part) else {
+            continue;
+        };
+        let Some(sheet) = engine.wb.sheet_mut(*sid) else {
+            continue;
+        };
+        sheet.col_widths = detail.col_widths.clone();
+        sheet.row_heights = detail.row_heights.clone();
+        (sheet.frozen_rows, sheet.frozen_cols) = detail.frozen;
+    }
 }
 
 /// The user-visible input string for every populated cell of one worksheet:
@@ -456,7 +728,7 @@ fn resolve_sheet_parts(entries: &[PreservedEntry]) -> Result<Vec<(String, String
 }
 
 /// Resolve a relationship target against the `xl/` base, collapsing `..`.
-fn resolve_target(target: &str) -> String {
+pub(crate) fn resolve_target(target: &str) -> String {
     let raw = target.replace('\\', "/");
     let joined = match raw.strip_prefix('/') {
         Some(abs) => abs.to_string(),
@@ -491,11 +763,83 @@ fn scan_worksheet(xml: &[u8], features: &mut FeatureFlags) -> Result<PreservedSh
         match event {
             Event::Eof => break,
             Event::Start(e) | Event::Empty(e) => match e.name().local_name().as_ref() {
+                b"pane" => {
+                    // `<pane>` also describes a *split*, which is a different
+                    // feature: the panes scroll independently rather than one
+                    // being held still. Only a freeze is modeled, and a split
+                    // stays in the preserved bytes.
+                    let mut frozen = false;
+                    let (mut x, mut y) = (0.0f64, 0.0f64);
+                    for attr in e.attributes().flatten() {
+                        let value = attr.unescape_value().unwrap_or_default().into_owned();
+                        match attr.key.as_ref() {
+                            b"state" => frozen = value == "frozen" || value == "frozenSplit",
+                            b"xSplit" => x = value.parse().unwrap_or(0.0),
+                            b"ySplit" => y = value.parse().unwrap_or(0.0),
+                            _ => {}
+                        }
+                    }
+                    if frozen {
+                        out.frozen = (y.max(0.0) as u32, x.max(0.0) as u32);
+                    }
+                }
+                b"col" => {
+                    let mut min = None;
+                    let mut max = None;
+                    let mut width = None;
+                    // Everything else the element carries — style, hidden,
+                    // outlineLevel, bestFit, collapsed. Not modeled, but
+                    // regenerating `<cols>` must not be how they get lost.
+                    let mut rest = String::new();
+                    for attr in e.attributes().flatten() {
+                        let value = attr.unescape_value().unwrap_or_default().into_owned();
+                        match attr.key.as_ref() {
+                            b"min" => min = value.parse::<u32>().ok(),
+                            b"max" => max = value.parse::<u32>().ok(),
+                            b"width" => width = value.parse::<f64>().ok(),
+                            b"customWidth" => {}
+                            key => {
+                                rest.push_str(&format!(
+                                    " {}=\"{}\"",
+                                    String::from_utf8_lossy(key),
+                                    String::from_utf8_lossy(attr.value.as_ref())
+                                ));
+                            }
+                        }
+                    }
+                    let Some(min) = min else { continue };
+                    // One element covers a run, and `max="16384"` — the whole
+                    // sheet — is common. Expanding it costs a couple of
+                    // hundred kilobytes at the very worst, and export
+                    // coalesces the runs back, which is a better trade than a
+                    // cap that would silently drop the width of every column
+                    // past it.
+                    let max = max.unwrap_or(min).min(crate::addr::MAX_COLS);
+                    for c in min..=max {
+                        let i = c.saturating_sub(1);
+                        if let Some(w) = width {
+                            out.col_widths.insert(i, sizes::chars_to_px(w));
+                        }
+                        if !rest.is_empty() {
+                            out.col_attrs.insert(i, rest.clone());
+                        }
+                    }
+                }
                 b"row" => {
                     col = 0;
                     let mut attrs = String::new();
+                    // Attribute order is not guaranteed, so the height is held
+                    // until `r` has certainly been seen.
+                    let mut height = None;
                     for attr in e.attributes().flatten() {
                         let key = String::from_utf8_lossy(attr.key.as_ref()).into_owned();
+                        if key == "ht" {
+                            height = attr
+                                .unescape_value()
+                                .ok()
+                                .and_then(|v| v.parse::<f64>().ok())
+                                .map(sizes::points_to_px);
+                        }
                         // `r` and `spans` are regenerated; everything else
                         // (heights, hidden, outline level) is carried over.
                         if key == "r" {
@@ -519,6 +863,9 @@ fn scan_worksheet(xml: &[u8], features: &mut FeatureFlags) -> Result<PreservedSh
                     let attrs = attrs.trim_end().to_string();
                     if !attrs.is_empty() {
                         out.row_attrs.insert(row, attrs);
+                    }
+                    if let Some(px) = height.filter(|px| *px > 0.0) {
+                        out.row_heights.insert(row, px);
                     }
                 }
                 b"c" => {
@@ -549,7 +896,10 @@ fn scan_worksheet(xml: &[u8], features: &mut FeatureFlags) -> Result<PreservedSh
                         }
                     }
                 }
-                b"conditionalFormatting" => features.conditional_formatting = true,
+                b"conditionalFormatting" => {
+                    features.conditional_formatting = true;
+                    out.cond_count += 1;
+                }
                 b"dataValidation" | b"dataValidations" => features.data_validation = true,
                 _ => {}
             },
@@ -565,9 +915,49 @@ struct SheetSpans {
     sheet_data: Option<ByteSpan<usize>>,
     merge_cells: Option<ByteSpan<usize>>,
     dimension: Option<ByteSpan<usize>>,
+    cols: Option<ByteSpan<usize>>,
+    /// The `<pane>` element inside the first `<sheetView>`, if it has one.
+    pane: Option<ByteSpan<usize>>,
+    /// The first `<sheetView>`: its whole span, and whether it was written as
+    /// an empty element. `<pane>` is that element's first child, so a freeze
+    /// either replaces the existing one or is inserted right after the open
+    /// tag — and an empty `<sheetView/>` has to be opened up first.
+    sheet_view: Option<(ByteSpan<usize>, bool)>,
     /// Where a new `<mergeCells>` element must go to keep schema order.
     merge_insert: Option<usize>,
+    /// Just past the last `<conditionalFormatting>`, when the file has any.
+    cond_end: Option<usize>,
+    /// Failing that, the first element the schema places *after*
+    /// `<conditionalFormatting>` — where a new one has to be inserted.
+    cond_insert: Option<usize>,
 }
+
+/// Elements the schema places after `<conditionalFormatting>`; a generated one
+/// goes before the first of them.
+const AFTER_CONDITIONAL: &[&[u8]] = &[
+    b"dataValidations",
+    b"hyperlinks",
+    b"printOptions",
+    b"pageMargins",
+    b"pageSetup",
+    b"headerFooter",
+    b"rowBreaks",
+    b"colBreaks",
+    b"customProperties",
+    b"cellWatches",
+    b"ignoredErrors",
+    b"smartTags",
+    b"drawing",
+    b"drawingHF",
+    b"picture",
+    b"oleObjects",
+    b"controls",
+    b"webPublishItems",
+    b"tableParts",
+    b"extLst",
+    b"legacyDrawing",
+    b"legacyDrawingHF",
+];
 
 /// Elements that the schema places after `<mergeCells>`; a new mergeCells
 /// element is inserted before the first of them.
@@ -612,14 +1002,24 @@ fn scan_spans(xml: &[u8]) -> Result<SheetSpans, IoError> {
             Event::Start(e) => {
                 let name = e.name();
                 let local = name.local_name();
+                if local.as_ref() == b"sheetView" && spans.sheet_view.is_none() {
+                    spans.sheet_view = Some((start..end, false));
+                }
+                if local.as_ref() == b"pane" && spans.pane.is_none() {
+                    spans.pane = Some(start..end);
+                }
                 if depth == 1 {
                     match local.as_ref() {
                         b"sheetData" => spans.sheet_data = Some(start..start),
                         b"mergeCells" => spans.merge_cells = Some(start..start),
                         b"dimension" => spans.dimension = Some(start..start),
+                        b"cols" => spans.cols = Some(start..start),
                         other => {
                             if spans.merge_insert.is_none() && AFTER_MERGE_CELLS.contains(&other) {
                                 spans.merge_insert = Some(start);
+                            }
+                            if spans.cond_insert.is_none() && AFTER_CONDITIONAL.contains(&other) {
+                                spans.cond_insert = Some(start);
                             }
                         }
                     }
@@ -629,11 +1029,18 @@ fn scan_spans(xml: &[u8]) -> Result<SheetSpans, IoError> {
             Event::Empty(e) => {
                 let name = e.name();
                 let local = name.local_name();
+                if local.as_ref() == b"sheetView" && spans.sheet_view.is_none() {
+                    spans.sheet_view = Some((start..end, true));
+                }
+                if local.as_ref() == b"pane" && spans.pane.is_none() {
+                    spans.pane = Some(start..end);
+                }
                 if depth == 1 {
                     match local.as_ref() {
                         b"sheetData" => spans.sheet_data = Some(start..end),
                         b"mergeCells" => spans.merge_cells = Some(start..end),
                         b"dimension" => spans.dimension = Some(start..end),
+                        b"cols" => spans.cols = Some(start..end),
                         other => {
                             if spans.merge_insert.is_none() && AFTER_MERGE_CELLS.contains(&other) {
                                 spans.merge_insert = Some(start);
@@ -661,6 +1068,12 @@ fn scan_spans(xml: &[u8]) -> Result<SheetSpans, IoError> {
                             s.end = end;
                         }
                     }
+                    b"cols" if depth == 1 => {
+                        if let Some(s) = &mut spans.cols {
+                            s.end = end;
+                        }
+                    }
+                    b"conditionalFormatting" if depth == 1 => spans.cond_end = Some(end),
                     b"worksheet" if depth == 0 => worksheet_end = Some(start),
                     _ => {}
                 }
@@ -688,46 +1101,87 @@ pub fn export(wb: &Workbook) -> Result<Vec<u8>, IoError> {
 }
 
 fn export_preserved(wb: &Workbook, package: &PreservedPackage) -> Result<Vec<u8>, IoError> {
-    // Sheets we cannot map back to a part would be silently dropped, and parts
-    // we cannot map to a sheet would silently resurrect stale data. Both are
-    // worse than refusing to save.
-    for sheet in &wb.sheets {
-        if !package
-            .sheet_parts
-            .iter()
-            .any(|(n, _)| n.eq_ignore_ascii_case(&sheet.name))
-        {
-            return Err(IoError::Unrepresentable(format!(
-                "sheet '{}' was added or renamed after import; adding or renaming sheets in an imported workbook is not supported yet",
-                sheet.name
-            )));
-        }
-    }
-    for (name, _) in &package.sheet_parts {
-        if wb.sheet_by_name(name).is_none() {
-            return Err(IoError::Unrepresentable(format!(
-                "sheet '{}' was deleted or renamed after import; deleting or renaming sheets in an imported workbook is not supported yet",
-                name
-            )));
-        }
-    }
+    // Work out where every sheet's XML goes before touching any of it. A sheet
+    // added since import needs a part invented for it, one deleted needs its
+    // part and every reference to it removed, and one renamed keeps the part it
+    // has. The plan answers all three, and rewrites nothing when the sheet list
+    // is unchanged.
+    let model: Vec<(SheetId, String)> = wb.sheets.iter().map(|s| (s.id, s.name.clone())).collect();
+    let Some(workbook_xml) = package.part(package::WORKBOOK_PART) else {
+        return Err(IoError::Malformed(format!(
+            "missing {}",
+            package::WORKBOOK_PART
+        )));
+    };
+    let parts = package::Parts {
+        workbook: workbook_xml,
+        rels: package.part(package::WORKBOOK_RELS_PART).unwrap_or(&[]),
+        content_types: package.part(package::CONTENT_TYPES_PART),
+    };
+    let part_names: Vec<String> = package.entries.iter().map(|e| e.name.clone()).collect();
+    // `<definedNames>` is left exactly as it was unless a name actually
+    // changed, the same rule as `<cols>`: the element holds sheet-scoped
+    // names and print areas this engine does not model.
+    let names_xml = (wb.names != package.defined_names)
+        .then(|| write_defined_names(&wb.names, &package.other_defined_names));
+    let plan = package::plan(&model, &package.sheet_parts, &parts, &part_names, names_xml)?;
 
-    let mut patched: HashMap<&str, Vec<u8>> = HashMap::new();
-    for (name, part) in &package.sheet_parts {
-        let (Some(sheet), Some(entry)) = (
-            wb.sheet_by_name(name),
-            package.entries.iter().find(|e| e.name == *part),
-        ) else {
+    // Resolve every cell's style index next, because doing so is what
+    // discovers which new `<xf>` records `xl/styles.xml` needs; the sheets and
+    // the style sheet then get patched from the same answer.
+    let mut additions = StyleAdditions::new(&package.styles);
+    let mut style_attrs: HashMap<String, BTreeMap<CellAddr, String>> = HashMap::new();
+    for slot in &plan.slots {
+        let Some(sheet) = wb.sheet(slot.sheet_id) else {
             continue;
         };
-        let detail = package.sheets.get(part).cloned().unwrap_or_default();
-        patched.insert(part.as_str(), patch_sheet_xml(&entry.data, sheet, &detail)?);
+        let detail = package.sheets.get(&slot.part).cloned().unwrap_or_default();
+        style_attrs.insert(
+            slot.part.clone(),
+            resolve_style_indices(wb, sheet, &detail, package, &mut additions),
+        );
+    }
+
+    if !additions.is_empty() && package.part(STYLES_PART).is_none() {
+        return Err(IoError::Unrepresentable(format!(
+            "the workbook has no {STYLES_PART} to record new formatting in; \
+             formatting a package without a style sheet is not supported yet"
+        )));
+    }
+
+    let mut patched: HashMap<String, Vec<u8>> = plan.patches.iter().cloned().collect();
+    for slot in &plan.slots {
+        let Some(sheet) = wb.sheet(slot.sheet_id) else {
+            continue;
+        };
+        // A sheet added since import has no part to patch, so it is patched
+        // into an empty one — which keeps every worksheet on the same code
+        // path and means a generated sheet is written by the same writer as
+        // an imported one.
+        let original: Vec<u8> = match package.entries.iter().find(|e| e.name == slot.part) {
+            Some(entry) => entry.data.clone(),
+            None => package::empty_worksheet(),
+        };
+        let detail = package.sheets.get(&slot.part).cloned().unwrap_or_default();
+        let attrs = style_attrs.remove(&slot.part).unwrap_or_default();
+        patched.insert(
+            slot.part.clone(),
+            patch_sheet_xml(&original, sheet, &detail, &attrs, &mut additions)?,
+        );
+    }
+    if !additions.is_empty() {
+        if let Some(original) = package.part(STYLES_PART) {
+            patched.insert(STYLES_PART.to_string(), additions.patch(original)?);
+        }
     }
 
     let mut out = Vec::new();
     {
         let mut zw = ZipWriter::new(Cursor::new(&mut out));
         for entry in &package.entries {
+            if plan.dropped.contains(&entry.name) {
+                continue;
+            }
             let options = SimpleFileOptions::default().compression_method(if entry.compressed {
                 CompressionMethod::Deflated
             } else {
@@ -743,6 +1197,15 @@ fn export_preserved(wb: &Workbook, package: &PreservedPackage) -> Result<Vec<u8>
                 None => zw.write_all(&entry.data)?,
             }
         }
+        // Parts this export invented go last; a zip has no required order and
+        // appending keeps every original entry at its original offset.
+        for slot in plan.slots.iter().filter(|s| s.fresh) {
+            let options =
+                SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+            zw.start_file(slot.part.as_str(), options)?;
+            let bytes = patched.get(slot.part.as_str()).cloned().unwrap_or_default();
+            zw.write_all(&bytes)?;
+        }
         zw.finish()?;
     }
     Ok(out)
@@ -752,10 +1215,51 @@ fn export_preserved(wb: &Workbook, package: &PreservedPackage) -> Result<Vec<u8>
 /// merges) in the original worksheet part, leaving every sibling element -
 /// cols, sheetPr, autoFilter, conditionalFormatting, drawing references - as
 /// it was.
+/// The `s` index every cell should carry on export, as a ready-to-splice
+/// attribute string.
+///
+/// A cell whose format still matches what its original `<xf>` said keeps that
+/// exact index, so a workbook opened and saved without touching the formatting
+/// is byte-identical in this respect — including for the parts of that `<xf>`
+/// we never modelled. Only a cell whose format actually changed gets a new
+/// index, and that index is appended rather than substituted, so nothing else
+/// in the file shifts.
+fn resolve_style_indices(
+    wb: &Workbook,
+    sheet: &Sheet,
+    detail: &PreservedSheet,
+    package: &PreservedPackage,
+    additions: &mut StyleAdditions,
+) -> BTreeMap<CellAddr, String> {
+    let mut out = BTreeMap::new();
+    let addrs: BTreeSet<CellAddr> = detail
+        .styles
+        .keys()
+        .copied()
+        .chain(sheet.formats.keys().copied())
+        .collect();
+    for addr in addrs {
+        let original_s = detail.styles.get(&addr);
+        let current: CellFormat = wb.formats.resolve(sheet.format_id(addr));
+        if current == package.styles.format_for(original_s.map(|s| s.as_str())) {
+            if let Some(s) = original_s {
+                out.insert(addr, s.clone());
+            }
+            continue;
+        }
+        let base = original_s.and_then(|s| s.parse::<usize>().ok());
+        let index = additions.index_for(&package.styles, &current, base);
+        out.insert(addr, index.to_string());
+    }
+    out
+}
+
 fn patch_sheet_xml(
     original: &[u8],
     sheet: &Sheet,
     detail: &PreservedSheet,
+    style_attrs: &BTreeMap<CellAddr, String>,
+    additions: &mut StyleAdditions,
 ) -> Result<Vec<u8>, IoError> {
     let spans = scan_spans(original)?;
     let Some(sheet_data) = spans.sheet_data.clone() else {
@@ -765,8 +1269,9 @@ fn patch_sheet_xml(
         )));
     };
 
+    let sheet_data_start = sheet_data.start;
     let mut edits: Vec<(ByteSpan<usize>, String)> =
-        vec![(sheet_data, write_sheet_data(sheet, detail))];
+        vec![(sheet_data, write_sheet_data(sheet, detail, style_attrs))];
 
     let current: BTreeSet<String> = sheet.merged.iter().map(|r| r.to_a1()).collect();
     if current != detail.merged {
@@ -784,17 +1289,86 @@ fn patch_sheet_xml(
         }
     }
 
+    // `<cols>` is left exactly as it was unless a width actually moved. The
+    // element carries styles and outline levels we do not model, so
+    // regenerating it unconditionally would throw those away on every save.
+    if sheet.col_widths != detail.col_widths {
+        let xml = write_cols(&sheet.col_widths, &detail.col_attrs);
+        match spans.cols.clone() {
+            Some(span) => edits.push((span, xml)),
+            // The schema puts `<cols>` immediately before `<sheetData>`, so
+            // that offset is the one place a new one can go.
+            None if xml.is_empty() => {}
+            None => edits.push((sheet_data_start..sheet_data_start, xml)),
+        }
+    }
+
+    // Rules made here are appended after whatever the file arrived with,
+    // which stays in the preserved bytes untouched. Reading those would mean
+    // parsing arbitrary `<dxf>` records as faithfully as `cellXfs`, and a
+    // half-read rule would paint the wrong thing rather than nothing.
+    if !sheet.conditional.is_empty() {
+        let xml = write_conditional(&sheet.conditional, additions);
+        match (spans.cond_end, spans.cond_insert) {
+            (Some(at), _) | (None, Some(at)) => edits.push((at..at, xml)),
+            // The schema puts `<conditionalFormatting>` after `<mergeCells>`,
+            // so the same insertion point serves when nothing follows it.
+            (None, None) => match spans.merge_insert {
+                Some(at) => edits.push((at..at, xml)),
+                None => {
+                    return Err(IoError::Malformed(format!(
+                        "worksheet part for sheet '{}' has nowhere to put \
+                         <conditionalFormatting>",
+                        sheet.name
+                    )))
+                }
+            },
+        }
+    }
+
+    // `<pane>` says which rows and columns are held still. Only touched when
+    // the model disagrees with what was read, so a sheet whose panes nobody
+    // moved keeps whatever `<sheetView>` it arrived with — zoom, gridline
+    // settings, saved selection and all.
+    if (sheet.frozen_rows, sheet.frozen_cols) != detail.frozen {
+        let xml = write_pane(sheet.frozen_rows, sheet.frozen_cols);
+        match (spans.pane.clone(), spans.sheet_view.clone()) {
+            (Some(span), _) => edits.push((span, xml)),
+            (None, _) if xml.is_empty() => {}
+            // `<pane>` is `<sheetView>`'s first child, so straight after the
+            // open tag is the only place it can go.
+            (None, Some((span, false))) => edits.push((span.end..span.end, xml)),
+            // An empty `<sheetView/>` has no inside; it has to be opened up.
+            (None, Some((span, true))) => {
+                let open = String::from_utf8_lossy(&original[span.clone()])
+                    .trim_end_matches("/>")
+                    .to_string();
+                edits.push((span, format!("{open}>{xml}</sheetView>")));
+            }
+            // A worksheet with no `<sheetView>` at all is legal and rare;
+            // inventing the whole element is more than a freeze should do.
+            (None, None) => {
+                return Err(IoError::Unrepresentable(format!(
+                    "sheet '{}' has no <sheetView> to freeze panes in",
+                    sheet.name
+                )))
+            }
+        }
+    }
+
     // `<dimension>` is a hint that readers trust; a stale one hides cells we
     // just added.
     if let Some(span) = spans.dimension.clone() {
-        let bounds = emitted_bounds(sheet, detail)
+        let bounds = emitted_bounds(sheet, detail, style_attrs)
             .map(|r| r.to_a1())
             .unwrap_or_else(|| "A1".to_string());
         edits.push((span, format!("<dimension ref=\"{}\"/>", bounds)));
     }
 
     // Apply from the end so earlier spans keep their offsets.
-    edits.sort_by_key(|(span, _)| span.start);
+    // (start, end), so a zero-length insertion that shares an offset with a
+    // replacement is applied after it rather than being overwritten by it.
+    edits.sort_by_key(|(span, _)| (span.start, span.end));
     let mut out = original.to_vec();
     for (span, text) in edits.into_iter().rev() {
         if span.start > out.len() || span.end > out.len() || span.start > span.end {
@@ -807,8 +1381,16 @@ fn patch_sheet_xml(
 
 /// Bounding box of everything `write_sheet_data` emits: model cells plus the
 /// formatting-only cells we carry over.
-fn emitted_bounds(sheet: &Sheet, detail: &PreservedSheet) -> Option<RangeAddr> {
-    let mut addrs = sheet.cells.keys().chain(detail.styles.keys());
+fn emitted_bounds(
+    sheet: &Sheet,
+    detail: &PreservedSheet,
+    style_attrs: &BTreeMap<CellAddr, String>,
+) -> Option<RangeAddr> {
+    let mut addrs = sheet
+        .cells
+        .keys()
+        .chain(detail.styles.keys())
+        .chain(style_attrs.keys());
     let first = *addrs.next()?;
     let mut range = RangeAddr::single(first);
     for a in addrs {
@@ -832,23 +1414,209 @@ fn write_merge_cells(ranges: &BTreeSet<String>) -> String {
     out
 }
 
+/// `<conditionalFormatting>` elements for the modeled rules, minting a
+/// `<dxf>` for each one as it goes.
+fn write_conditional(rules: &[crate::cond::CondRule], additions: &mut StyleAdditions) -> String {
+    use crate::cond::CondTest;
+    let mut out = String::new();
+    for (i, rule) in rules.iter().enumerate() {
+        let dxf = additions.dxf_for(&rule.format);
+        // Priority is 1-based and lower wins, which is the same order the
+        // model applies them in — first rule keeps the attribute.
+        let priority = i + 1;
+        let body = match &rule.test {
+            CondTest::CellIs { op, operands } => {
+                let formulas: String = operands
+                    .iter()
+                    .take(op.arity())
+                    .map(|o| format!("<formula>{}</formula>", escape_xml(o)))
+                    .collect();
+                format!(
+                    "<cfRule type=\"cellIs\" dxfId=\"{dxf}\" priority=\"{priority}\" \
+                     operator=\"{}\">{formulas}</cfRule>",
+                    op.as_xlsx()
+                )
+            }
+            CondTest::TextContains { needle, negate } => format!(
+                "<cfRule type=\"{}\" dxfId=\"{dxf}\" priority=\"{priority}\" \
+                 operator=\"{}\" text=\"{}\"/>",
+                if *negate {
+                    "notContainsText"
+                } else {
+                    "containsText"
+                },
+                if *negate {
+                    "notContains"
+                } else {
+                    "containsText"
+                },
+                escape_xml(needle)
+            ),
+            CondTest::Blank { negate } => format!(
+                "<cfRule type=\"{}\" dxfId=\"{dxf}\" priority=\"{priority}\"/>",
+                if *negate {
+                    "notContainsBlanks"
+                } else {
+                    "containsBlanks"
+                }
+            ),
+            CondTest::Duplicate { unique } => format!(
+                "<cfRule type=\"{}\" dxfId=\"{dxf}\" priority=\"{priority}\"/>",
+                if *unique {
+                    "uniqueValues"
+                } else {
+                    "duplicateValues"
+                }
+            ),
+            CondTest::Formula { body } => format!(
+                "<cfRule type=\"expression\" dxfId=\"{dxf}\" priority=\"{priority}\">\
+                 <formula>{}</formula></cfRule>",
+                escape_xml(body)
+            ),
+        };
+        out.push_str(&format!(
+            "<conditionalFormatting sqref=\"{}\">{body}</conditionalFormatting>",
+            rule.range.to_a1()
+        ));
+    }
+    out
+}
+
+/// The `<pane>` element for a freeze, or nothing when there is none.
+///
+/// `topLeftCell` is the first cell of the scrolling region and `activePane`
+/// names which quadrant the cursor lives in — both derived from the counts
+/// rather than stored, because they are restatements of the same fact and a
+/// stored copy is a copy that can disagree.
+fn write_pane(rows: u32, cols: u32) -> String {
+    if rows == 0 && cols == 0 {
+        return String::new();
+    }
+    let active = match (cols > 0, rows > 0) {
+        (true, true) => "bottomRight",
+        (true, false) => "topRight",
+        _ => "bottomLeft",
+    };
+    let mut out = String::from("<pane");
+    if cols > 0 {
+        out.push_str(&format!(" xSplit=\"{cols}\""));
+    }
+    if rows > 0 {
+        out.push_str(&format!(" ySplit=\"{rows}\""));
+    }
+    out.push_str(&format!(
+        " topLeftCell=\"{}\" activePane=\"{active}\" state=\"frozen\"/>",
+        CellAddr::new(rows, cols).to_a1()
+    ));
+    out
+}
+
+/// Generate `<cols>` from the model, coalescing equal adjacent widths.
+///
+/// Coalescing is not cosmetic: a file that arrived saying "columns 1 to 16384
+/// are 90 pixels" imports as sixteen thousand entries, and writing them back
+/// one element apiece would turn a 200-byte element into half a megabyte.
+fn write_cols(widths: &BTreeMap<u32, f64>, attrs: &BTreeMap<u32, String>) -> String {
+    let columns: BTreeSet<u32> = widths.keys().chain(attrs.keys()).copied().collect();
+    if columns.is_empty() {
+        return String::new();
+    }
+    // Runs are keyed by everything the element will say, not by width alone:
+    // two adjacent columns of the same width but different styles are two
+    // elements, and merging them would move a style onto a column that never
+    // had one.
+    type Run<'a> = (u32, u32, Option<f64>, Option<&'a String>);
+    let mut runs: Vec<Run> = Vec::new();
+    for col in columns {
+        let px = widths.get(&col).copied();
+        let rest = attrs.get(&col);
+        match runs.last_mut() {
+            Some((_, end, w, a)) if *end + 1 == col && *w == px && *a == rest => *end = col,
+            _ => runs.push((col, col, px, rest)),
+        }
+    }
+    let mut out = String::from("<cols>");
+    for (start, end, px, rest) in runs {
+        let width = px
+            .map(|px| {
+                format!(
+                    " width=\"{}\" customWidth=\"1\"",
+                    sizes::fmt_num(sizes::px_to_chars(px))
+                )
+            })
+            .unwrap_or_default();
+        out.push_str(&format!(
+            "<col min=\"{}\" max=\"{}\"{}{}/>",
+            start + 1,
+            end + 1,
+            width,
+            rest.map(|s| s.as_str()).unwrap_or_default()
+        ));
+    }
+    out.push_str("</cols>");
+    out
+}
+
+/// The `<row>` attributes to write: the original ones, with `ht` and
+/// `customHeight` replaced from the model when the model disagrees.
+///
+/// Leaving them alone when it agrees is what keeps an untouched round trip
+/// exact — `ht="14.4"` is not something our pixel arithmetic can reproduce
+/// digit for digit, and a save should not silently renumber every row of a
+/// file the user only opened.
+fn row_attrs_for(row: u32, sheet: &Sheet, detail: &PreservedSheet) -> String {
+    let modeled = sheet.row_heights.get(&row);
+    if modeled == detail.row_heights.get(&row) {
+        return detail
+            .row_attrs
+            .get(&row)
+            .map(|a| format!(" {}", a))
+            .unwrap_or_default();
+    }
+    let kept: Vec<&str> = detail
+        .row_attrs
+        .get(&row)
+        .map(|a| {
+            a.split_whitespace()
+                .filter(|kv| !kv.starts_with("ht=") && !kv.starts_with("customHeight="))
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut out = String::new();
+    for kv in kept {
+        out.push(' ');
+        out.push_str(kv);
+    }
+    if let Some(px) = modeled {
+        out.push_str(&format!(
+            " ht=\"{}\" customHeight=\"1\"",
+            sizes::fmt_num(sizes::px_to_points(*px))
+        ));
+    }
+    out
+}
+
 /// Generate `<sheetData>` from the model, re-attaching each cell's original
 /// style index and each row's original attributes. Rows and cells that carry
 /// only formatting are emitted empty so that formatting is not lost.
-fn write_sheet_data(sheet: &Sheet, detail: &PreservedSheet) -> String {
+fn write_sheet_data(
+    sheet: &Sheet,
+    detail: &PreservedSheet,
+    style_attrs: &BTreeMap<CellAddr, String>,
+) -> String {
     let mut rows: BTreeMap<u32, BTreeMap<u32, Option<&Cell>>> = BTreeMap::new();
     for (addr, cell) in &sheet.cells {
         rows.entry(addr.row)
             .or_default()
             .insert(addr.col, Some(cell));
     }
-    for addr in detail.styles.keys() {
+    for addr in detail.styles.keys().chain(style_attrs.keys()) {
         rows.entry(addr.row)
             .or_default()
             .entry(addr.col)
             .or_insert(None);
     }
-    for row in detail.row_attrs.keys() {
+    for row in detail.row_attrs.keys().chain(sheet.row_heights.keys()) {
         rows.entry(*row).or_default();
     }
     if rows.is_empty() {
@@ -857,11 +1625,7 @@ fn write_sheet_data(sheet: &Sheet, detail: &PreservedSheet) -> String {
 
     let mut out = String::from("<sheetData>");
     for (r, cells) in rows {
-        let attrs = detail
-            .row_attrs
-            .get(&r)
-            .map(|a| format!(" {}", a))
-            .unwrap_or_default();
+        let attrs = row_attrs_for(r, sheet, detail);
         if cells.is_empty() {
             out.push_str(&format!("<row r=\"{}\"{}/>", r + 1, attrs));
             continue;
@@ -869,8 +1633,7 @@ fn write_sheet_data(sheet: &Sheet, detail: &PreservedSheet) -> String {
         out.push_str(&format!("<row r=\"{}\"{}>", r + 1, attrs));
         for (c, cell) in cells {
             let addr = CellAddr::new(r, c);
-            let style = detail
-                .styles
+            let style = style_attrs
                 .get(&addr)
                 .map(|s| format!(" s=\"{}\"", escape_xml(s)))
                 .unwrap_or_default();
@@ -955,7 +1718,7 @@ fn number_xml(n: f64) -> Option<String> {
     n.is_finite().then(|| format!("{}", n))
 }
 
-fn escape_xml(s: &str) -> String {
+pub(crate) fn escape_xml(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for ch in s.chars() {
         match ch {
@@ -979,9 +1742,47 @@ fn escape_xml(s: &str) -> String {
 /// sheet names, nothing else.
 fn export_fresh(wb: &Workbook) -> Result<Vec<u8>, IoError> {
     let mut book = rust_xlsxwriter::Workbook::new();
+    for (name, refers_to) in &wb.names {
+        // rust_xlsxwriter wants the leading `=`; the model stores what xlsx
+        // stores, which does not have one.
+        let formula = format!("={}", refers_to.strip_prefix('=').unwrap_or(refers_to));
+        book.define_name(name, &formula)?;
+    }
     for sheet in &wb.sheets {
         let ws = book.add_worksheet();
         ws.set_name(&sheet.name)?;
+
+        // Rules before the values, because a rule's range may reach past
+        // anything that has been written yet.
+        for rule in &sheet.conditional {
+            write_fresh_rule(ws, rule)?;
+        }
+
+        if sheet.frozen_rows > 0 || sheet.frozen_cols > 0 {
+            // rust_xlsxwriter takes the first *scrolling* cell, which is the
+            // same fact stated as an address.
+            ws.set_freeze_panes(sheet.frozen_rows, sheet.frozen_cols as u16)?;
+        }
+
+        // Widths and heights before anything else, so a sheet that is only
+        // resized still writes them: rust_xlsxwriter keeps them whether or not
+        // the column holds a cell.
+        //
+        // In pixels rather than characters, because `set_column_width` takes
+        // the count *without* the padding Excel adds and then adds it back —
+        // handing it the attribute value would make every column five pixels
+        // wider on each save.
+        for (&col, &px) in &sheet.col_widths {
+            let writer_px = sizes::px_to_writer_px(px) as i64;
+            if let (Ok(c), Ok(w)) = (u16::try_from(col), u16::try_from(writer_px)) {
+                ws.set_column_width_pixels(c, w)?;
+            }
+        }
+        for (&row, &px) in &sheet.row_heights {
+            if let Ok(h) = u16::try_from(px.round() as i64) {
+                ws.set_row_height_pixels(row, h)?;
+            }
+        }
 
         // merge_range fills the whole range with blanks, so it must run before
         // the values that land inside it.
@@ -994,37 +1795,201 @@ fn export_fresh(wb: &Workbook) -> Result<Vec<u8>, IoError> {
             ws.merge_range(r0, c0, r1, c1, "", &rust_xlsxwriter::Format::default())?;
         }
 
-        let mut cells: Vec<(&CellAddr, &Cell)> = sheet.cells.iter().collect();
-        cells.sort_by_key(|(a, _)| **a);
-        for (addr, cell) in cells {
-            let (row, col) = rc(*addr)?;
-            match &cell.content {
-                CellContent::Literal(Value::Number(n)) => {
+        // Addresses that carry formatting but no value still have to be
+        // written, or a bold empty column would vanish on save.
+        let addrs: BTreeSet<CellAddr> = sheet
+            .cells
+            .keys()
+            .copied()
+            .chain(sheet.formats.keys().copied())
+            .collect();
+        for addr in addrs {
+            let (row, col) = rc(addr)?;
+            let format = writer_format(&wb.formats.resolve(sheet.format_id(addr)));
+            let fmt = format.as_ref();
+            let Some(cell) = sheet.cells.get(&addr) else {
+                if let Some(f) = fmt {
+                    ws.write_blank(row, col, f)?;
+                }
+                continue;
+            };
+            match (&cell.content, fmt) {
+                (CellContent::Literal(Value::Number(n)), None) => {
                     ws.write_number(row, col, *n)?;
                 }
-                CellContent::Literal(Value::Text(t)) => {
+                (CellContent::Literal(Value::Number(n)), Some(f)) => {
+                    ws.write_number_with_format(row, col, *n, f)?;
+                }
+                (CellContent::Literal(Value::Text(t)), None) => {
                     ws.write_string(row, col, t)?;
                 }
-                CellContent::Literal(Value::Bool(b)) => {
+                (CellContent::Literal(Value::Text(t)), Some(f)) => {
+                    ws.write_string_with_format(row, col, t, f)?;
+                }
+                (CellContent::Literal(Value::Bool(b)), None) => {
                     ws.write_boolean(row, col, *b)?;
+                }
+                (CellContent::Literal(Value::Bool(b)), Some(f)) => {
+                    ws.write_boolean_with_format(row, col, *b, f)?;
                 }
                 // Excel has no literal error cell; the text round-trips back
                 // to an error because our parser reads error codes.
-                CellContent::Literal(Value::Error(e)) => {
+                (CellContent::Literal(Value::Error(e)), None) => {
                     ws.write_string(row, col, e.code())?;
                 }
-                CellContent::Literal(Value::Empty) => {}
-                CellContent::Formula { src, cached, .. } => {
+                (CellContent::Literal(Value::Error(e)), Some(f)) => {
+                    ws.write_string_with_format(row, col, e.code(), f)?;
+                }
+                (CellContent::Literal(Value::Empty), None) => {}
+                (CellContent::Literal(Value::Empty), Some(f)) => {
+                    ws.write_blank(row, col, f)?;
+                }
+                (CellContent::Formula { src, cached, .. }, fmt) => {
                     let mut f = rust_xlsxwriter::Formula::new(src);
                     if !matches!(cached, Value::Empty) {
                         f = f.set_result(cached.display());
                     }
-                    ws.write_formula(row, col, f)?;
+                    match fmt {
+                        Some(style) => ws.write_formula_with_format(row, col, f, style)?,
+                        None => ws.write_formula(row, col, f)?,
+                    };
                 }
             }
         }
     }
     Ok(book.save_to_buffer()?)
+}
+
+/// Translate a `CellFormat` into the writer's own format type. `None` for the
+/// default, so unformatted cells are written exactly as they were before
+/// formatting existed.
+/// One rule, through `rust_xlsxwriter`'s own conditional-format types.
+///
+/// The generated path cannot splice XML the way the preserved one does, so
+/// the rule is restated in the writer's vocabulary. The mapping is total —
+/// every `CondTest` has a home here — which is what stops a rule made in a
+/// from-scratch workbook from quietly not being saved.
+fn write_fresh_rule(
+    ws: &mut rust_xlsxwriter::Worksheet,
+    rule: &crate::cond::CondRule,
+) -> Result<(), IoError> {
+    use crate::cond::{CondOp, CondTest};
+    use rust_xlsxwriter::{
+        ConditionalFormatBlank, ConditionalFormatCell, ConditionalFormatCellRule,
+        ConditionalFormatDuplicate, ConditionalFormatFormula, ConditionalFormatText,
+        ConditionalFormatTextRule,
+    };
+    let (r0, c0) = rc(rule.range.start)?;
+    let (r1, c1) = rc(rule.range.end)?;
+    // A dxf is differential, so an empty format would be a rule that does
+    // nothing; `cond_add` already refuses that.
+    let format = writer_format(&rule.format).unwrap_or_default();
+
+    // The operands are formula bodies. `rust_xlsxwriter` takes a value or a
+    // formula, and a body that is not a plain number is the latter.
+    let operand = |s: &str| -> rust_xlsxwriter::ConditionalFormatValue {
+        match s.trim().parse::<f64>() {
+            Ok(n) => n.into(),
+            Err(_) => rust_xlsxwriter::Formula::new(s).into(),
+        }
+    };
+
+    match &rule.test {
+        CondTest::CellIs { op, operands } => {
+            let a = operand(operands.first().map(String::as_str).unwrap_or("0"));
+            let b = || operand(operands.get(1).map(String::as_str).unwrap_or("0"));
+            let cf_rule = match op {
+                CondOp::GreaterThan => ConditionalFormatCellRule::GreaterThan(a),
+                CondOp::LessThan => ConditionalFormatCellRule::LessThan(a),
+                CondOp::GreaterOrEqual => ConditionalFormatCellRule::GreaterThanOrEqualTo(a),
+                CondOp::LessOrEqual => ConditionalFormatCellRule::LessThanOrEqualTo(a),
+                CondOp::Equal => ConditionalFormatCellRule::EqualTo(a),
+                CondOp::NotEqual => ConditionalFormatCellRule::NotEqualTo(a),
+                CondOp::Between => ConditionalFormatCellRule::Between(a, b()),
+                CondOp::NotBetween => ConditionalFormatCellRule::NotBetween(a, b()),
+            };
+            let cf = ConditionalFormatCell::new()
+                .set_rule(cf_rule)
+                .set_format(format);
+            ws.add_conditional_format(r0, c0, r1, c1, &cf)?;
+        }
+        CondTest::TextContains { needle, negate } => {
+            let cf_rule = if *negate {
+                ConditionalFormatTextRule::DoesNotContain(needle.clone())
+            } else {
+                ConditionalFormatTextRule::Contains(needle.clone())
+            };
+            let cf = ConditionalFormatText::new()
+                .set_rule(cf_rule)
+                .set_format(format);
+            ws.add_conditional_format(r0, c0, r1, c1, &cf)?;
+        }
+        CondTest::Blank { negate } => {
+            let cf = ConditionalFormatBlank::new().set_format(format);
+            let cf = if *negate { cf.invert() } else { cf };
+            ws.add_conditional_format(r0, c0, r1, c1, &cf)?;
+        }
+        CondTest::Duplicate { unique } => {
+            let cf = ConditionalFormatDuplicate::new().set_format(format);
+            let cf = if *unique { cf.invert() } else { cf };
+            ws.add_conditional_format(r0, c0, r1, c1, &cf)?;
+        }
+        CondTest::Formula { body } => {
+            let cf = ConditionalFormatFormula::new()
+                .set_rule(rust_xlsxwriter::Formula::new(body))
+                .set_format(format);
+            ws.add_conditional_format(r0, c0, r1, c1, &cf)?;
+        }
+    }
+    Ok(())
+}
+
+fn writer_format(f: &CellFormat) -> Option<rust_xlsxwriter::Format> {
+    use rust_xlsxwriter::{Color, Format, FormatAlign, FormatBorder};
+    if f.is_default() {
+        return None;
+    }
+    let mut out = Format::new();
+    if f.bold {
+        out = out.set_bold();
+    }
+    if f.italic {
+        out = out.set_italic();
+    }
+    if let Some(c) = f.font_color.as_deref().and_then(parse_rgb) {
+        out = out.set_font_color(Color::RGB(c));
+    }
+    if let Some(c) = f.fill_color.as_deref().and_then(parse_rgb) {
+        out = out.set_background_color(Color::RGB(c));
+    }
+    if f.borders.top {
+        out = out.set_border_top(FormatBorder::Thin);
+    }
+    if f.borders.bottom {
+        out = out.set_border_bottom(FormatBorder::Thin);
+    }
+    if f.borders.left {
+        out = out.set_border_left(FormatBorder::Thin);
+    }
+    if f.borders.right {
+        out = out.set_border_right(FormatBorder::Thin);
+    }
+    if let Some(code) = &f.number_format {
+        out = out.set_num_format(code);
+    }
+    if let Some(a) = f.align {
+        out = out.set_align(match a {
+            crate::format::HAlign::Left => FormatAlign::Left,
+            crate::format::HAlign::Center => FormatAlign::Center,
+            crate::format::HAlign::Right => FormatAlign::Right,
+        });
+    }
+    Some(out)
+}
+
+/// `#rrggbb` to the 0xRRGGBB the writer wants.
+fn parse_rgb(c: &str) -> Option<u32> {
+    u32::from_str_radix(c.trim_start_matches('#'), 16).ok()
 }
 
 fn rc(addr: CellAddr) -> Result<(u32, u16), IoError> {

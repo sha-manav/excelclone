@@ -54,7 +54,7 @@ Every event is a JSON object with this shape (`schema_version` 1):
 | `ts_ms` | Client wall clock, milliseconds since the Unix epoch. |
 | `action` | One of the vocabulary entries below. |
 | `payload` | Action-specific fields, documented per action. |
-| `context` | Sheet, current selection, and the privacy mode in force when captured. Under `structural` the sheet name is replaced by its salted hash, exactly as payload sheet names are — it would otherwise be disclosed on every single event. |
+| `context` | Sheet, current selection, and the privacy mode in force when captured. Under `structural` the sheet name is replaced by its salted hash, exactly as payload sheet names are — it would otherwise be disclosed on every single event. A sheet name written *inside a formula* is not hashed, because the formula is recorded verbatim; see `PRIVACY.md`. |
 | `client_version` | Version of the web app that produced the event. |
 
 ## Privacy modes
@@ -103,14 +103,21 @@ complete by construction.
 | `row.delete` | `at`, `count` | References to deleted rows become `#REF!`. |
 | `col.insert` | `at`, `count` | |
 | `col.delete` | `at`, `count` | |
+| `row.resize` | `at`, `count`, `size`, `kind` | `size` is pixels, or absent when the run went back to the default; `kind` is `set` or `default`. Presentation, so nothing here is hashed. |
+| `col.resize` | `at`, `count`, `size`, `kind` | As above, for column widths. |
 | `sort.apply` | `range`, `keys` (column + direction), `has_header` | |
 | `filter.apply` | `range`, `column`, `hidden` | Value filters hide rows; no cell values change. Allowed-value lists are hashed under `structural`. |
 | `filter.clear` | `sheet` | |
 | `sheet.add` | `name` | Sheet names are hashed under `structural`. |
 | `sheet.rename` | `from`, `to` | |
 | `sheet.delete` | `name` | |
-| `format.apply` | `range`, `properties` | Bold, italic, colors, borders, number format, alignment, merge/unmerge. |
-| `find.replace` | `find`, `replace`, `scope`, `replaced` | Search terms are hashed under `structural`. |
+| `name.define` | `name`, `refers_to` | A workbook-level defined name. The name is hashed under `structural`; where it points is structure, not content. |
+| `name.delete` | `name` | |
+| `cond.add` | `range`, `cells`, `test`, `attributes` | A conditional-formatting rule. `test` names the comparison and carries its operands, which are formula text; the `needle` of a "text contains" is a word the user typed and is hashed under `structural`. `attributes` names the presentation the rule sets, never its values. |
+| `cond.clear` | `range` | Drops the rules that live inside the range. |
+| `panes.freeze` | `rows`, `cols`, `kind` | How many rows and columns are held still while the rest scrolls; `kind` is `freeze` or `unfreeze`. Layout, so nothing here is hashed. |
+| `format.apply` | `range`, `cells`, `kind`, `attributes`, `patches` | Bold, italic, colours, borders, number format, alignment, merge/unmerge. `kind` is `style`, `clear`, `merge` or `unmerge`. `attributes` names the properties changed; `patches` carries their values. A colour or a format code describes presentation rather than content, so neither is hashed. |
+| `find.replace` | `scope`, `range`, `find`, `replace`, `match_case`, `whole_cell` | Search and replacement terms are hashed under `structural`. |
 
 ### Files
 

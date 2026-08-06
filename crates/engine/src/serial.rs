@@ -6,9 +6,12 @@
 //! onward is shifted one day later than a true calendar count.
 //!
 //! Gridline reproduces this mapping so serials round-trip with real
-//! workbooks, with one deliberate exception: serial 60 has no calendar date
-//! and converts to `None` (a loud `#NUM!`) rather than to a phantom
-//! 1900-02-29. See DECISIONS.md.
+//! workbooks, including serial 60 itself. [`serial_to_date`] still returns
+//! `None` for it — there is no such calendar date, and handing a fake one to
+//! month arithmetic would spread the fiction — but the *components* of serial
+//! 60 are 1900-02-29 and `DATE(1900, 2, 29)` is 60, because that is what
+//! Excel says and a workbook containing either would otherwise read as an
+//! error. See DECISIONS.md.
 
 use chrono::{Datelike, NaiveDate, NaiveDateTime, Timelike};
 
@@ -44,6 +47,10 @@ pub fn date_to_serial(d: NaiveDate) -> Option<f64> {
 }
 
 pub fn ymd_to_serial(y: i32, m: u32, d: u32) -> Option<f64> {
+    // The one date the calendar does not have and Excel does.
+    if (y, m, d) == (1900, 2, 29) {
+        return Some(PHANTOM_LEAP_SERIAL as f64);
+    }
     date_to_serial(NaiveDate::from_ymd_opt(y, m, d)?)
 }
 
@@ -88,17 +95,29 @@ pub fn now_ms_to_serial(now_ms: i64) -> f64 {
     datetime_to_serial(dt).unwrap_or(0.0)
 }
 
-/// Excel's date components.
+/// Excel's date components, including the ones the calendar has no date for.
+///
+/// Split from [`serial_to_date`] on purpose. YEAR, MONTH and DAY are asking
+/// what Excel calls this serial, and for 60 the answer is 1900-02-29; month
+/// arithmetic is asking for a date to count from, and there the fiction has
+/// to stop rather than propagate into EOMONTH and EDATE.
+pub fn serial_to_parts(serial: f64) -> Option<(i32, u32, u32)> {
+    if serial.floor() as i64 == PHANTOM_LEAP_SERIAL {
+        return Some((1900, 2, 29));
+    }
+    serial_to_date(serial).map(|d| (d.year(), d.month(), d.day()))
+}
+
 pub fn serial_year(serial: f64) -> Option<i32> {
-    serial_to_date(serial).map(|d| d.year())
+    serial_to_parts(serial).map(|(y, _, _)| y)
 }
 
 pub fn serial_month(serial: f64) -> Option<u32> {
-    serial_to_date(serial).map(|d| d.month())
+    serial_to_parts(serial).map(|(_, m, _)| m)
 }
 
 pub fn serial_day(serial: f64) -> Option<u32> {
-    serial_to_date(serial).map(|d| d.day())
+    serial_to_parts(serial).map(|(_, _, d)| d)
 }
 
 /// Add months to a serial, clamping the day to the target month's length

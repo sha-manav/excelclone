@@ -267,6 +267,74 @@
     "cut": false
   },
   {
+    "action": "format_apply",
+    "sheet": "Ledger",
+    "range": {
+      "start": {
+        "row": 0,
+        "col": 0
+      },
+      "end": {
+        "row": 0,
+        "col": 5
+      }
+    },
+    "patches": [
+      {
+        "set": "bold",
+        "value": true
+      },
+      {
+        "set": "fill_color",
+        "value": "#EEEEEE"
+      },
+      {
+        "set": "align",
+        "value": "center"
+      }
+    ]
+  },
+  {
+    "action": "format_apply",
+    "sheet": "Ledger",
+    "range": {
+      "start": {
+        "row": 1,
+        "col": 2
+      },
+      "end": {
+        "row": 4,
+        "col": 3
+      }
+    },
+    "patches": [
+      {
+        "set": "number_format",
+        "value": "$#,##0.00"
+      }
+    ]
+  },
+  {
+    "action": "format_apply",
+    "sheet": "Ledger",
+    "range": {
+      "start": {
+        "row": 0,
+        "col": 0
+      },
+      "end": {
+        "row": 4,
+        "col": 5
+      }
+    },
+    "patches": [
+      {
+        "set": "border",
+        "value": "outline"
+      }
+    ]
+  },
+  {
     "action": "sort_apply",
     "sheet": "Ledger",
     "range": {
@@ -286,6 +354,15 @@
       }
     ],
     "has_header": true
+  },
+  {
+    "action": "find_replace",
+    "sheet": "Ledger",
+    "range": null,
+    "find": "OWED",
+    "replace": "balance",
+    "match_case": false,
+    "whole_cell": true
   },
   {
     "action": "row_insert",
