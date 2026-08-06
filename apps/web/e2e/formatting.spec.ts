@@ -15,6 +15,7 @@
  */
 
 import { expect, test, type Page } from '@playwright/test'
+import { openGrid } from './support'
 
 const HEADER_W = 46
 const HEADER_H = 24
@@ -87,10 +88,7 @@ test.beforeEach(async ({ page }) => {
   page.on('console', (m) => {
     if (m.type() === 'error') errors.push(m.text())
   })
-  await page.goto('/')
-  await expect(page.locator('canvas')).toBeVisible({ timeout: 30_000 })
-  await page.getByTestId('consent-decline').click()
-  await expect(page.getByTestId('consent-modal')).toHaveCount(0)
+  await openGrid(page)
   // Any uncaught error during the test is a failure, not a warning: the last
   // two real bugs here were exceptions thrown inside a paint callback.
   page.on('pageerror', (e) => {

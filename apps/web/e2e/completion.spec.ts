@@ -13,6 +13,7 @@
  */
 
 import { expect, test, type Page } from '@playwright/test'
+import { openGrid } from './support'
 
 const HEADER_W = 46
 const HEADER_H = 24
@@ -39,10 +40,7 @@ async function inputAt(page: Page, row: number, col: number) {
 }
 
 test.beforeEach(async ({ page }) => {
-  await page.goto('/')
-  await expect(page.locator('canvas')).toBeVisible({ timeout: 30_000 })
-  await page.getByTestId('consent-decline').click()
-  await expect(page.getByTestId('consent-modal')).toHaveCount(0)
+  await openGrid(page)
 })
 
 test('typing a prefix offers the matching functions with their signatures', async ({ page }) => {

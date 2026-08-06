@@ -78,9 +78,31 @@ function statusIsRetryable(status: number): boolean {
   return status >= 500
 }
 
+/**
+ * Asked once when a request comes back 401, to see whether better credentials
+ * are available. Returns true if it changed the token, in which case the
+ * request is tried again.
+ *
+ * A 401 means the stored token is *dead*, and continuing to present it is the
+ * one thing that certainly will not work. Re-seeding a development database
+ * used to make that permanent: the browser held a token the new database had
+ * never heard of, nothing replaced it, and no reload or restart recovered —
+ * every event was rejected and discarded, forever, on a machine whose setup
+ * looked correct.
+ *
+ * The recovery itself lives in `useCapture`, because only it knows what a
+ * development build is allowed to substitute.
+ */
+let recoverAuth: (() => boolean) | null = null
+
+export function setAuthRecovery(fn: (() => boolean) | null): void {
+  recoverAuth = fn
+}
+
 async function call<T>(
   path: string,
   init: { method: string; body?: unknown },
+  retried = false,
 ): Promise<ApiResponse<T>> {
   const headers: Record<string, string> = { 'content-type': 'application/json' }
   const token = authToken()
@@ -108,6 +130,11 @@ async function call<T>(
   }
 
   if (!res.ok) {
+    // Exactly one retry, and only when the credentials actually changed —
+    // otherwise a server that rejects everything becomes an infinite loop.
+    if (res.status === 401 && !retried && recoverAuth?.()) {
+      return call<T>(path, init, true)
+    }
     return {
       ok: false,
       status: res.status,

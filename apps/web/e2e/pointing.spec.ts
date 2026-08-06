@@ -14,6 +14,7 @@
  */
 
 import { expect, test, type Page } from '@playwright/test'
+import { openGrid } from './support'
 
 const HEADER_W = 46
 const HEADER_H = 24
@@ -116,11 +117,8 @@ async function seed(page: Page) {
 test.beforeEach(async ({ page }) => {
   const errors: string[] = []
   page.on('pageerror', (e) => errors.push(String(e)))
-  await page.goto('/')
-  await expect(page.locator('canvas')).toBeVisible({ timeout: 30_000 })
+  await openGrid(page)
   expect(errors, `page errors on load: ${errors.join('; ')}`).toHaveLength(0)
-  await page.getByTestId('consent-decline').click()
-  await expect(page.getByTestId('consent-modal')).toHaveCount(0)
 })
 
 test('dragging a range into an open function call writes the reference', async ({ page }) => {

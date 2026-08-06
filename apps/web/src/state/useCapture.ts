@@ -18,7 +18,13 @@ import {
   type PrivacyMode,
 } from '../capture/capture'
 import { EventQueue, openQueueStorage } from '../capture/queue'
-import { api, authToken, setAuthToken, type ConsentRecord } from '../capture/api'
+import {
+  api,
+  authToken,
+  setAuthRecovery,
+  setAuthToken,
+  type ConsentRecord,
+} from '../capture/api'
 
 const CONSENT_KEY = 'gridline.consent'
 const ACTOR_KEY = 'gridline.actor'
@@ -126,6 +132,19 @@ function getPipeline(): Pipeline {
   // by hand always wins over one baked into the dev server's environment.
   const devToken = devEnv('VITE_DEV_TOKEN')
   if (devToken && !authToken()) setAuthToken(devToken)
+
+  // …but only while it works. A stored token the server rejects is dead, and
+  // "the hand-typed one wins" must not mean "wins forever": re-seeding a
+  // development database left the browser presenting a token that database
+  // had never heard of, with no reload, restart or re-seed able to recover.
+  // On a 401 the dev token replaces it and the request is tried once more.
+  // Production builds have no dev token, so this does nothing there.
+  setAuthRecovery(() => {
+    const fresh = devEnv('VITE_DEV_TOKEN')
+    if (!fresh || authToken() === fresh) return false
+    setAuthToken(fresh)
+    return true
+  })
 
   const consent = readConsent()
   const workbookId = readOrCreate(

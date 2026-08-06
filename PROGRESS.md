@@ -422,7 +422,7 @@ is worse than no gap list, because it is read as current.
 M0-M7, the parity track P0-P7, the environment track E1-E4, the agent track
 A1-A5 and the improvement loop C1-C4 are complete and green: `make ci` passes (fmt, clippy -D
 warnings, 671 Rust tests, the parity report check, the dataset replay check,
-`tsc -b`, the vite build, 210 web unit tests and 104 Playwright end-to-end
+`tsc -b`, the vite build, 214 web unit tests and 104 Playwright end-to-end
 tests). `./scripts/demo.sh` runs the whole seeded scenario end to end and
 `./scripts/dataset.sh` regenerates the training dataset.
 
@@ -506,3 +506,11 @@ Three things a user found by trying to answer "what have you got on me?".
   `GET /v1/events/recent` and a table under *What has been captured* close
   that: your own events, newest first, exactly as stored, with a redacted
   literal shown as the hash that replaced it.
+- Re-seeding to fix the first bug caused a second one: the browser kept
+  presenting a token the new database had never heard of, because the stored
+  token was only ever replaced when there was none. A 401 now swaps in the
+  dev token and retries once.
+- The grid specs clicked *Decline* on the consent modal, which made them
+  depend on a database they do not control — green in CI, thirty seconds of
+  timeout per test on a machine that had answered the notice once.
+  `e2e/support.ts` answers it in `localStorage` instead.
