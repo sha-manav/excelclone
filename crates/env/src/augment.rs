@@ -1028,13 +1028,18 @@ fn extend_formula(input: &str, last_row: u32, count: u32) -> String {
         return input.to_string();
     };
     let grown = engine::refs::map_refs(&ast, &mut |r| match r {
-        engine::refs::RefKind::Range(rr) if rr.end.row == last_row => {
+        // A whole-column range already reaches every row, so there is
+        // nothing to grow — and growing it would push its bottom off the grid.
+        engine::refs::RefKind::Range(rr)
+            if rr.end.row == last_row && rr.span == engine::ast::RangeSpan::Cells =>
+        {
             let mut end = rr.end;
             end.row += count;
             Some(engine::ast::Expr::Range(engine::ast::RangeRef {
                 sheet: rr.sheet.clone(),
                 start: rr.start,
                 end,
+                span: rr.span,
             }))
         }
         _ => None,

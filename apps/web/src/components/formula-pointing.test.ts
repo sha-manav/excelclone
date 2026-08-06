@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { applyPointing, pointingSlot } from './formula-pointing'
+import { applyPointing, bandRef, pointingSlot } from './formula-pointing'
 
 /** `pointingSlot` at the end of the string, which is where a caret usually is. */
 const at = (value: string) => pointingSlot(value, value.length)
@@ -90,5 +90,24 @@ describe('applyPointing', () => {
       value: '=SUM(B4:B9)*2',
       caret: 10,
     })
+  })
+})
+
+describe('bandRef', () => {
+  it('names whole columns and whole rows', () => {
+    expect(bandRef('col', 0, 0)).toBe('A:A')
+    expect(bandRef('col', 0, 2)).toBe('A:C')
+    expect(bandRef('row', 0, 4)).toBe('1:5')
+  })
+
+  it('puts the ends in order however the drag went', () => {
+    // Dragging right-to-left across headers is ordinary, and `C:A` is not a
+    // reference the engine reads.
+    expect(bandRef('col', 4, 1)).toBe('B:E')
+    expect(bandRef('row', 9, 2)).toBe('3:10')
+  })
+
+  it('handles columns past Z', () => {
+    expect(bandRef('col', 26, 27)).toBe('AA:AB')
   })
 })

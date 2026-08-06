@@ -46,12 +46,73 @@ pub struct CellRef {
     pub r: ParsedRef,
 }
 
+/// Which axes a range names explicitly.
+///
+/// `A:C` and `1:5` are rectangles like any other — the difference is that one
+/// axis was never written down, so it belongs to the sheet rather than to the
+/// author. That matters in three places: printing the reference back (it has
+/// to come out as `A:C`, not `A1:C1048576`), rewriting it when rows are
+/// inserted (an axis nobody wrote cannot shift), and evaluating it (the span
+/// is a million rows and densifying it would be absurd).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RangeSpan {
+    /// `A1:B2` — both ends name a cell.
+    #[default]
+    Cells,
+    /// `A:C` — every row of those columns.
+    Cols,
+    /// `1:5` — every column of those rows.
+    Rows,
+}
+
+impl RangeSpan {
+    /// True when the row span came from the sheet rather than the formula.
+    pub fn open_rows(&self) -> bool {
+        matches!(self, RangeSpan::Cols)
+    }
+
+    /// True when the column span came from the sheet rather than the formula.
+    pub fn open_cols(&self) -> bool {
+        matches!(self, RangeSpan::Rows)
+    }
+
+    /// Both ends written out — the ordinary case, and the one left out of the
+    /// serialized form. See the note on `RangeRef::span`.
+    pub fn is_cells(&self) -> bool {
+        matches!(self, RangeSpan::Cells)
+    }
+}
+
 /// A rectangular range reference in a formula.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RangeRef {
     pub sheet: Option<String>,
     pub start: ParsedRef,
     pub end: ParsedRef,
+    /// Omitted from the serialized form when it is `Cells`.
+    ///
+    /// Snapshots are content-addressed over canonical JSON of the workbook,
+    /// and the AST is in there — so writing `"span":"cells"` on every ordinary
+    /// range would have changed the hash of every workbook that contains one,
+    /// and every committed trajectory would have stopped replaying. The
+    /// dataset check caught exactly that. Skipping the default keeps a
+    /// workbook with no open ranges byte-identical to what it was before this
+    /// field existed, which is what a refinement ought to be.
+    #[serde(default, skip_serializing_if = "RangeSpan::is_cells")]
+    pub span: RangeSpan,
+}
+
+impl RangeRef {
+    /// `A1:B2`, both ends written out.
+    pub fn cells(sheet: Option<String>, start: ParsedRef, end: ParsedRef) -> RangeRef {
+        RangeRef {
+            sheet,
+            start,
+            end,
+            span: RangeSpan::Cells,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -86,12 +147,12 @@ impl Expr {
             Expr::Name(n) => n.clone(),
             Expr::Cell(c) => format_sheet_prefix(&c.sheet) + &c.r.to_a1(),
             Expr::Range(r) => {
-                format!(
-                    "{}{}:{}",
-                    format_sheet_prefix(&r.sheet),
-                    r.start.to_a1(),
-                    r.end.to_a1()
-                )
+                let (a, b) = match r.span {
+                    RangeSpan::Cells => (r.start.to_a1(), r.end.to_a1()),
+                    RangeSpan::Cols => (r.start.to_col(), r.end.to_col()),
+                    RangeSpan::Rows => (r.start.to_row(), r.end.to_row()),
+                };
+                format!("{}{}:{}", format_sheet_prefix(&r.sheet), a, b)
             }
             Expr::Func(name, args) => {
                 let args: Vec<String> = args.iter().map(|a| a.to_formula()).collect();

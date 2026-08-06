@@ -2132,6 +2132,7 @@ fn rewrite_sheet_in_expr(e: &Expr, from: &str, to: Option<&str>, changed: &mut b
                     sheet: Some(t.to_string()),
                     start: r.start,
                     end: r.end,
+                    span: r.span,
                 }),
                 None => Expr::Error(ErrorKind::Ref),
             }

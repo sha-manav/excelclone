@@ -1,0 +1,107 @@
+# Whole-column and whole-row references: `A:C`, `1:5`.
+#
+# These name one axis and leave the other to the sheet, which is exactly why
+# people write them: `=SUM(A:A)` keeps working when rows are added, and
+# `=SUM(A1:A100)` does not. Gridline narrows the unnamed axis to the used range
+# before evaluating, because the alternative is building a million-element
+# vector per formula.
+#
+# Narrowing is invisible to anything that aggregates what is *there*, and
+# visible to the handful of functions that count what is *absent* — those are
+# the interesting cases below, and they are recorded rather than smoothed over.
+
+[[case]]
+id = "open.sum-of-a-whole-column"
+given = { A1 = "1", A2 = "3", A3 = "4" }
+formula = "=SUM(A:A)"
+expect = "8"
+source = "known"
+functions = ["SUM"]
+note = """
+The ordinary case, and the reason the reference shape exists at all.
+"""
+
+[[case]]
+id = "open.sum-across-a-span-of-columns"
+given = { A1 = "1", A2 = "3", B1 = "10", B2 = "20" }
+formula = "=SUM(A:B)"
+expect = "34"
+source = "known"
+functions = ["SUM"]
+note = """
+Two whole columns rather than one, which is the case that would pass anyway if
+`A:B` were being read as `A:A` and the second endpoint dropped.
+"""
+
+[[case]]
+id = "open.sum-of-whole-rows"
+given = { A1 = "1", B1 = "10", A2 = "3", B2 = "20" }
+formula = "=SUM(1:2)"
+at = "Z9"
+expect = "34"
+source = "known"
+functions = ["SUM"]
+note = """
+Placed at Z9 rather than the default Z1, because a formula sitting inside the
+rows it adds up reads itself. Gridline answers `#CIRC!` there, correctly, and
+so does Excel — the row band really does include the cell.
+"""
+
+[[case]]
+id = "open.count-ignores-the-empty-tail"
+given = { A1 = "1", A2 = "3", A3 = "4" }
+formula = "=COUNT(A:A)"
+expect = "3"
+source = "known"
+functions = ["COUNT"]
+note = """
+COUNT counts numbers, and the million empty cells below the data are not
+numbers in either implementation. This is the shape of every aggregate:
+narrowing to the used range cannot change the answer.
+"""
+
+[[case]]
+id = "open.average-of-a-whole-column"
+given = { A1 = "1", A2 = "3", A3 = "4" }
+formula = "=AVERAGE(A:A)"
+expect = "2.66666666666667"
+source = "known"
+functions = ["AVERAGE"]
+note = """
+AVERAGE divides by how many numbers it found, not by how many cells it looked
+at, so an open column averages the same as the range it narrows to.
+"""
+
+[[case]]
+id = "open.countblank-counts-the-whole-column"
+given = { A1 = "1", A2 = "3", A3 = "4" }
+formula = "=COUNTBLANK(A:A)"
+expect = "1048573"
+source = "known"
+known_difference = true
+functions = ["COUNTBLANK"]
+note = """
+The one place narrowing shows. Excel counts every empty cell in the column —
+1,048,576 less the three that are filled. Gridline narrows `A:A` to the used
+range before evaluating and answers 0.
+
+Recorded rather than fixed, because fixing it means either densifying a
+million cells per call or teaching each counting function that its range may
+be open. The second is the right answer and is not free: COUNTBLANK, ROWS,
+COLUMNS and the `*IFS` family would each need to know. Nobody writes
+`COUNTBLANK(A:A)` meaning "about a million"; everybody writes `SUM(A:A)`.
+"""
+
+[[case]]
+id = "open.rows-of-a-whole-column"
+given = { A1 = "1", A2 = "3", A3 = "4" }
+formula = "=ROWS(A:A)"
+expect = "1048576"
+source = "known"
+known_difference = true
+functions = ["ROWS"]
+note = """
+Same cause as COUNTBLANK: ROWS asks how tall the reference is, and Gridline
+has already narrowed it to the used range, so it answers 3. Excel answers the
+height of the column.
+"""

@@ -13,6 +13,8 @@
  * rather than through a browser.
  */
 
+import { colLetters } from '../engine/actions'
+
 /** Where the next pointed reference goes, and what it displaces. */
 export interface PointingSlot {
   /** First character of the text the reference replaces. */
@@ -105,6 +107,21 @@ function expectsOperand(text: string): boolean {
   const trimmed = text.trimEnd()
   if (trimmed.length === 0) return false
   return OPERAND_EXPECTED.has(trimmed[trimmed.length - 1])
+}
+
+/**
+ * `A:C` or `1:5` — the reference for a band of whole columns or rows.
+ *
+ * Excel writes these without the axis nobody chose, and so does the engine:
+ * `A:C` means every row of those columns *now*, which is the whole reason to
+ * write one instead of `A1:C1000`.
+ */
+export function bandRef(axis: 'col' | 'row', a: number, b: number): string {
+  const lo = Math.min(a, b)
+  const hi = Math.max(a, b)
+  return axis === 'col'
+    ? `${colLetters(lo)}:${colLetters(hi)}`
+    : `${lo + 1}:${hi + 1}`
 }
 
 /** The value and caret after pointing `ref` into `slot`. */

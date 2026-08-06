@@ -121,14 +121,25 @@ pub fn offset(e: &Expr, dr: i64, dc: i64) -> Expr {
             })),
             None => Some(Expr::Error(ErrorKind::Ref)),
         },
-        RefKind::Range(rr) => match (rr.start.shifted(dr, dc), rr.end.shifted(dr, dc)) {
-            (Some(s), Some(en)) => Some(Expr::Range(RangeRef {
-                sheet: rr.sheet.clone(),
-                start: s,
-                end: en,
-            })),
-            _ => Some(Expr::Error(ErrorKind::Ref)),
-        },
+        RefKind::Range(rr) => {
+            // Copying `=SUM(A:A)` one column right gives `=SUM(B:B)`, and
+            // moving it down gives `=SUM(A:A)` again — an axis the formula
+            // never named has nothing to shift.
+            let (dr, dc) = match rr.span {
+                crate::ast::RangeSpan::Cells => (dr, dc),
+                crate::ast::RangeSpan::Cols => (0, dc),
+                crate::ast::RangeSpan::Rows => (dr, 0),
+            };
+            match (rr.start.shifted(dr, dc), rr.end.shifted(dr, dc)) {
+                (Some(s), Some(en)) => Some(Expr::Range(RangeRef {
+                    sheet: rr.sheet.clone(),
+                    start: s,
+                    end: en,
+                    span: rr.span,
+                })),
+                _ => Some(Expr::Error(ErrorKind::Ref)),
+            }
+        }
     })
 }
 
@@ -167,6 +178,17 @@ pub fn structural(
             if ref_sheet(&rr.sheet, current, lookup) != Some(shift.sheet) {
                 return None;
             }
+            // An axis nobody wrote down cannot move. `A:C` means every row of
+            // those columns *now*, so inserting a row neither shifts it nor
+            // — the important half — pushes its bottom off the grid and turns
+            // the whole reference into #REF!.
+            let open = match shift.axis {
+                Axis::Row => rr.span.open_rows(),
+                Axis::Col => rr.span.open_cols(),
+            };
+            if open {
+                return None;
+            }
             let (s, e2) = match shift.axis {
                 Axis::Row => (rr.start.row.min(rr.end.row), rr.start.row.max(rr.end.row)),
                 Axis::Col => (rr.start.col.min(rr.end.col), rr.start.col.max(rr.end.col)),
@@ -190,6 +212,7 @@ pub fn structural(
                         sheet: rr.sheet.clone(),
                         start,
                         end,
+                        span: rr.span,
                     }))
                 }
             }
@@ -251,6 +274,7 @@ pub fn moved(
                 sheet: rr.sheet.clone(),
                 start,
                 end,
+                span: rr.span,
             }))
         }
     })

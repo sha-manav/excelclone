@@ -406,14 +406,11 @@ Living checklist. Updated every session.
   the viewport, and the button freezes above the cursor; putting the cursor
   near the bottom of a long sheet and pressing it leaves almost nothing to
   scroll. Excel refuses; this does not.
-- **Pointing works with the mouse but not the arrow keys.** Clicking or
-  dragging on the grid while a formula expects an operand writes the reference
-  into it. Arrowing does not: in Excel the arrows pick the operand once a
-  formula is mid-expression, and here they still move the caret. Building it
-  means tracking a pointing cursor that is not the selection.
-- **Only whole cells and ranges can be pointed at.** Clicking a column header
-  mid-formula commits rather than writing `A:A`, because whole-column
-  references are a reference shape the pointing code does not construct.
+- **`COUNTBLANK` and `ROWS` over an open reference answer about the used range,
+  not the column.** Evaluation narrows `A:A` to what the sheet uses, which is
+  invisible to everything that aggregates what is *there* and visible to the
+  two functions that count what is *absent*. Both are recorded in `PARITY.md`.
+  Fixing them means teaching each counting function that its range may be open.
 
 Two entries that stood here for several milestones were struck after checking
 them rather than after fixing them: the grid *does* paint merged ranges (M5)
@@ -425,7 +422,7 @@ is worse than no gap list, because it is read as current.
 M0-M7, the parity track P0-P7, the environment track E1-E4, the agent track
 A1-A5 and the improvement loop C1-C4 are complete and green: `make ci` passes (fmt, clippy -D
 warnings, 671 Rust tests, the parity report check, the dataset replay check,
-`tsc -b`, the vite build, 203 web unit tests and 86 Playwright end-to-end
+`tsc -b`, the vite build, 206 web unit tests and 98 Playwright end-to-end
 tests). `./scripts/demo.sh` runs the whole seeded scenario end to end and
 `./scripts/dataset.sh` regenerates the training dataset.
 
@@ -438,7 +435,7 @@ holds all eleven gestures; five of them failed before the change.
 
 Formula authoring followed, for the same reason: writing one meant knowing
 every function name by heart and typing every reference by hand. Pointing
-turns a click or a drag on the grid into a reference when the formula is
+turns a click, a drag or an arrow key into a reference when the formula is
 mid-expression and leaves a finished one alone (`e2e/pointing.spec.ts`), and
 the completion menu offers the engine's own function list with signatures
 (`e2e/completion.spec.ts`). Both surfaces — the cell editor and the formula
@@ -446,10 +443,21 @@ bar — do both. The `###########` in the same report was a third bug: General
 format is "as much precision as the column holds", and the renderer was
 hashing anything the engine printed too wide instead of dropping decimals.
 
-Parity stands at **99.1%** cell match over 320 settled cases, **100%**
+Pointing at a column or row header turned out to need an engine feature rather
+than a UI one — the parser rejected `A:A` outright, so the gesture could only
+have produced a formula the engine refused. Whole-column and whole-row
+references now parse, print, rewrite and evaluate (`crates/engine/tests/
+open_ranges.rs`): an axis the formula never named does not shift when rows are
+inserted, evaluation narrows it to the used range so `SUM(A:A)` does not
+densify a million cells, and the dependency keeps the whole column so filling a
+row below still recalculates. Parity fell from 99.1% to 98.5% because the two
+functions that count *absence* — `COUNTBLANK` and `ROWS` — now differ
+measurably rather than not existing.
+
+Parity stands at **98.5%** cell match over 327 settled cases, **100%**
 function coverage of the tier-1 and tier-2 target list, and 100% round-trip
-fidelity. Three differences are recorded rather than fixed and four questions
-are open; all seven are in `PARITY.md` with what Gridline currently answers.
+fidelity. Five differences are recorded rather than fixed and four questions
+are open; all nine are in `PARITY.md` with what Gridline currently answers.
 
 The environment resets, observes, steps and grades deterministically;
 episodes are recorded as replayable trajectories; one validated demonstration
