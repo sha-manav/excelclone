@@ -377,18 +377,34 @@ fn detect_tables(engine: &Engine, s: &engine::Sheet) -> Vec<TableView> {
         .map(|c| column_view(engine, s, c, header_row, last_row))
         .collect();
 
-    // Confident when the header is all text and the body is not.
-    let header_all_text = columns.iter().all(|c| !c.header.is_empty());
-    let body_typed = columns
+    // Two things make a detection a guess rather than a fact.
+    //
+    // A column whose values are not consistently one type usually means the
+    // range is wrong rather than that the data really is mixed — and a short
+    // body means a header row is barely distinguishable from a first row of
+    // data, because two rows of anything look like a header and a value.
+    //
+    // What is deliberately *not* scored is whether every column has a header:
+    // the column run stops at the first empty header cell by construction, so
+    // that test can never fail and a branch for it would be dead code
+    // pretending to be a safeguard. (It was, until a test that needed a
+    // genuinely low-confidence table could not produce one.)
+    let typed = columns
         .iter()
         .filter(|c| !matches!(c.cell_type, CellType::Empty | CellType::Mixed))
         .count();
-    let confidence = match (header_all_text, body_typed, columns.len()) {
-        (true, typed, n) if n > 0 && typed == n => 0.95,
-        (true, typed, n) if n > 0 => 0.6 + 0.3 * (typed as f32 / n as f32),
-        (false, _, _) => 0.4,
-        _ => 0.5,
+    let type_score = if columns.is_empty() {
+        0.0
+    } else {
+        typed as f32 / columns.len() as f32
     };
+    let depth_score = match last_row - header_row {
+        0 => 0.0,
+        1 => 0.6,
+        2 => 0.8,
+        _ => 1.0,
+    };
+    let confidence = 0.35 + 0.5 * type_score + 0.15 * depth_score;
 
     out.push(TableView {
         sheet: s.name.clone(),
@@ -873,22 +889,59 @@ mod tests {
     }
 
     #[test]
-    fn a_block_of_numbers_with_no_header_is_not_reported_as_a_confident_table() {
+    fn a_block_of_numbers_with_no_header_is_reported_as_no_table_at_all() {
         // Better to find nothing than to name a header row that is data. A
         // policy that writes into row 1 because it was called a header has
         // destroyed a value.
+        //
+        // This test used to assert "no table is reported *confidently*",
+        // which passed for the wrong reason — the list was empty, so the
+        // `all` was vacuous and it would have passed no matter what
+        // confidence said.
         let e = build(&[
             ("Sheet1", "A1", "1"),
             ("Sheet1", "B1", "2"),
             ("Sheet1", "A2", "3"),
             ("Sheet1", "B2", "4"),
         ]);
+        assert!(look(&e).tables.is_empty());
+    }
+
+    #[test]
+    fn a_table_of_mixed_columns_reports_itself_as_a_guess() {
+        // Where confidence earns its keep: there *is* a header row, so the
+        // table is found, but no column has a consistent type — which usually
+        // means the detected range is wrong rather than that the data is
+        // genuinely mixed. A caller that acts on this without noticing is
+        // writing into something it has not understood.
+        let e = build(&[
+            ("Sheet1", "A1", "One"),
+            ("Sheet1", "B1", "Two"),
+            ("Sheet1", "A2", "1"),
+            ("Sheet1", "B2", "text"),
+            ("Sheet1", "A3", "more text"),
+            ("Sheet1", "B3", "2"),
+        ]);
         let obs = look(&e);
+        assert_eq!(obs.tables.len(), 1);
         assert!(
-            obs.tables.iter().all(|t| t.confidence < 0.6),
-            "headerless numbers were reported confidently: {:?}",
-            obs.tables
+            obs.tables[0].confidence < 0.5,
+            "a table of mixed columns read as confident: {}",
+            obs.tables[0].confidence
         );
+    }
+
+    #[test]
+    fn a_two_row_table_is_less_certain_than_a_long_one() {
+        // Two rows of anything look like a header and a value.
+        let short = build(&[
+            ("Sheet1", "A1", "Item"),
+            ("Sheet1", "B1", "Qty"),
+            ("Sheet1", "A2", "Bolt"),
+            ("Sheet1", "B2", "4"),
+        ]);
+        let long = ledger();
+        assert!(look(&short).tables[0].confidence < look(&long).tables[0].confidence);
     }
 
     #[test]

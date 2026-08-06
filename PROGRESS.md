@@ -298,6 +298,30 @@ Living checklist. Updated every session.
       any up-and-left formula, and the sheet-name mismatch that counted
       honest work as collateral damage
 
+### A1–A5 — The hierarchical agent (complete)
+- [x] `crates/agent`: a typed plan vocabulary with no code, no coordinates
+      and no addresses — `LocateTable`, `CreateDerivedColumn`,
+      `ApplyFormula`, `FillRange`, `FilterRows`, `ReconcileTotals`,
+      `ExportWorkbook`
+- [x] A compiler resolving each step against the workbook in front of it, by
+      header, defined name, formula pattern and column type
+- [x] An `ActionValidator` refusing writes outside the declared scope,
+      unrequested structural changes, unresolvable references, literals
+      replacing formulas, and changes over a configured blast radius
+- [x] The loop: observe, propose, validate, rehearse on a clone, commit —
+      with a checkpoint after every committed step, and refusals fed back to
+      the planner in words it can act on
+- [x] A `Planner` trait, a deterministic reference planner, and a `Router`
+      that escalates on the first refusal
+- [x] Successful plans persisted and clustered by shape into parameterized
+      micro-policies, with a `MemoPlanner` that answers from them
+- [x] `gridline-agent solve --memory plans.jsonl`; over the generated corpus
+      the second pass scores the same 7/11 with zero planner calls and zero
+      replans
+- [x] 88 tests, including the control that a fixed-address macro fails every
+      variant the agent solves. Two corpus bugs found by running the agent
+      against it — see `docs/AGENT.md` and `DECISIONS.md`
+
 ### E3 — Trajectories and the JSONL dataset (complete)
 - [x] `Trajectory`: instruction, initial snapshot by hash, ordered
       observations and actions, per-step state hashes, final workbook diff,
@@ -369,12 +393,12 @@ is worse than no gap list, because it is read as current.
 
 ## Resume point
 
-M0-M7, the parity track P0-P7 and the environment track E1-E4 are complete
-and green: `make ci` passes (fmt, clippy -D warnings, 543 Rust tests, the
-X
-web unit tests and 55 Playwright end-to-end tests). `./scripts/demo.sh` runs
-the whole seeded scenario end to end and `./scripts/dataset.sh` regenerates
-the training dataset.
+M0-M7, the parity track P0-P7, the environment track E1-E4 and the agent
+track A1-A5 are complete and green: `make ci` passes (fmt, clippy -D
+warnings, 635 Rust tests, the parity report check, the dataset replay check,
+`tsc -b`, the vite build, 167 web unit tests and 55 Playwright end-to-end
+tests). `./scripts/demo.sh` runs the whole seeded scenario end to end and
+`./scripts/dataset.sh` regenerates the training dataset.
 
 Parity stands at **99.1%** cell match over 320 settled cases, **100%**
 function coverage of the tier-1 and tier-2 target list, and 100% round-trip
@@ -382,24 +406,26 @@ fidelity. Three differences are recorded rather than fixed and four questions
 are open; all seven are in `PARITY.md` with what Gridline currently answers.
 
 The environment resets, observes, steps and grades deterministically;
-episodes are recorded as replayable trajectories; and one validated
-demonstration multiplies into variants that are each replayed and graded
-before being kept. `docs/ENVIRONMENT.md` is the description of it, including
-what it deliberately does not do.
+episodes are recorded as replayable trajectories; one validated demonstration
+multiplies into variants that are each replayed and graded before being kept;
+and an agent plans over headers rather than addresses, is refused before it
+can damage anything, and distils its own successes into policies that make
+the next pass cheaper. `docs/ENVIRONMENT.md` and `docs/AGENT.md` describe
+both, including what they deliberately do not do.
 
 Next, in the order they are worth doing:
 
-1. **Phase 2 — the hierarchical agent.** A planner emitting typed steps
-   (`LocateTable`, `CreateDerivedColumn`, `ApplyFormula`, `FillRange`,
-   `FilterRows`, `ReconcileTotals`, `ExportWorkbook`) rather than addresses;
-   a compiler resolving each into `engine::Action` values by matching
-   headers, named ranges and data types; an `ActionValidator` refusing edits
-   outside the proposed scope; and clustering of repeated plans into
-   parameterized micro-policies.
-2. **Phase 3 — correction, evaluation and promotion.** Capture what a user
-   undid or repaired, the divergence point, and turn clean corrections into
-   supervised examples and failed-versus-corrected pairs into preference
-   data; a versioned eval corpus scored on more than average reward.
+1. **Phase 3 — correction, evaluation and promotion.** Capture what a user
+   undid or repaired, and the exact state divergence; turn clean corrections
+   into supervised examples and failed-versus-corrected pairs into preference
+   data; a versioned evaluation corpus run from immutable snapshots, scored
+   on completion, required outputs, invariants, forbidden-cell changes,
+   replans, interventions, latency and cost — and a promotion rule that
+   refuses a policy which completes more while touching more.
+2. **A model planner behind the existing interface.** The routing, the
+   confidence contract and the evaluation are built; what plugs into them is
+   not. The two-step tasks the rule planner cannot phrase are the measurable
+   gap it would close.
 3. **Read the conditional-formatting rules a file arrives with**, which needs
    a `<dxf>` parser with the fidelity `cellXfs` already has, and a rule
    editor for the kinds the toolbar does not offer.

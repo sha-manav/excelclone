@@ -1,4 +1,4 @@
-.PHONY: dev demo dataset parity server web wasm test lint fmt ci
+.PHONY: dev demo dataset agent parity server web wasm test lint fmt ci
 
 # Start server + web dev environment
 dev:
@@ -11,6 +11,11 @@ demo:
 # Regenerate the agent-training dataset from ./corpus/env into ./dataset
 dataset:
 	./scripts/dataset.sh
+
+# Run the agent over the generated corpus and print a scorecard
+agent:
+	cargo run -q -p agent --bin gridline-agent -- solve \
+	  --store dataset/snapshots --tasks dataset/variant-tasks.jsonl || true
 
 # Measure Excel parity and regenerate PARITY.md
 parity:

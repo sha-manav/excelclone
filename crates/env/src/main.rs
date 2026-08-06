@@ -10,7 +10,8 @@
 //! gridline-env grade    --store DIR --tasks t.jsonl [--actions a.jsonl]
 //! gridline-env record   --store DIR --tasks t.jsonl --actions a.jsonl --out d.jsonl
 //! gridline-env augment  --store DIR --tasks t.jsonl --dataset d.jsonl \
-//!                       --recipes r.json --out variants.jsonl
+//!                       --recipes r.json --out variants.jsonl \
+//!                       [--out-tasks variant-tasks.jsonl]
 //! gridline-env validate --store DIR --dataset d.jsonl [--tasks t.jsonl]
 //! ```
 //!
@@ -153,7 +154,7 @@ fn record(flags: &Flags) -> Result<ExitCode, EnvError> {
         )?;
         let mut budget_spent = false;
         for action in &actions {
-            if recorder.step(action)? {
+            if recorder.step(action)?.budget_exhausted {
                 budget_spent = true;
                 break;
             }
@@ -197,6 +198,7 @@ fn augment(flags: &Flags) -> Result<ExitCode, EnvError> {
 
     let mut env = Env::new(open(flags)?);
     let mut variants = Vec::new();
+    let mut variant_tasks = Vec::new();
     let (mut accepted, mut rejected) = (0usize, 0usize);
     for source in &sources {
         let Some(task) = tasks
@@ -217,9 +219,23 @@ fn augment(flags: &Flags) -> Result<ExitCode, EnvError> {
         for r in &report.rejected {
             eprintln!("rejected {}::{}: {}", source.id, r.recipe, r.reason);
         }
-        variants.extend(report.accepted.into_iter().map(|v| v.trajectory));
+        for v in report.accepted {
+            variant_tasks.push(v.task);
+            variants.push(v.trajectory);
+        }
     }
     env::trajectory::append_jsonl(out, &variants)?;
+    // The variants' task specs, not just their trajectories. Without these
+    // the generated corpus can be replayed but not *attempted* — which is
+    // most of what it is for.
+    if let Some(path) = &flags.out_tasks {
+        let mut text = String::new();
+        for task in &variant_tasks {
+            text.push_str(&serde_json::to_string(task)?);
+            text.push('\n');
+        }
+        std::fs::write(path, text)?;
+    }
     eprintln!("{accepted} variant(s) kept, {rejected} rejected");
     Ok(ExitCode::SUCCESS)
 }
@@ -312,6 +328,7 @@ struct Flags {
     dataset: Option<PathBuf>,
     recipes: Option<PathBuf>,
     out: Option<PathBuf>,
+    out_tasks: Option<PathBuf>,
     positional: Vec<PathBuf>,
 }
 
@@ -327,6 +344,7 @@ impl Flags {
                 "--dataset" => flags.dataset = it.next().map(PathBuf::from),
                 "--recipes" => flags.recipes = it.next().map(PathBuf::from),
                 "--out" => flags.out = it.next().map(PathBuf::from),
+                "--out-tasks" => flags.out_tasks = it.next().map(PathBuf::from),
                 other => flags.positional.push(PathBuf::from(other)),
             }
         }

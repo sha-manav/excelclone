@@ -12,7 +12,16 @@
   },
   {
     "label": "distractor-column",
-    "steps": [{ "perturbation": "insert", "sheet": "Sheet1", "axis": "col", "at": 1, "count": 1 }]
+    "steps": [
+      {
+        "perturbation": "insert",
+        "sheet": "Sheet1",
+        "axis": "col",
+        "at": 1,
+        "count": 1,
+        "fill": { "header": "Bin", "value": "A-12" }
+      }
+    ]
   },
   {
     "label": "longer-table",
@@ -38,7 +47,14 @@
     "steps": [
       { "perturbation": "rename_sheet", "from": "Sheet1", "to": "Q3 Purchases" },
       { "perturbation": "insert", "sheet": "Q3 Purchases", "axis": "row", "at": 0, "count": 6 },
-      { "perturbation": "insert", "sheet": "Q3 Purchases", "axis": "col", "at": 2, "count": 1 },
+      {
+        "perturbation": "insert",
+        "sheet": "Q3 Purchases",
+        "axis": "col",
+        "at": 2,
+        "count": 1,
+        "fill": { "header": "Bin", "value": "A-12" }
+      },
       { "perturbation": "append_rows", "sheet": "Q3 Purchases", "count": 15 }
     ]
   }

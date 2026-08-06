@@ -41,11 +41,23 @@ pub enum Perturbation {
     /// `at: 0` moves the whole table down or right; an `at` inside the table
     /// is the irrelevant-column case. One variant covers both because they
     /// are the same operation, and the engine only has one of them.
+    ///
+    /// A column insert with no `fill` leaves a blank column, and a blank
+    /// column is a *gap*, not a distractor: table detection quite correctly
+    /// stops at it, so the variant is a table that got narrower rather than
+    /// one with something irrelevant in the middle. That made a generated
+    /// "distractor-column" variant impossible for any agent that finds its
+    /// own table — and the demonstration replay still passed it, because
+    /// fixed addresses do not care where the table ends. Give it a `fill`.
     Insert {
         sheet: String,
         axis: Axis,
         at: u32,
         count: u32,
+        /// What to put in the new column, so it is something to ignore
+        /// rather than a hole. Column inserts only.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        fill: Option<InsertFill>,
     },
     /// Rename a sheet. Every reference to it — in the workbook, in the
     /// recorded actions, and in the task's checks — follows.
@@ -76,6 +88,14 @@ pub enum Perturbation {
     },
 }
 
+/// The contents of an inserted column: a header, and one value repeated down
+/// the rows the table already occupied.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InsertFill {
+    pub header: String,
+    pub value: String,
+}
+
 impl Perturbation {
     pub fn label(&self) -> String {
         match self {
@@ -84,6 +104,7 @@ impl Perturbation {
                 axis,
                 at,
                 count,
+                ..
             } => {
                 let what = match axis {
                     Axis::Row => "rows",
@@ -118,18 +139,8 @@ impl Perturbation {
                 axis,
                 at,
                 count,
-            } => vec![match axis {
-                Axis::Row => Action::RowInsert {
-                    sheet: sheet.clone(),
-                    at: *at,
-                    count: *count,
-                },
-                Axis::Col => Action::ColInsert {
-                    sheet: sheet.clone(),
-                    at: *at,
-                    count: *count,
-                },
-            }],
+                fill,
+            } => insert_actions(engine, sheet, *axis, *at, *count, fill.as_ref())?,
             Perturbation::RenameSheet { from, to } => vec![Action::SheetRename {
                 from: from.clone(),
                 to: to.clone(),
@@ -160,6 +171,7 @@ impl Perturbation {
                 axis,
                 at,
                 count,
+                ..
             } => shift_action(engine, action, sheet, *axis, *at, *count),
             Perturbation::RenameSheet { from, to } => rename_in_action(action, from, to),
             // Neither of these moves anything, so the recorded actions still
@@ -243,6 +255,7 @@ impl Perturbation {
                 axis,
                 at,
                 count,
+                ..
             } => map_check_refs(
                 check,
                 &|text| shift_a1(text, sheet, *axis, *at, *count),
@@ -428,7 +441,15 @@ fn one(
         initial_snapshot: snapshot,
         checks,
         start_sheet,
-        max_steps: task.max_steps.max(actions.len() as u32),
+        // Headroom, not a glove. A budget set to exactly the recorded
+        // demonstration's length is a budget only that demonstration can
+        // meet: an agent that writes a column header before the column, or
+        // takes one exploratory step, runs out on the last row and fails a
+        // task it had solved. The budget exists to stop a runaway loop, and
+        // twice the known-sufficient length still does that.
+        max_steps: task
+            .max_steps
+            .max(actions.len().saturating_mul(2) as u32 + 16),
         origin: Some(format!("augmented:{}", recipe.label)),
     };
 
@@ -519,6 +540,60 @@ fn is_independent(check: &Check) -> bool {
 }
 
 // --- perturbation mechanics -------------------------------------------------
+
+/// The insert itself, plus whatever fills the new column.
+///
+/// The rows filled are the ones the sheet already used, taken *before* the
+/// insert — the insert moves columns, not rows, so they are still the right
+/// rows afterwards, and reading them from the sheet after the insert would
+/// give the same answer more confusingly.
+fn insert_actions(
+    engine: &Engine,
+    sheet: &str,
+    axis: Axis,
+    at: u32,
+    count: u32,
+    fill: Option<&InsertFill>,
+) -> Result<Vec<Action>, EnvError> {
+    let mut actions = vec![match axis {
+        Axis::Row => Action::RowInsert {
+            sheet: sheet.to_string(),
+            at,
+            count,
+        },
+        Axis::Col => Action::ColInsert {
+            sheet: sheet.to_string(),
+            at,
+            count,
+        },
+    }];
+
+    let (Axis::Col, Some(fill)) = (axis, fill) else {
+        return Ok(actions);
+    };
+    let s = engine
+        .wb
+        .sheet_by_name(sheet)
+        .ok_or_else(|| EnvError::UnknownSheet(sheet.to_string()))?;
+    let Some(used) = s.used_range() else {
+        return Ok(actions);
+    };
+    for row in used.start.row..=used.end.row {
+        let input = if row == used.start.row {
+            &fill.header
+        } else {
+            &fill.value
+        };
+        for c in 0..count {
+            actions.push(Action::CellEdit {
+                sheet: sheet.to_string(),
+                addr: CellAddr::new(row, at + c),
+                input: input.clone(),
+            });
+        }
+    }
+    Ok(actions)
+}
 
 /// Actions that repeat a sheet's last populated row `count` more times.
 fn repeat_last_row(engine: &Engine, sheet: &str, count: u32) -> Result<Vec<Action>, EnvError> {
@@ -1083,12 +1158,14 @@ mod tests {
                     axis: Axis::Row,
                     at: 0,
                     count: 3,
+                    fill: None,
                 },
                 Perturbation::Insert {
                     sheet: "Sheet1".into(),
                     axis: Axis::Col,
                     at: 0,
                     count: 2,
+                    fill: None,
                 },
             ],
         )]);
@@ -1121,6 +1198,7 @@ mod tests {
                 axis: Axis::Col,
                 at: 1,
                 count: 1,
+                fill: None,
             }],
         )]);
         assert!(report.rejected.is_empty(), "{:?}", report.rejected);
@@ -1240,6 +1318,7 @@ mod tests {
                     axis: Axis::Row,
                     at: 0,
                     count: 3,
+                    fill: None,
                 }],
             )],
         )
@@ -1256,6 +1335,89 @@ mod tests {
     }
 
     #[test]
+    fn a_filled_distractor_column_keeps_the_table_one_table() {
+        // The bug this pins: an unfilled column insert leaves a blank
+        // column, table detection stops at it — correctly — and the variant
+        // becomes a *narrower table* rather than one with something
+        // irrelevant in the middle. The demonstration replay passes either
+        // way, because fixed addresses do not care where the table ends, so
+        // the gate could not catch it. Only an agent that finds its own
+        // table notices, and by then the variant is in the corpus.
+        let (env, task, source) = demonstration();
+        let (env, report) = augment(
+            env,
+            &source,
+            &task,
+            &[Recipe::new(
+                "distractor",
+                vec![Perturbation::Insert {
+                    sheet: "Sheet1".into(),
+                    axis: Axis::Col,
+                    at: 1,
+                    count: 1,
+                    fill: Some(InsertFill {
+                        header: "Bin".into(),
+                        value: "A-12".into(),
+                    }),
+                }],
+            )],
+        )
+        .unwrap();
+        assert!(report.rejected.is_empty(), "{:?}", report.rejected);
+
+        let mut check = Env::new(env.into_store());
+        check
+            .reset(&report.accepted[0].task.initial_snapshot)
+            .unwrap();
+        let obs = check.observe().unwrap();
+        let headers: Vec<&str> = obs.tables[0]
+            .columns
+            .iter()
+            .map(|c| c.header.as_str())
+            .collect();
+        assert_eq!(
+            headers,
+            ["Item", "Bin", "Qty", "Price", "Total"],
+            "the distractor split the table in two"
+        );
+    }
+
+    #[test]
+    fn an_unfilled_column_insert_really_does_split_the_table() {
+        // The other half, so the reason for `fill` is written down as a
+        // fact rather than as a claim in a doc comment.
+        let (env, task, source) = demonstration();
+        let (env, report) = augment(
+            env,
+            &source,
+            &task,
+            &[Recipe::new(
+                "gap",
+                vec![Perturbation::Insert {
+                    sheet: "Sheet1".into(),
+                    axis: Axis::Col,
+                    at: 1,
+                    count: 1,
+                    fill: None,
+                }],
+            )],
+        )
+        .unwrap();
+        assert!(report.rejected.is_empty(), "the gate cannot see this");
+
+        let mut check = Env::new(env.into_store());
+        check
+            .reset(&report.accepted[0].task.initial_snapshot)
+            .unwrap();
+        let obs = check.observe().unwrap();
+        assert_eq!(
+            obs.tables[0].columns.len(),
+            1,
+            "a blank column should stop table detection at it"
+        );
+    }
+
+    #[test]
     fn a_perturbation_the_engine_refuses_is_reported_not_swallowed() {
         let (env, task, source) = demonstration();
         let recipe = Recipe::new(
@@ -1265,6 +1427,7 @@ mod tests {
                 axis: Axis::Col,
                 at: 0,
                 count: 1,
+                fill: None,
             }],
         );
         let (_, report) = augment(env, &source, &task, &[recipe]).unwrap();
@@ -1397,6 +1560,7 @@ mod tests {
                     axis: Axis::Row,
                     at: 0,
                     count: 2,
+                    fill: None,
                 }],
             ),
             Recipe::new(
@@ -1433,12 +1597,14 @@ mod tests {
                     axis: Axis::Row,
                     at: 0,
                     count: 2,
+                    fill: None,
                 },
                 Perturbation::Insert {
                     sheet: "Q3 Ledger".into(),
                     axis: Axis::Col,
                     at: 1,
                     count: 1,
+                    fill: None,
                 },
                 Perturbation::AppendRows {
                     sheet: "Q3 Ledger".into(),

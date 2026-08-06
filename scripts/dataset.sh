@@ -64,7 +64,8 @@ echo "==> augmenting"
 # shipped, and the reasons are printed above.
 "${ENV_BIN[@]}" augment --store "$OUT/snapshots" \
   --tasks "$OUT/tasks.jsonl" --dataset "$OUT/demonstrations.jsonl" \
-  --recipes "$CORPUS/recipes.json" --out "$OUT/variants.jsonl"
+  --recipes "$CORPUS/recipes.json" --out "$OUT/variants.jsonl" \
+  --out-tasks "$OUT/variant-tasks.jsonl"
 
 echo "==> validating"
 "${ENV_BIN[@]}" validate --store "$OUT/snapshots" \
@@ -76,4 +77,5 @@ echo
 echo "$OUT:"
 echo "  $(wc -l < "$OUT/demonstrations.jsonl") demonstration(s)"
 echo "  $(wc -l < "$OUT/variants.jsonl") validated variant(s)"
+echo "  $(wc -l < "$OUT/variant-tasks.jsonl") variant task(s) to attempt"
 echo "  $(ls "$OUT/snapshots" | wc -l) snapshot(s), $(du -sh "$OUT/snapshots" | cut -f1)"

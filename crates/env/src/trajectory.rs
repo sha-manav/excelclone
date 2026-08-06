@@ -161,7 +161,8 @@ impl Trajectory {
 }
 
 /// How much of what the policy saw to keep.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ObservationPolicy {
     /// Every step. What supervised training wants, and the largest.
     #[default]
@@ -171,6 +172,18 @@ pub enum ObservationPolicy {
     First,
     /// None. For replay-validation runs, where they are dead weight.
     None,
+}
+
+/// What a recorded step did, for the caller that has to decide what next.
+///
+/// Everything here is also in the trajectory; this is the caller's copy, so a
+/// loop does not have to reach back into the recording to find out whether
+/// its own action was accepted.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Recorded {
+    pub applied: bool,
+    pub error: Option<String>,
+    pub budget_exhausted: bool,
 }
 
 /// Records a trajectory while an episode runs.
@@ -243,8 +256,25 @@ impl Recorder {
         &self.env
     }
 
-    pub fn env_mut(&mut self) -> &mut Env {
-        &mut self.env
+    /// Store the current workbook and return its id — a resume point.
+    ///
+    /// This and the two below are what a caller is given instead of `&mut
+    /// Env`. Handing out the environment would let a caller step it directly,
+    /// and a step taken outside the recorder is a step missing from the
+    /// trajectory: the record would then replay to a state nobody was ever
+    /// in, and `faithful` would say yes because there was nothing to check.
+    /// That is not hypothetical — the agent's execution loop did exactly
+    /// that, and produced empty trajectories that replayed perfectly.
+    pub fn checkpoint(&mut self) -> Result<SnapshotId, EnvError> {
+        self.env.checkpoint()
+    }
+
+    pub fn set_selection(&mut self, a1: &str) {
+        self.env.set_selection(a1);
+    }
+
+    pub fn set_active_sheet(&mut self, name: &str) -> Result<(), EnvError> {
+        self.env.set_active_sheet(name)
     }
 
     pub fn observe(&mut self) -> Result<WorkbookObservation, EnvError> {
@@ -255,16 +285,19 @@ impl Recorder {
         self.env.steps_taken()
     }
 
-    /// Take a step and record it. Returns whether the budget is now spent, so
-    /// a loop can stop without asking twice.
-    pub fn step(&mut self, action: &Action) -> Result<bool, EnvError> {
+    /// Take a step and record it.
+    pub fn step(&mut self, action: &Action) -> Result<Recorded, EnvError> {
         let observation = match self.policy {
             ObservationPolicy::Every => Some(self.env.observe()?),
             ObservationPolicy::First if self.steps.is_empty() => Some(self.env.observe()?),
             _ => None,
         };
         let result = self.env.step(action)?;
-        let exhausted = result.budget_exhausted;
+        let recorded = Recorded {
+            applied: result.applied,
+            error: result.error.clone(),
+            budget_exhausted: result.budget_exhausted,
+        };
         self.steps.push(TrajectoryStep {
             index: result.step,
             observation,
@@ -274,7 +307,7 @@ impl Recorder {
             state_hash: result.state_hash,
             changed: result.changed,
         });
-        Ok(exhausted)
+        Ok(recorded)
     }
 
     /// Close the recording. Stores the final workbook so the trajectory can
@@ -674,7 +707,11 @@ mod tests {
         let mut spec = task(&id);
         spec.max_steps = 1;
         let mut rec = Recorder::start_task(Env::new(store), "t", &spec, Source::Human).unwrap();
-        assert!(rec.step(&edit("Sheet1", "D2", "=B2*C2")).unwrap());
+        assert!(
+            rec.step(&edit("Sheet1", "D2", "=B2*C2"))
+                .unwrap()
+                .budget_exhausted
+        );
         let t = rec
             .finish(Termination::BudgetExhausted, Some(&spec))
             .unwrap();
