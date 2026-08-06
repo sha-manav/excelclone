@@ -34,6 +34,7 @@ pub fn app(pool: SqlitePool) -> Router {
         .route("/health", get(health))
         .route("/v1/events", post(events::ingest))
         .route("/v1/events/export", get(events::export))
+        .route("/v1/events/recent", get(events::recent))
         .route("/v1/consent", post(consent::record))
         .route("/v1/consent/me", get(consent::me))
         .route(

@@ -380,3 +380,105 @@ test.describe('a rejected batch is visible', () => {
     await expect(page.getByTestId('capture-rejected')).toHaveCount(0)
   })
 })
+
+test.describe('the captured log', () => {
+  /** The API, with a history the page can read back. */
+  async function stubApiWithHistory(page: Page, events: unknown[]) {
+    await page.route('**/v1/**', async (route) => {
+      const url = route.request().url()
+      if (url.includes('/v1/consent/me')) {
+        return route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ mode: 'structural', captures: true }),
+        })
+      }
+      if (url.includes('/v1/events/recent')) {
+        return route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify(events),
+        })
+      }
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ accepted: 0, duplicates: 0, rejected: 0, warnings: [] }),
+      })
+    })
+    await page.addInitScript(
+      ({ key, tokenKey, consent }) => {
+        window.localStorage.clear()
+        window.localStorage.setItem(tokenKey, 'test-token')
+        window.localStorage.setItem(key, consent)
+      },
+      { key: CONSENT_KEY, tokenKey: TOKEN_KEY, consent: grantedConsent('structural') },
+    )
+    await page.goto('/')
+    await expect(page.locator('canvas')).toBeVisible({ timeout: 30_000 })
+    await page.locator('.toolbar__link').click()
+  }
+
+  const storedEvent = (overrides: Record<string, unknown> = {}) => ({
+    schema_version: 1,
+    event_id: 'ev_1',
+    session_id: 's_1',
+    actor_id: 'u_1',
+    workbook_id: 'wb_1',
+    seq: 1,
+    ts_ms: 1_700_000_000_000,
+    action: 'cell.edit',
+    payload: {
+      addr: 'A1',
+      input: { hash: '90020ebfd48797ad', len: 5, type: 'number' },
+      is_formula: false,
+    },
+    context: { sheet: 'h', selection: 'A1', privacy_mode: 'structural' },
+    client_version: '0.1.0',
+    ...overrides,
+  })
+
+  test('shows the stored events, with redacted values shown as hashes', async ({ page }) => {
+    await stubApiWithHistory(page, [storedEvent()])
+    const rows = page.getByTestId('captured-log-row')
+    await expect(rows).toHaveCount(1)
+    await expect(rows.first()).toContainText('cell.edit')
+    await expect(rows.first()).toContainText('addr=A1')
+    // The literal must not appear, and the thing that replaced it must.
+    await expect(rows.first()).toContainText('number:5')
+    await expect(rows.first()).not.toContainText('48250')
+  })
+
+  test('an empty history says so rather than showing nothing', async ({ page }) => {
+    // The state that used to be indistinguishable from a working pipeline.
+    await stubApiWithHistory(page, [])
+    await expect(page.getByTestId('captured-log-empty')).toBeVisible()
+  })
+
+  test('an unreachable server is reported, not rendered as an empty log', async ({ page }) => {
+    await page.route('**/v1/events/recent*', (route) => route.abort())
+    await page.route('**/v1/consent/me', (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ mode: 'structural', captures: true }),
+      }),
+    )
+    await page.route('**/v1/events', (route) =>
+      route.fulfill({ status: 200, contentType: 'application/json', body: '{}' }),
+    )
+    await page.addInitScript(
+      ({ key, consent }) => {
+        window.localStorage.clear()
+        window.localStorage.setItem(key, consent)
+      },
+      { key: CONSENT_KEY, consent: grantedConsent('structural') },
+    )
+    await page.goto('/')
+    await expect(page.locator('canvas')).toBeVisible({ timeout: 30_000 })
+    await page.locator('.toolbar__link').click()
+
+    await expect(page.getByTestId('captured-log-error')).toBeVisible()
+    await expect(page.getByTestId('captured-log-empty')).toHaveCount(0)
+  })
+})

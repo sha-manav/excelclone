@@ -130,6 +130,16 @@ export class GridlineApi {
     return call<ConsentRecord>('/v1/consent', { method: 'POST', body: record })
   }
 
+  /**
+   * `GET /v1/events/recent` — the caller's own most recent events.
+   *
+   * Not an admin endpoint: it is the user's own record, and a page that can
+   * only describe what *would* be captured is half a promise.
+   */
+  async recentEvents(limit = 50): Promise<ApiResponse<EventEnvelope[]>> {
+    return call<EventEnvelope[]>(`/v1/events/recent?limit=${limit}`, { method: 'GET' })
+  }
+
   /** `GET /v1/consent/me`. */
   async getConsent(): Promise<ApiResponse<ConsentRecord>> {
     return call<ConsentRecord>('/v1/consent/me', { method: 'GET' })

@@ -422,7 +422,7 @@ is worse than no gap list, because it is read as current.
 M0-M7, the parity track P0-P7, the environment track E1-E4, the agent track
 A1-A5 and the improvement loop C1-C4 are complete and green: `make ci` passes (fmt, clippy -D
 warnings, 671 Rust tests, the parity report check, the dataset replay check,
-`tsc -b`, the vite build, 206 web unit tests and 98 Playwright end-to-end
+`tsc -b`, the vite build, 210 web unit tests and 104 Playwright end-to-end
 tests). `./scripts/demo.sh` runs the whole seeded scenario end to end and
 `./scripts/dataset.sh` regenerates the training dataset.
 
@@ -489,3 +489,20 @@ Next, in the order they are worth doing:
    formulas) cost.
 6. **Charts.** A model, an authoring surface and a renderer; the biggest of
    the six and the least like the rest of the codebase.
+
+## Capture, made checkable
+
+Three things a user found by trying to answer "what have you got on me?".
+
+- An empty `.dev-token` — left behind by a run that died at the seeding step
+  months of commits ago — made every ingest 401, and a 401 is not retryable,
+  so the queue discarded each batch. `dev.sh` now requires a non-empty token
+  and writes through a temporary file.
+- The queue had counted permanently-rejected envelopes since M4 and nothing
+  rendered the number, so the app reported "capturing, 0 waiting" while
+  discarding everything. The chip now reads **not recording** and the
+  transparency page says so in words.
+- The transparency page described the rules and never showed the record.
+  `GET /v1/events/recent` and a table under *What has been captured* close
+  that: your own events, newest first, exactly as stored, with a redacted
+  literal shown as the hash that replaced it.

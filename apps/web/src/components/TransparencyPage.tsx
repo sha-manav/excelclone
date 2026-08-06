@@ -10,6 +10,7 @@
 
 import { useMemo } from 'react'
 import { captureVocabulary, type CaptureState, type PrivacyMode } from '../capture/capture'
+import { CapturedLog } from './CapturedLog'
 
 interface Props {
   mode: PrivacyMode
@@ -123,6 +124,10 @@ export function TransparencyPage({
           ))}
         </div>
       </section>
+
+      {/* Before the rules, not after: "what do you have on me" is the
+          question people actually arrive with, and it is answerable. */}
+      <CapturedLog refreshKey={rejected} />
 
       <section>
         <h2>The three modes</h2>

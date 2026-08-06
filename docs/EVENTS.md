@@ -162,3 +162,26 @@ whichever comes first, to `POST /v1/events`. Undelivered batches queue in
 memory and IndexedDB so a closed laptop or a dropped connection does not lose
 or duplicate events: delivery is at-least-once and the server deduplicates on
 `event_id`. Capture never blocks or slows the grid.
+
+## Reading it back
+
+Two endpoints, and the difference between them is who is asking.
+
+`GET /v1/events/recent?limit=N` returns **your own** most recent events,
+newest first, as stored. Any authenticated user may call it — it is their own
+record — and the transparency page at `/transparency` renders it under *What
+has been captured*, so the page can show what is held rather than only
+describing what would be. It is consent-gated by the same clause as the
+export: revoking hides what was already collected, because a history you can
+still read after revoking is a weaker promise than the one the notice makes.
+The limit is clamped to 200.
+
+`GET /v1/events/export?since=…&limit=…` is the admin-only JSONL export over
+every consenting actor. Both go through the same row-to-envelope conversion,
+so what a user reads on the transparency page is byte-for-byte what an
+exporter receives.
+
+A permanently rejected batch — a bad token, a malformed envelope — is
+discarded rather than retried forever, and the count is shown on the capture
+chip and the transparency page. "Capturing" with a rejection count above zero
+means nothing is being recorded.
