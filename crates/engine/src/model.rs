@@ -67,11 +67,12 @@ impl Cell {
 pub struct Sheet {
     pub id: SheetId,
     pub name: String,
+    #[serde(with = "a1_keys")]
     pub cells: HashMap<CellAddr, Cell>,
     /// Presentation, keyed by address and independent of whether the cell
     /// holds anything. Ordered so iteration — and therefore export and the
     /// state snapshot — is deterministic. Only non-default formats appear.
-    #[serde(default)]
+    #[serde(default, with = "a1_keys")]
     pub formats: BTreeMap<CellAddr, FormatId>,
     /// Merged regions; anchor (top-left) holds the value.
     pub merged: Vec<RangeAddr>,
@@ -388,6 +389,52 @@ impl Workbook {
 }
 
 /// Collapse a size map into `[first, last, pixels]` runs.
+/// Serialize a `CellAddr`-keyed map by its A1 spelling.
+///
+/// Two reasons, and the first is not optional: JSON map keys must be strings,
+/// and `CellAddr` is a struct, so a workbook containing one simply cannot be
+/// written as JSON without this. The second is that `"B7"` is what a person
+/// reading a stored snapshot expects to see, and a snapshot is the unit a
+/// dataset gets debugged in.
+///
+/// Keys are ordered by their A1 text rather than by address — so `A10`
+/// precedes `A2` — which is odd to read but deterministic, and determinism is
+/// the property the snapshot hash depends on.
+mod a1_keys {
+    use std::collections::BTreeMap;
+
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    use crate::addr::CellAddr;
+
+    pub fn serialize<'a, V, M, S>(map: &'a M, s: S) -> Result<S::Ok, S::Error>
+    where
+        V: Serialize + 'a,
+        S: Serializer,
+        &'a M: IntoIterator<Item = (&'a CellAddr, &'a V)>,
+    {
+        let by_a1: BTreeMap<String, &V> = map.into_iter().map(|(a, v)| (a.to_a1(), v)).collect();
+        by_a1.serialize(s)
+    }
+
+    pub fn deserialize<'de, V, M, D>(d: D) -> Result<M, D::Error>
+    where
+        V: Deserialize<'de>,
+        M: FromIterator<(CellAddr, V)>,
+        D: Deserializer<'de>,
+    {
+        let by_a1: BTreeMap<String, V> = BTreeMap::deserialize(d)?;
+        by_a1
+            .into_iter()
+            .map(|(k, v)| {
+                CellAddr::parse_a1(&k)
+                    .map(|a| (a, v))
+                    .ok_or_else(|| serde::de::Error::custom(format!("bad cell address `{k}`")))
+            })
+            .collect()
+    }
+}
+
 fn size_runs(sizes: &BTreeMap<u32, f64>) -> Vec<serde_json::Value> {
     let mut runs: Vec<(u32, u32, f64)> = Vec::new();
     for (&i, &px) in sizes {

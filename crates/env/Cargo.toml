@@ -1,0 +1,21 @@
+[package]
+name = "env"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "env"
+path = "src/lib.rs"
+
+[[bin]]
+name = "gridline-env"
+path = "src/main.rs"
+
+[dependencies]
+engine = { path = "../engine" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+sha2 = "0.10"
+hex = "0.4"

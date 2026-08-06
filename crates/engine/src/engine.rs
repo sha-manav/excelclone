@@ -714,6 +714,15 @@ impl Engine {
         self.redo_stack.clear();
     }
 
+    /// Cells whose formulas read this one, directly.
+    ///
+    /// Exposed for the environment's observation, which needs to say where a
+    /// change would propagate without being handed the graph itself — a
+    /// policy that could walk `DepGraph` could also mutate through it.
+    pub fn dependents_of(&self, key: CellKey) -> Vec<CellKey> {
+        self.deps.dependents_of(key)
+    }
+
     pub fn can_undo(&self) -> bool {
         !self.undo_stack.is_empty()
     }

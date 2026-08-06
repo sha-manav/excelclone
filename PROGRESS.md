@@ -262,6 +262,45 @@ Living checklist. Updated every session.
   not permanently mis-attributed) and context labels redact through the same
   Rust path.
 
+## E — Agent-training environment (in progress)
+
+### E1 — Deterministic environment core (complete)
+- [x] `crates/env`, depending on `engine` and depended on by nothing —
+      training-loop concerns stay out of the spreadsheet library
+- [x] Four methods: `reset(snapshot_id)`, `observe()`, `step(Action)`,
+      `grade(TaskSpec)`, plus `checkpoint()` and `diff_from_start()`
+- [x] Content-addressed snapshot store: SHA-256 over canonically sorted
+      JSON, in memory or backed by a directory, deduplicating by id
+- [x] `Sheet::cells` and `Sheet::formats` serialize keyed by A1, which is
+      what made a `Workbook` expressible as JSON at all
+- [x] `WorkbookObservation`: sheet extents, detected tables with headers and
+      column types, formulas grouped by R1C1 shape, dependency summary,
+      selection, visible errors, recent changes — each list capped, each cap
+      reported alongside the real total
+- [x] `StepResult` with the per-step state hash, the events, the cells
+      touched including those that only recalculated, and whether the step
+      budget is spent
+- [x] `gridline-env put | show | grade`, building starting workbooks by
+      replaying an action log
+
+### E2 — Task specs and graders (complete)
+- [x] Ten deterministic checks: exact display, number within tolerance,
+      formula shape, range filled, sums match (debits equal credits), sum
+      equals, no errors, forbidden ranges unchanged, sheets exist, defined
+      name refers to
+- [x] Shape comparison, so "fill this down" is one check and neither pasted
+      literals nor an unshifted formula passes it
+- [x] `incidental_changes` on every grade: the number that separates "did the
+      task" from "did the task and nothing else"
+- [x] Every failure names what was actually there
+- [x] 47 tests, adversarial rather than confirmatory — two of them pin bugs
+      the writing found: the `#REF!` collapse that made `CellFormula` accept
+      any up-and-left formula, and the sheet-name mismatch that counted
+      honest work as collateral damage
+
+### E3 — Trajectories and the JSONL dataset (not started)
+### E4 — Augmentation with replay validation (not started)
+
 ## Known gaps carried forward
 
 - Three measured parity differences are recorded rather than fixed, and are
@@ -308,24 +347,37 @@ is worse than no gap list, because it is read as current.
 
 ## Resume point
 
-M0-M7 and the parity track P0-P6 are complete and green: `make ci` passes
-(fmt, clippy -D warnings, 458 Rust tests, the parity report check, `tsc -b`,
-the vite build, 167 web unit tests and 54 Playwright end-to-end tests), and
-`./scripts/demo.sh` runs the whole seeded scenario end to end.
+M0-M7, the parity track P0-P7 and the first two steps of the environment
+track are complete and green: `make ci` passes (fmt, clippy -D warnings, 519
+Rust tests, the parity report check, `tsc -b`, the vite build, 167 web unit
+tests and 55 Playwright end-to-end tests), and `./scripts/demo.sh` runs the
+whole seeded scenario end to end.
 
 Parity stands at **99.1%** cell match over 320 settled cases, **100%**
 function coverage of the tier-1 and tier-2 target list, and 100% round-trip
 fidelity. Three differences are recorded rather than fixed and four questions
 are open; all seven are in `PARITY.md` with what Gridline currently answers.
 
+The environment can reset from a snapshot, observe, step and grade
+deterministically, and `gridline-env grade` scores a task from the shell.
+What it cannot yet do is record what happened.
+
 Next, in the order they are worth doing:
 
-1. **Read the conditional-formatting rules a file arrives with**, which needs
+1. **E3 — trajectories and the dataset.** A record carrying the instruction,
+   the initial snapshot id, the ordered observations and actions, the
+   per-step state hashes, the final diff, why it stopped and what the grader
+   said; written as JSONL with snapshots stored beside it by hash.
+2. **E4 — augmentation.** Take a validated trajectory, move the table, rename
+   the sheet, change the row count, insert an irrelevant column, vary the
+   literals, relocate the output; replay the original actions against each
+   variant, rewriting references, and keep only the ones the grader passes.
+3. **Read the conditional-formatting rules a file arrives with**, which needs
    a `<dxf>` parser with the fidelity `cellXfs` already has, and a rule
    editor for the kinds the toolbar does not offer.
-2. **Resolve defined names while building the dependency graph**, which takes
+4. **Resolve defined names while building the dependency graph**, which takes
    the volatility cost off every formula that uses one.
-3. **Incremental structural recalculation**, the other standing O(all
+5. **Incremental structural recalculation**, the other standing O(all
    formulas) cost.
-4. **Charts.** A model, an authoring surface and a renderer; the biggest of
-   the four and the least like the rest of the codebase.
+6. **Charts.** A model, an authoring surface and a renderer; the biggest of
+   the six and the least like the rest of the codebase.
