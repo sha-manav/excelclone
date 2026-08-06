@@ -406,11 +406,14 @@ Living checklist. Updated every session.
   the viewport, and the button freezes above the cursor; putting the cursor
   near the bottom of a long sheet and pressing it leaves almost nothing to
   scroll. Excel refuses; this does not.
-- **No pointing mode.** In Excel, arrowing while a formula is half-typed picks
-  the next operand off the grid. Here the arrows move the caret instead, in
-  both editing modes, which is the harmless reading — committing `=A1+` would
-  produce an error nobody asked for. Clicking a cell mid-formula likewise
-  commits rather than inserting its address.
+- **Pointing works with the mouse but not the arrow keys.** Clicking or
+  dragging on the grid while a formula expects an operand writes the reference
+  into it. Arrowing does not: in Excel the arrows pick the operand once a
+  formula is mid-expression, and here they still move the caret. Building it
+  means tracking a pointing cursor that is not the selection.
+- **Only whole cells and ranges can be pointed at.** Clicking a column header
+  mid-formula commits rather than writing `A:A`, because whole-column
+  references are a reference shape the pointing code does not construct.
 
 Two entries that stood here for several milestones were struck after checking
 them rather than after fixing them: the grid *does* paint merged ranges (M5)
@@ -422,7 +425,7 @@ is worse than no gap list, because it is read as current.
 M0-M7, the parity track P0-P7, the environment track E1-E4, the agent track
 A1-A5 and the improvement loop C1-C4 are complete and green: `make ci` passes (fmt, clippy -D
 warnings, 671 Rust tests, the parity report check, the dataset replay check,
-`tsc -b`, the vite build, 167 web unit tests and 66 Playwright end-to-end
+`tsc -b`, the vite build, 203 web unit tests and 86 Playwright end-to-end
 tests). `./scripts/demo.sh` runs the whole seeded scenario end to end and
 `./scripts/dataset.sh` regenerates the training dataset.
 
@@ -432,6 +435,16 @@ moves, losing focus commits too (the formula bar excepted), and the arrow keys
 commit-and-move when the edit started by typing while staying on the caret
 when it started with F2 or a double-click. `apps/web/e2e/editing.spec.ts`
 holds all eleven gestures; five of them failed before the change.
+
+Formula authoring followed, for the same reason: writing one meant knowing
+every function name by heart and typing every reference by hand. Pointing
+turns a click or a drag on the grid into a reference when the formula is
+mid-expression and leaves a finished one alone (`e2e/pointing.spec.ts`), and
+the completion menu offers the engine's own function list with signatures
+(`e2e/completion.spec.ts`). Both surfaces — the cell editor and the formula
+bar — do both. The `###########` in the same report was a third bug: General
+format is "as much precision as the column holds", and the renderer was
+hashing anything the engine printed too wide instead of dropping decimals.
 
 Parity stands at **99.1%** cell match over 320 settled cases, **100%**
 function coverage of the tier-1 and tier-2 target list, and 100% round-trip

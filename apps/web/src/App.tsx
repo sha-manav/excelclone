@@ -102,6 +102,12 @@ export default function App() {
     wb.engine && wb.ready
       ? wb.engine.cellInput(wb.activeSheet, active.row, active.col)
       : ''
+  // Fixed for the life of the build, and it crosses the wasm boundary, so it
+  // is read once the engine is up rather than on every render.
+  const functionNames = useMemo(
+    () => (wb.engine && wb.ready ? wb.engine.functionNames() : []),
+    [wb.engine, wb.ready],
+  )
 
   // The toolbar's pressed states come from the engine's view of the anchor,
   // re-read on every applied action rather than mirrored in React state.
@@ -903,6 +909,7 @@ export default function App() {
         cellInput={cellInput}
         editing={wb.editing !== null}
         editValue={wb.editing?.value ?? ''}
+        functionNames={functionNames}
         onChange={wb.updateEdit}
         onCommit={() => wb.commitEdit('down')}
         onCancel={wb.cancelEdit}
