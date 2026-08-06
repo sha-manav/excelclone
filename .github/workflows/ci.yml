@@ -27,6 +27,12 @@ jobs:
       # so the score in the repository is always the score the code earns.
       - name: Parity
         run: cargo run -q -p parity --bin gridline-parity -- report --check
+      # Replays every committed trajectory and checks each recorded state
+      # hash. A trajectory that stops replaying is either corrupt or the
+      # engine moved underneath it, and either way it has to stop being
+      # training data before it teaches something no longer true.
+      - name: Dataset
+        run: ./scripts/dataset.sh --check
 
   web:
     runs-on: ubuntu-latest

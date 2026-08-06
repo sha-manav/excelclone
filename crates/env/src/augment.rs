@@ -775,10 +775,8 @@ fn shift_action(
             sheet: s,
             range: Some(range),
             ..
-        } => {
-            if on(s) {
-                *range = shift_range(axis, at, count, *range);
-            }
+        } if on(s) => {
+            *range = shift_range(axis, at, count, *range);
         }
         // Everything else names no address, or names one this does not know
         // how to move — a defined name's `refers_to`, a conditional rule's

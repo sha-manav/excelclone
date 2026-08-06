@@ -518,13 +518,8 @@ pub fn sumproduct(ctx: &EvalCtx, args: &[Expr]) -> Value {
             }
             product *= match v {
                 Value::Number(n) => *n,
-                Value::Bool(b) => {
-                    if *b {
-                        1.0
-                    } else {
-                        0.0
-                    }
-                }
+                Value::Bool(true) => 1.0,
+                // FALSE, text and blanks all count as zero.
                 _ => 0.0,
             };
         }
