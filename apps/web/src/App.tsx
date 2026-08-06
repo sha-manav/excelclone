@@ -788,6 +788,7 @@ export default function App() {
         state={capture.state}
         dropped={capture.dropped}
         pending={capture.pending}
+        rejected={capture.rejected}
         durable={capture.durable}
         onChangeMode={capture.choose}
         onBack={() => navigate('/')}
@@ -876,6 +877,7 @@ export default function App() {
           mode={capture.mode}
           dropped={capture.dropped}
           pending={capture.pending}
+          rejected={capture.rejected}
           onToggle={capture.toggle}
         />
         <a

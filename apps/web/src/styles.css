@@ -316,6 +316,15 @@ button:disabled {
   border-style: dashed;
 }
 
+/* Capture is on but the server is refusing every batch — the state that used
+   to be indistinguishable from working. It reads as an error because it is
+   one: nothing is being recorded. */
+.capture-chip[data-state='rejected'] {
+  border-color: var(--error);
+  color: var(--error);
+  background: rgba(179, 38, 30, 0.1);
+}
+
 .capture-chip__warn {
   color: var(--error);
   font-variant-numeric: tabular-nums;
@@ -963,4 +972,14 @@ button.linkish {
      menu is narrower than both. */
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* The one status on the transparency page allowed to interrupt: everything
+   else there is a number, and a number cannot say "this is broken". */
+.transparency__alert {
+  margin: 8px 0;
+  padding: 10px 12px;
+  border-left: 3px solid var(--error);
+  background: rgba(179, 38, 30, 0.08);
+  border-radius: 4px;
 }

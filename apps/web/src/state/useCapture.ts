@@ -162,6 +162,14 @@ export interface CaptureApi {
   dropped: number
   /** Envelopes accepted but not yet acknowledged by the server. */
   pending: number
+  /**
+   * Envelopes the server refused outright — a bad token, a malformed batch.
+   *
+   * Distinct from `pending`, and the more urgent of the two: a queue that is
+   * backing up will drain when the server comes back, while a rejected one
+   * never will. Any number above zero means capture is not working.
+   */
+  rejected: number
   /** True until the user has answered the consent notice. */
   needsConsent: boolean
   /** Whether the backlog would survive a reload. */
@@ -274,6 +282,10 @@ export function useCapture({ engine, sheet, selection }: CaptureInput): CaptureA
     mode: stats.mode,
     dropped: stats.dropped,
     pending: queueState.pending,
+    // Batches the server refused outright. Surfaced rather than kept as an
+    // internal counter: a permanent rejection means capture is not working at
+    // all, and "capturing, 0 waiting" is a worse lie than any error message.
+    rejected: queueState.discarded,
     needsConsent: consent === null,
     durable: queueState.durable,
     toggle,

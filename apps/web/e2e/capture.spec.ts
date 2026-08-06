@@ -296,3 +296,87 @@ test('every action in a batch is captured, not just the first', async ({ page, c
     .filter((e) => e.action === 'cell.edit')
   expect(edits.length, 'the batch was captured as fewer events than it had').toBe(4)
 })
+
+test.describe('a rejected batch is visible', () => {
+  /**
+   * The failure this exists for: a blank auth token.
+   *
+   * Every ingest answers 401, a 401 is not retryable, so the queue discards
+   * the batch — and the app went on reporting "capturing, 0 waiting" while
+   * one hundred percent of events were being thrown away. There was no
+   * backlog to notice and no error anywhere in the UI. The only way to find
+   * out was to query the database.
+   */
+  async function stubRejectingApi(page: Page) {
+    await page.route('**/v1/**', async (route) => {
+      const url = route.request().url()
+      if (url.includes('/v1/consent/me')) {
+        return route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ mode: 'full', captures: true }),
+        })
+      }
+      return route.fulfill({
+        status: 401,
+        contentType: 'application/json',
+        body: JSON.stringify({ error: 'missing or unknown bearer token' }),
+      })
+    })
+  }
+
+  test('the chip stops claiming to capture when the server refuses', async ({ page }) => {
+    await stubRejectingApi(page)
+    await page.addInitScript(
+      ({ key, consent }) => {
+        window.localStorage.clear()
+        window.localStorage.setItem(key, consent)
+      },
+      { key: CONSENT_KEY, consent: grantedConsent('full') },
+    )
+    await page.goto('/')
+    await expect(page.locator('canvas')).toBeVisible({ timeout: 30_000 })
+
+    await clickCell(page, 0, 0)
+    await typeInCell(page, '42')
+
+    const chip = page.getByTestId('capture-chip')
+    await expect(chip).toHaveAttribute('data-state', 'rejected', { timeout: 15_000 })
+    await expect(chip).toContainText('not recording')
+    await expect(page.getByTestId('capture-rejected')).toBeVisible()
+  })
+
+  test('the transparency page says so in words', async ({ page }) => {
+    await stubRejectingApi(page)
+    await page.addInitScript(
+      ({ key, consent }) => {
+        window.localStorage.clear()
+        window.localStorage.setItem(key, consent)
+      },
+      { key: CONSENT_KEY, consent: grantedConsent('full') },
+    )
+    await page.goto('/')
+    await expect(page.locator('canvas')).toBeVisible({ timeout: 30_000 })
+    await clickCell(page, 0, 0)
+    await typeInCell(page, '42')
+    await expect(page.getByTestId('capture-rejected')).toBeVisible({ timeout: 15_000 })
+
+    await page.locator('.toolbar__link').click()
+    const alert = page.getByTestId('transparency-rejected')
+    await expect(alert).toBeVisible()
+    await expect(alert).toContainText('Nothing is being recorded')
+  })
+
+  test('a healthy server leaves the chip alone', async ({ page }) => {
+    // The other half: this must not fire on an ordinary session, or it becomes
+    // one more warning nobody reads.
+    await gotoFresh(page, { consent: grantedConsent('full') })
+    await expect(page.locator('canvas')).toBeVisible({ timeout: 30_000 })
+    await clickCell(page, 0, 0)
+    await typeInCell(page, '42')
+    await page.waitForTimeout(6_000)
+
+    await expect(page.getByTestId('capture-chip')).toHaveAttribute('data-state', 'capturing')
+    await expect(page.getByTestId('capture-rejected')).toHaveCount(0)
+  })
+})

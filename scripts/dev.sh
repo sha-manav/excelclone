@@ -59,11 +59,28 @@ fi
 echo "==> building the server"
 cargo build -p server
 
-if [ ! -f .dev-token ]; then
+# A token file that exists but is *empty* is worse than one that is missing:
+# the web app sends `Authorization: Bearer ` with every request, the server
+# answers 401, and a 401 is not retryable — so the capture queue discards the
+# batch and the app goes on reporting "capturing, 0 waiting" while every event
+# is thrown away. That is exactly what happened: an earlier run died at this
+# step (the two-binary ambiguity, fixed since), and `> .dev-token` had already
+# created the file, so the `-f` guard never let it be seeded again.
+#
+# So: test for a non-empty token, and write through a temporary file so a
+# failed seed leaves nothing behind rather than a booby trap.
+if [ ! -s .dev-token ]; then
   echo "==> seeding a development user"
   # The token is printed once; keep it where the web app can read it.
   cargo run -q -p server -- --seed-user --admin | tee /dev/stderr \
-    | awk '/^token:/ { print $2 }' > .dev-token
+    | awk '/^token:/ { print $2 }' > .dev-token.tmp
+  if [ -s .dev-token.tmp ]; then
+    mv .dev-token.tmp .dev-token
+  else
+    rm -f .dev-token.tmp
+    echo "error: seeding produced no token; capture would silently fail" >&2
+    exit 1
+  fi
 fi
 TOKEN="$(cat .dev-token)"
 
