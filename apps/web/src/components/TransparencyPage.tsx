@@ -19,6 +19,8 @@ interface Props {
   pending: number
   /** Envelopes the server refused; above zero, capture is not working. */
   rejected: number
+  /** Why this browser has no account on the server, or null when it has one. */
+  registration: string | null
   durable: boolean
   onChangeMode: (mode: PrivacyMode) => void
   onBack: () => void
@@ -53,6 +55,7 @@ export function TransparencyPage({
   dropped,
   pending,
   rejected,
+  registration,
   durable,
   onChangeMode,
   onBack,
@@ -93,7 +96,17 @@ export function TransparencyPage({
         {/* A rejection is the one status that has to interrupt: the numbers
             below it all read as healthy while nothing is being recorded, which
             is what a blank auth token looks like from here. */}
-        {rejected > 0 && (
+        {/* Checked before `rejected` because it happens earlier: with no
+            account there is no request to refuse, so the rejection count sits
+            at zero and every number on this page reads as healthy. */}
+        {registration !== null && (
+          <p className="transparency__alert" data-testid="transparency-unregistered">
+            <strong>Nothing is being recorded.</strong> This browser has no account on the
+            Gridline server, so it cannot send anything: {registration}. Events are being
+            discarded rather than queued. Nothing you have typed has left this device.
+          </p>
+        )}
+        {registration === null && rejected > 0 && (
           <p className="transparency__alert" data-testid="transparency-rejected">
             <strong>Nothing is being recorded.</strong> The server refused {rejected} event
             {rejected === 1 ? '' : 's'}, so they were discarded rather than queued. That usually

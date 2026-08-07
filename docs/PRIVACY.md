@@ -103,6 +103,27 @@ covered by a test.
 | Transparency page | `/transparency` | Renders the live action vocabulary and your current mode, generated from the same document the code follows. |
 | Revoke | Settings | Stops capture and excludes you from all future exports. |
 
+## Accounts
+
+There is no sign-in. On a hosted deployment the app asks the server for an
+anonymous account the first time it needs one — `POST /v1/register` returns an
+opaque id and a token, and that is the whole record. No email address, no
+password, no name, no profile; the database stores the token's SHA-256 and
+never the token, so a dump of the `users` table cannot be replayed against the
+API.
+
+**Registering is not consenting.** A new account arrives with no consent
+record, which is exactly what makes the notice appear, and the server refuses
+events from an actor with no consent on file. Being able to speak to the server
+and having agreed to send it anything are two different things, and the code
+keeps them apart.
+
+A deployment that has not set `GRIDLINE_OPEN_REGISTRATION` refuses to register
+anyone, and the app says so — the chip reads **no account** and the
+transparency page states that nothing is being recorded. Silence would have
+been the easier thing to build and is the failure this project has already
+shipped once.
+
 ## Retention and access
 
 Events are stored in Gridline's own SQLite database on Gridline's own server.
@@ -125,3 +146,9 @@ Claims in this document map to code and tests:
 - No third-party telemetry — the web app's dependency manifest contains no
   analytics SDK, and the only network destination in the client is the
   Gridline API.
+- Registration grants nothing — a server test registers an account and asserts
+  both that `GET /v1/consent/me` reports no mode and that an event sent by that
+  account is refused and not written.
+- A build with no server behind it asks for nothing — `VITE_STANDALONE=1`
+  removes capture, the notice, this page and routines, and an end-to-end test
+  drives the *built bundle* and fails on a single request to the API.

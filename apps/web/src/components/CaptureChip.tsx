@@ -17,6 +17,13 @@ interface Props {
   pending: number
   /** Envelopes the server refused. Above zero means capture is not working. */
   rejected: number
+  /**
+   * Why this browser has no account on the server, or null when it has one.
+   *
+   * Outranks `rejected` because it comes first: with no credential there is
+   * nothing to reject, so the count stays at zero while nothing works.
+   */
+  registration: string | null
   onToggle: () => void
 }
 
@@ -32,22 +39,36 @@ const LABEL: Record<CaptureState, string> = {
   off: 'capture off',
 }
 
-export function CaptureChip({ state, mode, dropped, pending, rejected, onToggle }: Props) {
+export function CaptureChip({
+  state,
+  mode,
+  dropped,
+  pending,
+  rejected,
+  registration,
+  onToggle,
+}: Props) {
   // A rejection outranks the nominal state. Saying "capturing" while the
   // server is refusing every batch is the one thing this chip exists not to
   // do — and it is precisely what a blank auth token looks like: no backlog,
   // no error, and nothing arriving.
-  const broken = rejected > 0 && state === 'capturing'
+  //
+  // A failed registration outranks both, and is checked first because it sits
+  // upstream of them: no account means no request to reject, so `rejected`
+  // stays at zero and the healthy-looking case is the broken one again.
+  const broken = registration !== null || (rejected > 0 && state === 'capturing')
 
   const parts = [`Privacy mode: ${mode}.`]
   parts.push(
-    state === 'off'
-      ? 'Nothing is captured and nothing is transmitted.'
-      : broken
-        ? 'The server is refusing these events, so nothing is being recorded. Check the API server and the auth token.'
-        : state === 'paused'
-          ? 'Capture is paused. Click to resume.'
-          : 'Click to pause capture instantly.',
+    registration !== null
+      ? `This browser has no account on the server, so nothing can be recorded: ${registration}`
+      : state === 'off'
+        ? 'Nothing is captured and nothing is transmitted.'
+        : broken
+          ? 'The server is refusing these events, so nothing is being recorded. Check the API server and the auth token.'
+          : state === 'paused'
+            ? 'Capture is paused. Click to resume.'
+            : 'Click to pause capture instantly.',
   )
   if (pending > 0) parts.push(`${pending} event${pending === 1 ? '' : 's'} waiting to send.`)
   if (rejected > 0) parts.push(`${rejected} event${rejected === 1 ? '' : 's'} rejected by the server.`)
@@ -62,9 +83,11 @@ export function CaptureChip({ state, mode, dropped, pending, rejected, onToggle 
       data-mode={mode}
       title={parts.join(' ')}
       aria-label={
-        broken
-          ? `Capture failing, ${rejected} events rejected, privacy mode ${mode}`
-          : `Capture ${LABEL[state]}, privacy mode ${mode}`
+        registration !== null
+          ? `Capture unavailable, no account on the server, privacy mode ${mode}`
+          : broken
+            ? `Capture failing, ${rejected} events rejected, privacy mode ${mode}`
+            : `Capture ${LABEL[state]}, privacy mode ${mode}`
       }
       aria-pressed={state === 'paused'}
       onClick={onToggle}
@@ -73,6 +96,11 @@ export function CaptureChip({ state, mode, dropped, pending, rejected, onToggle 
         {broken ? '!' : GLYPH[state]}
       </span>
       <span className="capture-chip__label">{broken ? 'not recording' : LABEL[state]}</span>
+      {registration !== null && (
+        <span className="capture-chip__warn" data-testid="capture-unregistered">
+          no account
+        </span>
+      )}
       {rejected > 0 && (
         <span className="capture-chip__warn" data-testid="capture-rejected">
           {rejected} rejected

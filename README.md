@@ -71,10 +71,41 @@ site is at `https://<owner>.github.io/<repo>/`. Any static host works the same
 way — Cloudflare Pages, Netlify, S3 — the only setting that matters is
 `VITE_BASE`, which must match the subpath the site is served from.
 
-Hosting the *whole* thing, capture included, is a different job: the axum
-server and its SQLite database need somewhere to run and something to back up,
-and then you are collecting other people's events and owe them the consent
-flow for real.
+### Hosting it with capture on
+
+The published site is standalone *until an API exists to point it at*, and the
+switch is one repository variable rather than an edit — a capture build served
+against a server that is not there would show every visitor a consent notice
+and then drop their answer.
+
+```sh
+cd deploy && fly launch --copy-config --no-deploy   # names the app, makes the volume
+fly deploy
+```
+
+`deploy/Dockerfile` builds only the API — no Node, no wasm, no front end — and
+`deploy/fly.toml` mounts a volume at `/data` for the SQLite file. Fly is not
+special here; anything that can run a container with a persistent directory
+works. Two settings decide who may talk to it, both off or permissive by
+default so a local checkout is never accidentally a public one:
+
+| Variable | Effect |
+| --- | --- |
+| `GRIDLINE_OPEN_REGISTRATION=1` | `POST /v1/register` mints an anonymous account for anyone who asks. Without it, a visitor has no way to get a token and every batch 401s. |
+| `GRIDLINE_ALLOWED_ORIGINS` | Comma-separated origins the browser may call from. Unset means permissive, which is right for `localhost` and wrong for a public deployment. |
+
+Then set the repository variable `API_URL` (Settings → Secrets and variables →
+Actions → Variables) to the deployed base URL, e.g.
+`https://gridline-api.fly.dev`. The next Pages run publishes a capture-enabled
+build instead of the standalone one, and says which in the job log.
+
+What visitors get: an anonymous account — an opaque id, no email, no password —
+and the consent notice, unanswered. Registering is not consent; the server
+holds no consent record for a new account, so nothing is captured until they
+choose `full` or `structural`, and `docs/PRIVACY.md` applies to them exactly as
+written. If registration fails, the chip says **no account** and the
+transparency page says nothing is being recorded, rather than showing a
+reassuring zero.
 
 ## Layout
 

@@ -1,0 +1,53 @@
+# Fly.io configuration for the Gridline API.
+#
+# Chosen over the alternatives for one reason: SQLite needs a disk that
+# survives a restart, and Fly gives a volume on the free-ish tier without a
+# managed Postgres in front of it. Nothing here is Fly-specific beyond the
+# volume mount and the health check — the image is a plain Dockerfile and runs
+# anywhere that can mount a directory.
+#
+# `app` has to be unique across Fly, so `fly launch` will rename it. That is
+# expected; the only thing that must then be kept in step is the origin in
+# GRIDLINE_ALLOWED_ORIGINS and the API_URL variable on the GitHub repository.
+
+app = "gridline-api"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "8787"
+  # A public deployment is the whole point: visitors have no way to obtain a
+  # token otherwise, and the app would 401 on every batch. Off by default in
+  # the code — see `crates/server/src/config.rs` — so this line is the opt-in
+  # and deleting it closes the door again.
+  GRIDLINE_OPEN_REGISTRATION = "1"
+  # Only the published site may spend a visitor's token. Replace with your own
+  # Pages origin; a wrong value here fails closed (the browser refuses), which
+  # is the right direction to fail in.
+  GRIDLINE_ALLOWED_ORIGINS = "https://sha-manav.github.io"
+
+[mounts]
+  source = "gridline_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8787
+  force_https = true
+  # SQLite is a single file on a single volume, so a second machine writing to
+  # its own copy would silently fork the database. One machine, always.
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "10s"
+    method = "GET"
+    path = "/health"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

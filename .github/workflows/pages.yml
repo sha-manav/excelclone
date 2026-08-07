@@ -48,15 +48,30 @@ jobs:
         working-directory: apps/web
         run: npm install --no-audit --no-fund
 
-      - name: Build the standalone app
+      # Two builds from one tree, chosen by whether an API has been deployed.
+      #
+      # `vars.API_URL` unset — the state this repository is in until somebody
+      # runs `fly deploy` — produces the standalone build: no capture, no
+      # consent notice, no backend. Set, it produces the connected build.
+      # Deciding here rather than in the source means the published site can
+      # never be a capture build pointed at a server that does not exist,
+      # which would ask every visitor for a decision and then drop it.
+      - name: Build the app
         working-directory: apps/web
         env:
-          VITE_STANDALONE: '1'
+          VITE_STANDALONE: ${{ vars.API_URL == '' && '1' || '0' }}
+          VITE_API_URL: ${{ vars.API_URL }}
           # A project site lives at `/<repo>/`, so every asset URL needs that
           # prefix. `github.event.repository.name` keeps it right through a
           # rename or a fork.
           VITE_BASE: /${{ github.event.repository.name }}/
-        run: npm run build
+        run: |
+          if [ -z "${VITE_API_URL}" ]; then
+            echo "::notice::No API_URL repository variable — publishing the standalone build."
+          else
+            echo "::notice::Publishing a capture-enabled build against ${VITE_API_URL}."
+          fi
+          npm run build
 
       # GitHub Pages has no rewrite rules, so a deep link would 404 on reload.
       # Serving index.html as the 404 page makes the app's own routing answer

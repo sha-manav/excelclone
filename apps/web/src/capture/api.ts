@@ -12,6 +12,7 @@
 
 import type { EventEnvelope, PrivacyMode } from './capture'
 import type { SendResult } from './queue'
+import { ensureIdentity, invalidateIdentity } from './identity'
 
 export const TOKEN_KEY = 'gridline.token'
 
@@ -146,7 +147,24 @@ async function call<T>(
   return { ok: true, status: res.status, data, error: null, retryable: false }
 }
 
+export interface RegisterResponse {
+  token: string
+  actor_id: string
+  /** Present on a refusal, since `call` parses the error body too. */
+  error?: string
+}
+
 export class GridlineApi {
+  /**
+   * `POST /v1/register` — an anonymous account, for a visitor who has none.
+   *
+   * Unauthenticated by nature; `call` simply omits the header when there is
+   * no token. See `capture/identity.ts` for when this is reached.
+   */
+  async register(): Promise<ApiResponse<RegisterResponse>> {
+    return call<RegisterResponse>('/v1/register', { method: 'POST' })
+  }
+
   /** `POST /v1/events`. Idempotent server-side on `event_id`. */
   async postEvents(events: EventEnvelope[]): Promise<ApiResponse<IngestAck>> {
     return call<IngestAck>('/v1/events', { method: 'POST', body: { events } })
@@ -191,10 +209,36 @@ export class GridlineApi {
     )
   }
 
-  /** Adapter for `EventQueue`, which only cares whether to retry. */
+  /**
+   * Adapter for `EventQueue`, which only cares whether to retry.
+   *
+   * Two things happen here that `postEvents` alone would get wrong, and both
+   * are the difference between holding a batch and losing it:
+   *
+   * 1. A batch sent with no credentials is refused permanently, so the queue
+   *    would discard it. Registering first — and reporting "not yet" as
+   *    *retryable* while the server is unreachable — keeps the backlog.
+   * 2. A 401 means the stored token is dead. Discarding the batch on the
+   *    strength of a credential the client can simply replace is the exact
+   *    silent loss this pipeline has already shipped once.
+   */
   sender(): (batch: EventEnvelope[]) => Promise<SendResult> {
     return async (batch) => {
+      const identity = await ensureIdentity()
+      if (identity.kind !== 'ready') {
+        return {
+          ok: false,
+          // A refusal is final and the batch is genuinely undeliverable; the
+          // discard is then surfaced on the chip rather than swallowed.
+          retryable: identity.kind === 'pending',
+          error: identity.reason,
+        }
+      }
+
       const res = await this.postEvents(batch)
+      if (res.status === 401 && invalidateIdentity()) {
+        return { ok: false, retryable: true, error: 'credentials replaced; retrying' }
+      }
       return { ok: res.ok, retryable: res.retryable, error: res.error ?? undefined }
     }
   }

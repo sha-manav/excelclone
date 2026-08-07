@@ -535,3 +535,33 @@ decided by whichever started first.
 `crates/engine/src/functions/math.rs` that Rust 1.97 added and the pinned
 `dtolnay/rust-toolchain@stable` picked up. The fix is on this branch, so
 merging clears it.
+
+## Capture on the hosted copy
+
+The published site can now be the connected app rather than the standalone
+one, and switching is a repository variable (`API_URL`) rather than a code
+change — until an API is deployed, Pages keeps publishing exactly what it
+publishes today.
+
+- `POST /v1/register` mints an anonymous account: an opaque id and a token,
+  no email, no password. Off unless `GRIDLINE_OPEN_REGISTRATION=1`, so a
+  local checkout is never accidentally a public one.
+- **Registering is not consenting.** A new account has no consent record, the
+  notice appears, and the server refuses its events until it is answered.
+- CORS is an allowlist when `GRIDLINE_ALLOWED_ORIGINS` names one, permissive
+  otherwise so the dev loop is unchanged. The start-up line states which.
+- Registration is limited to 5/hour per client address, ingest to 120/minute
+  per user. 429 is retryable client-side, so a limited batch is held rather
+  than dropped.
+- The client registers itself on first load, exactly once across concurrent
+  callers, and replaces a token the server has stopped recognising instead of
+  presenting it forever.
+- When it cannot get an account the chip reads **no account** and the
+  transparency page says nothing is being recorded — checked *before* the
+  rejection count, which stays at zero in that state and would otherwise read
+  as healthy.
+- `deploy/Dockerfile` and `deploy/fly.toml`: API only, SQLite on a mounted
+  volume, one machine.
+
+Server tests 25 → 32, web tests 215 → 228, e2e 86 passing. The hosted flow was
+also driven end to end against the release binary rather than only the router.

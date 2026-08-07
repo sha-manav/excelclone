@@ -18,6 +18,7 @@ import {
   type PrivacyMode,
 } from '../capture/capture'
 import { EventQueue, openQueueStorage } from '../capture/queue'
+import { ensureIdentity } from '../capture/identity'
 import { isStandalone } from '../standalone'
 import {
   api,
@@ -190,6 +191,14 @@ export interface CaptureApi {
    * never will. Any number above zero means capture is not working.
    */
   rejected: number
+  /**
+   * Why this browser has no usable credential, or null when it has one.
+   *
+   * Separate from `rejected`, which counts batches the server refused. This
+   * fires earlier and is more fundamental: without an account there is
+   * nothing to refuse, and the queue would fill up behind a wall.
+   */
+  registration: string | null
   /** True until the user has answered the consent notice. */
   needsConsent: boolean
   /** Whether the backlog would survive a reload. */
@@ -213,6 +222,7 @@ export function useCapture({ engine, sheet, selection }: CaptureInput): CaptureA
   const [stats, setStats] = useState(() => controller.stats())
   const [queueState, setQueueState] = useState(() => queue.state())
   const [consent, setConsent] = useState<ConsentRecord | null>(() => readConsent())
+  const [registration, setRegistration] = useState<string | null>(null)
 
   useEffect(() => controller.subscribe(setStats), [controller])
   useEffect(() => queue.subscribe(setQueueState), [queue])
@@ -245,14 +255,34 @@ export function useCapture({ engine, sheet, selection }: CaptureInput): CaptureA
     }
   }, [controller])
 
-  // Reconcile with the server's record when there is a session to ask about.
-  // Without a token there is nobody to ask, and asking anyway would be a
-  // network call the user never authorised. A standalone build has no server
-  // at all, so it has nothing to reconcile with and stays at `off`.
+  // Get a credential, then reconcile with the server's record.
+  //
+  // On a hosted deployment a first-time visitor has no token, so this is also
+  // where the anonymous account is created. Registering is not consent: the
+  // account arrives with no consent record, which is exactly what makes the
+  // notice appear. A standalone build has no server at all, so it skips both
+  // and stays at `off`.
   useEffect(() => {
-    if (isStandalone() || !authToken()) return
+    if (isStandalone()) return
     let cancelled = false
-    void api.getConsent().then((res) => {
+    void ensureIdentity().then((identity) => {
+      if (cancelled) return
+      if (identity.kind !== 'ready') {
+        // Surfaced rather than logged. Without a credential nothing can be
+        // captured, and a chip reading "capturing" would be a lie.
+        setRegistration(identity.reason)
+        return
+      }
+      setRegistration(null)
+      if (identity.actorId) {
+        writeLocal(ACTOR_KEY, identity.actorId)
+        controller.setActorId(identity.actorId)
+      }
+      return reconcileConsent()
+    })
+
+    async function reconcileConsent() {
+      const res = await api.getConsent()
       if (cancelled || !res.ok) return
       // The server tells us who it thinks we are; adopt that before sending
       // anything, or every envelope is rejected as a mismatched actor.
@@ -269,7 +299,8 @@ export function useCapture({ engine, sheet, selection }: CaptureInput): CaptureA
       setConsent(record)
       if (record.salt) controller.setSalt(record.salt)
       controller.setMode(record.mode, record.consent_text_version)
-    })
+    }
+
     return () => {
       cancelled = true
     }
@@ -307,6 +338,7 @@ export function useCapture({ engine, sheet, selection }: CaptureInput): CaptureA
     // internal counter: a permanent rejection means capture is not working at
     // all, and "capturing, 0 waiting" is a worse lie than any error message.
     rejected: queueState.discarded,
+    registration,
     needsConsent: consent === null,
     durable: queueState.durable,
     toggle,
