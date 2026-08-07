@@ -9,12 +9,24 @@
 # `app` has to be unique across Fly, so `fly launch` will rename it. That is
 # expected; the only thing that must then be kept in step is the origin in
 # GRIDLINE_ALLOWED_ORIGINS and the API_URL variable on the GitHub repository.
+#
+# RUN THIS FROM THE REPOSITORY ROOT, not from `deploy/`:
+#
+#     fly launch --config deploy/fly.toml --copy-config --no-deploy
+#     fly deploy  --config deploy/fly.toml
+#
+# The build context is the directory you run from, and the Dockerfile copies
+# `Cargo.toml` and `crates/` — which are at the root. From inside `deploy/`
+# those paths do not exist and the build fails on the first COPY; Docker
+# forbids `../` in a COPY, so there is no version of this that works from
+# here. `.dockerignore` at the root keeps the context to about 2 MB.
 
 app = "gridline-api"
 primary_region = "iad"
 
 [build]
-  dockerfile = "Dockerfile"
+  # Relative to the repository root, for the same reason.
+  dockerfile = "deploy/Dockerfile"
 
 [env]
   PORT = "8787"

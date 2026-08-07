@@ -1,0 +1,17 @@
+# The API image needs three things from this repository. Everything else is
+# upload time and nothing else — `target/` alone is tens of gigabytes, and the
+# build context is sent to the daemon (or to Fly's remote builder) in full
+# before the first instruction runs.
+#
+# Deny-all-then-allow rather than a list of exclusions, so a directory added
+# next year does not silently join the upload.
+*
+!Cargo.toml
+!Cargo.lock
+!crates
+
+# Build output that lives *inside* an allowed directory has to be named again.
+crates/**/target
+# wasm-pack's output. The image builds no front end, and this is 3.5 MB of
+# artefact that the server has no use for.
+crates/*/pkg

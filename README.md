@@ -78,9 +78,13 @@ switch is one repository variable rather than an edit — a capture build served
 against a server that is not there would show every visitor a consent notice
 and then drop their answer.
 
+Both commands run **from the repository root**, not from `deploy/` — the build
+context is the directory you run from, and the Dockerfile copies `Cargo.toml`
+and `crates/`, which live at the root:
+
 ```sh
-cd deploy && fly launch --copy-config --no-deploy   # names the app, makes the volume
-fly deploy
+fly launch --config deploy/fly.toml --copy-config --no-deploy  # names the app, makes the volume
+fly deploy --config deploy/fly.toml
 ```
 
 `deploy/Dockerfile` builds only the API — no Node, no wasm, no front end — and
