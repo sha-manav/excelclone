@@ -822,6 +822,53 @@ export function overflowHashes(available: number, hashWidth: number): string {
   return '#'.repeat(Math.min(32, Math.max(1, n)))
 }
 
+/**
+ * Round a General-format number until it fits the column, the way Excel does.
+ *
+ * General is not a fixed format — it is "as much precision as there is room
+ * for". The engine prints the full 15 significant digits because that is the
+ * answer; deciding how many of them a 100px column can show is a question only
+ * the renderer can answer, and it has to be re-answered every time the column
+ * is resized.
+ *
+ * Without this, `=AVERAGE(A1:A3)` over 1, 3 and 4 renders as `###########` in
+ * a default-width column, because 2.66666666666667 is sixteen characters wide.
+ * Hashes are meant to say "this column is too narrow for this number", and a
+ * number a user would happily read as 2.666667 does not deserve them.
+ *
+ * Returns `null` when even the fully rounded form will not fit, which is the
+ * genuine too-narrow case the hashes are for.
+ */
+export function fitGeneralNumber(
+  text: string,
+  available: number,
+  measure: (s: string) => number,
+): string | null {
+  const dot = text.indexOf('.')
+  // Nothing to give up: integers, scientific notation and anything that is not
+  // a plain decimal go straight to hashes.
+  if (dot < 0 || text.includes('e') || text.includes('E')) return null
+  const n = Number(text)
+  if (!Number.isFinite(n)) return null
+
+  const decimals = text.length - dot - 1
+  // Start one digit shorter than what did not fit and walk down. `toFixed`
+  // rounds rather than truncates, so the last digit shown is the right one.
+  for (let d = decimals - 1; d >= 1; d -= 1) {
+    const candidate = trimZeros(n.toFixed(d))
+    if (measure(candidate) <= available) return candidate
+  }
+  // No decimals at all — Excel still shows the rounded integer if it fits.
+  const whole = n.toFixed(0)
+  return measure(whole) <= available ? whole : null
+}
+
+/** Drop the trailing zeros `toFixed` pads with, and a bare trailing point. */
+function trimZeros(s: string): string {
+  if (!s.includes('.')) return s
+  return s.replace(/0+$/, '').replace(/\.$/, '')
+}
+
 export function clampColWidth(w: number): number {
   return Math.max(MIN_COL_WIDTH, Math.round(w))
 }

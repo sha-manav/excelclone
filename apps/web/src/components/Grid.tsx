@@ -14,17 +14,28 @@
  * All coordinate math lives in ./grid-geometry so it can be unit tested.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
 import type {
+  FocusEvent as ReactFocusEvent,
   JSX,
   KeyboardEvent as ReactKeyboardEvent,
   MouseEvent as ReactMouseEvent,
 } from 'react'
 import { KIND_ERROR, KIND_NUMBER } from '../engine/bridge'
 import type { CellFormat, EngineHandle, Viewport } from '../engine/bridge'
-import { colLetters, range as mkRange, rangeContains } from '../engine/actions'
+import { colLetters, range as mkRange, rangeA1, rangeContains } from '../engine/actions'
 import type { Addr, Axis, Range } from '../engine/actions'
 import type { EditState, MoveDirection, Selection } from '../state/useWorkbook'
+import { applyPointing, bandRef, pointingSlot } from './formula-pointing'
+import type { PointingSlot } from './formula-pointing'
+import { FunctionMenu, useCompletion } from './FunctionMenu'
 import {
   MergeMap,
   OVERSCAN,
@@ -44,6 +55,7 @@ import {
   hitTest,
   lastVisibleRow,
   moveWithMerges,
+  fitGeneralNumber,
   overflowHashes,
   pageJump,
   pointInRect,
@@ -111,6 +123,11 @@ const COLOR_TEXT = '#1a1a1a'
 const COLOR_ERROR = '#b3261e'
 const COLOR_ACCENT = '#1e7e45'
 const COLOR_WASH = 'rgba(30, 126, 69, 0.1)'
+// The range a formula is currently pointing at. Deliberately not the accent:
+// while pointing, the selection outline and the pointed outline are on screen
+// at once and mean different things.
+const COLOR_POINT = '#1a73e8'
+const COLOR_POINT_WASH = 'rgba(26, 115, 232, 0.12)'
 const COLOR_HEADER_BG = '#f5f5f5'
 const COLOR_HEADER_ACTIVE = '#dbeae1'
 const COLOR_HEADER_TEXT = '#555555'
@@ -170,8 +187,26 @@ function fillDownTarget(L: Latest): Range | null {
   return { start: src.start, end: { row: end, col: src.end.col } }
 }
 
+/**
+ * What a point left behind: the span it wrote, and the text it wrote it into.
+ *
+ * Both are needed to point again. The slot has to widen to cover the reference
+ * just written, or the next point appends instead of replacing; the value has
+ * to be carried because the next point may arrive before React has re-rendered
+ * with the last one.
+ */
+interface Pointed {
+  slot: PointingSlot
+  value: string
+}
+
 type Drag =
   | { kind: 'select'; anchor: Addr; last: Addr }
+  // Pointing carries what the last point produced, so every mouse move
+  // rewrites the *same* span rather than appending a reference per pixel.
+  | { kind: 'point'; pointed: Pointed; anchor: Addr; last: Addr }
+  // The same, dragged across headers: `A:C` rather than `A1:C1000`.
+  | { kind: 'point-band'; axis: 'col' | 'row'; pointed: Pointed; anchor: number; last: number }
   | { kind: 'fill'; source: Range; target: Range }
   | { kind: 'resize'; col: number; startX: number; startWidth: number; width: number }
   | { kind: 'resize-row'; row: number; startY: number; startHeight: number; height: number }
@@ -192,11 +227,31 @@ interface Latest {
   onSelect(sel: Selection): void
   onFill(source: Range, target: Range): void
   onStartEdit(addr: Addr, initial?: string): void
+  onCommitEdit(move: MoveDirection): void
+  onEditValueChange(value: string): void
   onContextMenu(addr: Addr, clientX: number, clientY: number): void
   onResize(axis: Axis, at: number, count: number, size: number | null): void
 }
 
 const EMPTY_HIGHLIGHTS: readonly Range[] = []
+
+/** Arrow keys, as the direction the selection moves when one commits an edit. */
+const EDITOR_ARROWS: Record<string, MoveDirection | undefined> = {
+  ArrowUp: 'up',
+  ArrowDown: 'down',
+  ArrowLeft: 'left',
+  ArrowRight: 'right',
+}
+
+/**
+ * Keys that produce a keydown without being input.
+ *
+ * They have to be told from real keystrokes because a run of arrows picking a
+ * reference is ended by anything else — and holding Shift to widen the range
+ * fires a keydown for Shift itself, which ended the run on the very gesture it
+ * was meant to serve.
+ */
+const BARE_MODIFIERS = new Set(['Shift', 'Control', 'Alt', 'Meta', 'CapsLock', 'AltGraph'])
 
 const sameRange = (a: Range, b: Range): boolean =>
   a.start.row === b.start.row &&
@@ -264,6 +319,11 @@ export function Grid(props: GridProps): JSX.Element {
     return m
   }, [sheetInfo, rowPreview])
 
+  // Read once: the list is fixed for the life of the build, and it crosses the
+  // wasm boundary.
+  const functionNames = useMemo(() => engine.functionNames(), [engine])
+  const completion = useCompletion(inputRef, functionNames, onEditValueChange)
+
   const hiddenSet = useMemo(() => new Set(hiddenRows), [hiddenRows])
   const mergedKey = merged.join('|')
   const merges = useMemo(
@@ -317,6 +377,8 @@ export function Grid(props: GridProps): JSX.Element {
     onSelect,
     onFill,
     onStartEdit,
+    onCommitEdit,
+    onEditValueChange,
     onContextMenu,
     onResize,
   }
@@ -327,6 +389,38 @@ export function Grid(props: GridProps): JSX.Element {
   const dragRef = useRef<Drag | null>(null)
   const fillPreviewRef = useRef<Range | null>(null)
   const rafRef = useRef(0)
+  /** The range the open formula is pointing at, drawn while it is being picked. */
+  const pointingRef = useRef<Range | null>(null)
+  /**
+   * A run of arrow keys picking a reference, if one is in progress.
+   *
+   * Held rather than recomputed because shift-extension needs the anchor the
+   * run started from, which the formula text cannot supply: `=A2:A4` does not
+   * say whether the user started at A2 and reached down or started at A4 and
+   * reached up, and extending the wrong end is a different range. Any keystroke
+   * that is not an arrow ends the run.
+   */
+  const arrowPointRef = useRef<{ pointed: Pointed; anchor: Addr; focus: Addr } | null>(null)
+  /**
+   * True once an arrow has been used to move the caret in this edit.
+   *
+   * Excel's rule, and it is stickier than it looks: an arrow that lands
+   * somewhere no reference is expected does not merely move the caret, it
+   * drops the whole edit from enter mode into edit mode — so every later arrow
+   * belongs to the caret too, even one that stops after an operator. Without
+   * that, going back to fix `=1+2` would start pointing halfway through, and
+   * the fix would be impossible to type.
+   */
+  const caretArrowRef = useRef(false)
+  /**
+   * A caret to restore once React has rendered the value pointing just wrote.
+   *
+   * A controlled input puts the caret at the end when its value is replaced
+   * from the outside, which would leave the user typing after `)` instead of
+   * where they were. The element is carried along because pointing can be
+   * driven from the formula bar as easily as from the cell editor.
+   */
+  const pendingCaretRef = useRef<{ el: HTMLInputElement; caret: number } | null>(null)
 
   /* ------------------------------------------------------------- painting */
 
@@ -583,8 +677,21 @@ export function Grid(props: GridProps): JSX.Element {
           let out = text
           let clip = false
           if (text.length * 6 > avail && ctx.measureText(text).width > avail) {
-            if (kind === KIND_NUMBER) out = overflowHashes(avail, hashWidth)
-            else clip = true
+            if (kind !== KIND_NUMBER) {
+              clip = true
+            } else {
+              // General is "as much precision as there is room for", so how
+              // many decimals a number shows is a question about the column,
+              // not about the value — and only this side knows the column. A
+              // cell with an explicit format is left alone: somebody asked for
+              // those digits, and quietly showing fewer would be a lie about
+              // what the cell says.
+              const fitted =
+                style.number_format === undefined
+                  ? fitGeneralNumber(text, avail, (s) => ctx.measureText(s).width)
+                  : null
+              out = fitted ?? overflowHashes(avail, hashWidth)
+            }
           }
 
           if (clip) {
@@ -663,6 +770,38 @@ export function Grid(props: GridProps): JSX.Element {
       ctx.strokeStyle = COLOR_ACCENT
       ctx.lineWidth = 2
       ctx.strokeRect(act.x + 1, act.y + 1, act.w - 2, act.h - 2)
+    }
+
+    // The range the open formula points at. Painted after the selection so it
+    // reads as the thing currently being chosen, and washed as well as outlined
+    // because a formula being built over a range nobody can see is the same
+    // problem the pointing gesture exists to solve.
+    const pointed = L.editing ? pointingRef.current : null
+    if (pointed) {
+      const pr = rangeRect(m, pointed, scrollTop, scrollLeft)
+      // A whole column is a rectangle 25 million pixels tall. Clamping to a
+      // little past the viewport keeps the coordinates in a range the canvas
+      // draws accurately, and loses nothing: an edge that far off screen was
+      // never going to be seen, and a reference that reaches past the fold
+      // ought not to look like it stops there.
+      const x0 = Math.max(pr.x, -4)
+      const y0 = Math.max(pr.y, -4)
+      const x1 = Math.min(pr.x + pr.w, cssW + 4)
+      const y1 = Math.min(pr.y + pr.h, cssH + 4)
+      if (x1 > x0 && y1 > y0) {
+        ctx.fillStyle = COLOR_POINT_WASH
+        ctx.fillRect(x0, y0, x1 - x0, y1 - y0)
+        ctx.setLineDash([4, 3])
+        ctx.strokeStyle = COLOR_POINT
+        ctx.lineWidth = 2
+        ctx.strokeRect(
+          Math.round(x0) + 1,
+          Math.round(y0) + 1,
+          Math.round(x1 - x0) - 2,
+          Math.round(y1 - y0) - 2,
+        )
+        ctx.setLineDash([])
+      }
     }
 
     const preview = fillPreviewRef.current
@@ -829,6 +968,125 @@ export function Grid(props: GridProps): JSX.Element {
     }
   }, [])
 
+  /**
+   * The input a pointed reference should be written into.
+   *
+   * Usually the cell editor, but the formula bar edits the same `editing`
+   * state, and pointing from there has to put the reference where *that*
+   * caret is rather than where the hidden one was.
+   */
+  const pointingInput = useCallback((): HTMLInputElement | null => {
+    const active = document.activeElement
+    if (active instanceof HTMLInputElement && active.classList.contains('formula-bar__input')) {
+      return active
+    }
+    return inputRef.current
+  }, [])
+
+  /**
+   * Write `a`..`b` into the formula at `slot`, keeping the editor focused, and
+   * return the slot the *next* point should use.
+   *
+   * That return value is the whole reason this is not a void function. A drag
+   * calls it once per cell crossed, and the slot it started with is an
+   * insertion — so without widening it to cover what was just written, every
+   * mouse move leaves its reference behind and `=AVERAGE(` grows into
+   * `=AVERAGE(A1:A3A1:A2A1`.
+   */
+  const pointAt = useCallback(
+    (slot: PointingSlot, a: Addr, b: Addr, base?: string): Pointed | null => {
+      const L = latestRef.current
+      if (!L.editing) return null
+      // `base` is the text the *previous* point produced. Several points can
+      // land between two renders — a fast drag, a held arrow key — and
+      // `L.editing.value` only catches up when React re-renders, so splicing
+      // into it would undo the point before last.
+      const source = base ?? L.editing.value
+      const range = L.merges.expand(selectionFrom(a, b).range)
+      const ref = rangeA1(range)
+      const next = applyPointing(source, slot, ref)
+      pointingRef.current = range
+      const el = pointingInput()
+      if (el) pendingCaretRef.current = { el, caret: next.caret }
+      L.onEditValueChange(next.value)
+      invalidate()
+      return { slot: { start: slot.start, end: slot.start + ref.length }, value: next.value }
+    },
+    [invalidate, pointingInput],
+  )
+
+  /**
+   * Write `A:C` or `1:5` into the formula: a band of whole columns or rows,
+   * picked off the headers.
+   *
+   * The outline covers the whole band, which is a rectangle a million rows
+   * tall — clipping that to the viewport is the paint code's job, not this
+   * one's, because the reference genuinely does reach past the fold.
+   */
+  const pointBand = useCallback(
+    (slot: PointingSlot, axis: 'col' | 'row', a: number, b: number, base?: string): Pointed | null => {
+      const L = latestRef.current
+      if (!L.editing) return null
+      const m = L.metrics
+      const lo = Math.min(a, b)
+      const hi = Math.max(a, b)
+      const ref = bandRef(axis, lo, hi)
+      const next = applyPointing(base ?? L.editing.value, slot, ref)
+      pointingRef.current =
+        axis === 'col'
+          ? { start: { row: 0, col: lo }, end: { row: Math.max(0, m.rowCount - 1), col: hi } }
+          : { start: { row: lo, col: 0 }, end: { row: hi, col: Math.max(0, m.colCount - 1) } }
+      const el = pointingInput()
+      if (el) pendingCaretRef.current = { el, caret: next.caret }
+      L.onEditValueChange(next.value)
+      invalidate()
+      return { slot: { start: slot.start, end: slot.start + ref.length }, value: next.value }
+    },
+    [invalidate, pointingInput],
+  )
+
+  /**
+   * Move the pointed reference with an arrow key. Returns false when the
+   * formula is not expecting one, so the caret keeps the keystroke.
+   *
+   * The first arrow of a run starts one step from the cell being edited, which
+   * is what makes `=` then Up mean "the cell above". Later arrows walk from
+   * where the run has got to; shift walks the far end and leaves the anchor,
+   * so a range can be widened and narrowed again without restarting.
+   */
+  const pointByArrow = useCallback(
+    (dir: MoveDirection, extend: boolean, toEdge: boolean): boolean => {
+      const L = latestRef.current
+      if (!L.editing || dir === 'none') return false
+      const m = L.metrics
+      const step = (from: Addr): Addr =>
+        toEdge
+          ? usedEdge(m, from, dir, L.usedRows, L.usedCols)
+          : moveWithMerges(m, L.merges, from, dir)
+
+      const run = arrowPointRef.current
+      if (run) {
+        const focus = step(extend ? run.focus : run.anchor)
+        const anchor = extend ? run.anchor : focus
+        const next = pointAt(run.pointed.slot, anchor, focus, run.pointed.value)
+        if (!next) return false
+        arrowPointRef.current = { pointed: next, anchor, focus }
+        return true
+      }
+
+      // Starting fresh: only if a reference may go in where the caret is.
+      const caret = pointingInput()?.selectionStart ?? L.editing.value.length
+      const slot = pointingSlot(L.editing.value, caret)
+      if (!slot) return false
+      const focus = step(L.editing.addr)
+      const next = pointAt(slot, focus, focus)
+      if (!next) return false
+      arrowPointRef.current = { pointed: next, anchor: focus, focus }
+      return true
+    },
+    [pointAt, pointingInput],
+  )
+
   /** Extend the drag to the cell under the pointer, in content coordinates. */
   const applyDragAt = useCallback(
     (clientX: number, clientY: number) => {
@@ -847,13 +1105,28 @@ export function Grid(props: GridProps): JSX.Element {
         L.onSelect({ anchor: sel.anchor, range: L.merges.expand(sel.range) })
         return
       }
+      if (d.kind === 'point') {
+        if (row === d.last.row && col === d.last.col) return
+        d.last = { row, col }
+        const next = pointAt(d.pointed.slot, d.anchor, d.last, d.pointed.value)
+        if (next) d.pointed = next
+        return
+      }
+      if (d.kind === 'point-band') {
+        const at = d.axis === 'col' ? col : row
+        if (at === d.last) return
+        d.last = at
+        const next = pointBand(d.pointed.slot, d.axis, d.anchor, at, d.pointed.value)
+        if (next) d.pointed = next
+        return
+      }
       const target = fillTarget(d.source, row, col)
       if (sameRange(target, d.target)) return
       d.target = target
       fillPreviewRef.current = target
       invalidate()
     },
-    [invalidate, pointOf],
+    [invalidate, pointAt, pointBand, pointOf],
   )
 
   /**
@@ -991,10 +1264,62 @@ export function Grid(props: GridProps): JSX.Element {
       const L = latestRef.current
       const m = L.metrics
       const p = pointOf(e.clientX, e.clientY)
-      containerRef.current?.focus()
       // Presses on the native scrollbars land inside the element but outside
       // its client box; they belong to the browser, not to the selection.
-      if (p.x >= el.clientWidth || p.y >= el.clientHeight) return
+      if (p.x >= el.clientWidth || p.y >= el.clientHeight) {
+        if (L.editing) L.onCommitEdit('none')
+        containerRef.current?.focus()
+        return
+      }
+
+      // Pointing: a formula that is mid-expression captures the press and
+      // turns it into a reference, which is the gesture behind "=AVERAGE(",
+      // drag, ")". `preventDefault` is what keeps the editor focused — without
+      // it the press blurs the input, blur commits, and the user is left
+      // looking at the parse error for the half-written formula they were
+      // still composing.
+      const early = hitTest(p.x, p.y, p.scrollTop, p.scrollLeft, m)
+      const pointableHit =
+        early.kind === 'cell' || early.kind === 'col-header' || early.kind === 'row-header'
+      if (L.editing && pointableHit) {
+        const caret = pointingInput()?.selectionStart ?? L.editing.value.length
+        const slot = pointingSlot(L.editing.value, caret)
+        if (slot) {
+          e.preventDefault()
+          pointerRef.current = { x: e.clientX, y: e.clientY }
+          arrowPointRef.current = null
+          if (early.kind === 'cell') {
+            const addr = L.merges.anchor(early.row, early.col)
+            const last = { row: early.row, col: early.col }
+            const pointed = pointAt(slot, addr, last)
+            if (pointed) beginDrag({ kind: 'point', pointed, anchor: addr, last })
+            return
+          }
+          // A header names a whole band, which is what `A:C` and `1:5` are for
+          // — and the reason they had to exist in the engine before this
+          // gesture could do anything but produce a formula it rejects.
+          const axis = early.kind === 'col-header' ? 'col' : 'row'
+          const at = early.kind === 'col-header' ? early.col : early.row
+          const pointed = pointBand(slot, axis, at, at)
+          if (pointed) beginDrag({ kind: 'point-band', axis, pointed, anchor: at, last: at })
+          return
+        }
+      }
+
+      // A press on the grid ends any edit in progress, exactly as it does in
+      // Excel: what was typed lands in the cell it was typed into, and the
+      // selection is then free to follow the mouse.
+      //
+      // Leaving the editor open here was the single worst thing about this
+      // grid. The selection moved underneath a floating input that still had
+      // focus, so the cell you had clicked never looked selected, dragging a
+      // range appeared to do nothing, and Delete went into the input instead
+      // of clearing the cells — the app read as unresponsive rather than
+      // merely unfinished. Committing first is also what makes the focus()
+      // below safe: it blurs the input, and blur commits too, so the two
+      // paths have to agree on the outcome.
+      if (L.editing) L.onCommitEdit('none')
+      containerRef.current?.focus()
 
       // The fill handle overlaps whatever cell it sits on, so it wins.
       if (p.x >= m.headerWidth && p.y >= m.headerHeight) {
@@ -1007,7 +1332,7 @@ export function Grid(props: GridProps): JSX.Element {
         }
       }
 
-      const hit = hitTest(p.x, p.y, p.scrollTop, p.scrollLeft, m)
+      const hit = early
       switch (hit.kind) {
         case 'corner':
           L.onSelect(
@@ -1072,7 +1397,7 @@ export function Grid(props: GridProps): JSX.Element {
         }
       }
     },
-    [beginDrag, invalidate, pointOf],
+    [beginDrag, invalidate, pointAt, pointBand, pointOf, pointingInput],
   )
 
   const handleMouseMove = useCallback(
@@ -1150,8 +1475,15 @@ export function Grid(props: GridProps): JSX.Element {
       }
 
       const hit = hitTest(p.x, p.y, p.scrollTop, p.scrollLeft, m)
-      if (hit.kind === 'col-border') autofitColumn(hit.col)
-      else if (hit.kind === 'cell') L.onStartEdit({ row: hit.row, col: hit.col })
+      if (hit.kind === 'col-border') {
+        autofitColumn(hit.col)
+        return
+      }
+      if (hit.kind !== 'cell') return
+      // The second press of a double-click while pointing would otherwise
+      // abandon the formula and start editing whatever was being pointed at.
+      if (L.editing && pointingSlot(L.editing.value, L.editing.value.length)) return
+      L.onStartEdit({ row: hit.row, col: hit.col })
     },
     [autofitColumn, pointOf],
   )
@@ -1279,24 +1611,89 @@ export function Grid(props: GridProps): JSX.Element {
 
   const handleEditorKeyDown = useCallback(
     (e: ReactKeyboardEvent<HTMLInputElement>) => {
+      // The menu answers Enter, Tab, Escape and the arrows first when it is
+      // open, because while a list of functions is on screen those keys are
+      // obviously about the list. It reports what it took rather than
+      // swallowing the event, so everything it declines still lands here.
+      if (completion.handleKeyDown(e)) return
+
+      const arrow = EDITOR_ARROWS[e.key]
+      // A run of arrows picks one reference. Anything else — a character, a
+      // bracket, Enter — ends the run, because the slot it was rewriting is no
+      // longer the last thing in the formula. Holding a modifier is not
+      // "anything else": Shift arrives as its own keydown, and treating that
+      // as input ended the run on the exact gesture it exists for.
+      if (!arrow && !BARE_MODIFIERS.has(e.key)) arrowPointRef.current = null
+
       switch (e.key) {
         case 'Enter':
           e.preventDefault()
           onCommitEdit(e.shiftKey ? 'up' : 'down')
-          break
+          return
         case 'Tab':
           e.preventDefault()
           onCommitEdit(e.shiftKey ? 'left' : 'right')
-          break
+          return
         case 'Escape':
           e.preventDefault()
           onCancelEdit()
-          break
+          return
         default:
           break
       }
+
+      const dir = arrow
+      if (!dir || !editing) return
+
+      // Pointing by keyboard. `=SUM(` then Up is Excel's other way of naming a
+      // cell, and it is the one people who never touch the mouse use — so the
+      // arrows belong to the grid whenever the formula is expecting an operand,
+      // and to the caret whenever it is not.
+      //
+      // Only in enter mode, and only until an arrow has been used for the
+      // caret. An edit opened with F2 is somebody amending text, and an edit
+      // that has already moved its caret once has said the same thing.
+      const canPoint = editing.value.startsWith('=') && editing.replacing && !caretArrowRef.current
+      if (canPoint && pointByArrow(dir, e.shiftKey, e.ctrlKey || e.metaKey)) {
+        e.preventDefault()
+        return
+      }
+      // The arrow is the caret's from here on, for the rest of this edit.
+      if (editing.value.startsWith('=')) caretArrowRef.current = true
+      // Excel has two editing modes, and the arrow keys are the only place the
+      // difference shows. Typing over a cell is *enter mode*: an arrow commits
+      // and moves, which is what lets a row be filled by typing and arrowing
+      // without ever reaching for Enter. F2 or a double-click is *edit mode*:
+      // the arrows belong to the caret, because the point of opening an
+      // existing value is to amend it.
+      //
+      // Half-typed formulas stay on the caret whichever mode they started in.
+      // Excel would enter pointing mode here and let the arrows pick the next
+      // operand; until that exists, moving the caret is the harmless reading
+      // of the keystroke, where committing would turn `=A1+` into an error the
+      // user never asked for.
+      if (!editing.replacing || editing.value.startsWith('=')) return
+      e.preventDefault()
+      onCommitEdit(dir)
     },
-    [onCancelEdit, onCommitEdit],
+    [completion, editing, onCancelEdit, onCommitEdit, pointByArrow],
+  )
+
+  const handleEditorBlur = useCallback(
+    (e: ReactFocusEvent<HTMLInputElement>) => {
+      // Losing focus commits, so clicking a toolbar button or another part of
+      // the app cannot leave a value stranded in an editor nobody can see.
+      //
+      // The formula bar is the exception: moving into it continues the same
+      // edit rather than abandoning it, and the two inputs share `editing`, so
+      // committing here would tear down the state the formula bar is about to
+      // keep typing into.
+      const to = e.relatedTarget as HTMLElement | null
+      if (to?.closest('.formula-bar')) return
+      completion.close()
+      onCommitEdit('none')
+    },
+    [completion, onCommitEdit],
   )
 
   /* ------------------------------------------------------------- effects */
@@ -1319,9 +1716,24 @@ export function Grid(props: GridProps): JSX.Element {
     if (next.scrollLeft !== el.scrollLeft) el.scrollLeft = next.scrollLeft
   }, [selection, metrics])
 
+  // Pointing replaces the input's value from the outside, and a controlled
+  // input answers that by putting the caret at the end. Restoring it here —
+  // before the browser paints — is what makes `=SUM(A1:A3` still accept the
+  // `)` the user is about to type.
+  useLayoutEffect(() => {
+    const pending = pendingCaretRef.current
+    if (!pending) return
+    pendingCaretRef.current = null
+    pending.el.focus()
+    pending.el.setSelectionRange(pending.caret, pending.caret)
+  })
+
   const editKey = editing ? `${editing.addr.row}:${editing.addr.col}` : null
   useEffect(() => {
     if (editKey === null) {
+      pointingRef.current = null
+      arrowPointRef.current = null
+      caretArrowRef.current = false
       containerRef.current?.focus()
       return
     }
@@ -1383,27 +1795,54 @@ export function Grid(props: GridProps): JSX.Element {
         style={{ position: 'absolute', top: 0, left: 0, pointerEvents: 'none' }}
       />
       {editing && editBox && (
-        <input
-          ref={inputRef}
-          value={editing.value}
-          spellCheck={false}
-          autoComplete="off"
-          onChange={(e) => onEditValueChange(e.target.value)}
-          onKeyDown={handleEditorKeyDown}
-          style={{
-            position: 'absolute',
-            left: editBox.x,
-            top: editBox.y,
-            width: editBox.w,
-            height: Math.max(editBox.h, metrics.defaultRowHeight),
-            font: CELL_FONT,
-            padding: `0 ${CELL_PAD - 1}px`,
-            border: `2px solid ${COLOR_ACCENT}`,
-            outline: 'none',
-            background: COLOR_BG,
-            color: COLOR_TEXT,
-          }}
-        />
+        <>
+          <input
+            ref={inputRef}
+            data-testid="cell-editor"
+            value={editing.value}
+            spellCheck={false}
+            autoComplete="off"
+            onChange={(e) => {
+              // Typing moves on from whatever was pointed at, so the outline
+              // stops describing the formula and has to go — and the next
+              // arrow starts a new reference rather than moving the old one.
+              pointingRef.current = null
+              arrowPointRef.current = null
+              onEditValueChange(e.target.value)
+              completion.refresh(e.target.value, e.target.selectionStart ?? e.target.value.length)
+              invalidate()
+            }}
+            // `onSelect` is how a caret move is heard — clicking into the middle
+            // of a name should offer that name, not whatever was last typed.
+            onSelect={(e) => {
+              const el = e.currentTarget
+              completion.refresh(el.value, el.selectionStart ?? el.value.length)
+            }}
+            onKeyDown={handleEditorKeyDown}
+            onBlur={handleEditorBlur}
+            style={{
+              position: 'absolute',
+              left: editBox.x,
+              top: editBox.y,
+              width: editBox.w,
+              height: Math.max(editBox.h, metrics.defaultRowHeight),
+              font: CELL_FONT,
+              padding: `0 ${CELL_PAD - 1}px`,
+              border: `2px solid ${COLOR_ACCENT}`,
+              outline: 'none',
+              background: COLOR_BG,
+              color: COLOR_TEXT,
+            }}
+          />
+          <FunctionMenu
+            api={completion}
+            style={{
+              left: editBox.x,
+              top: editBox.y + Math.max(editBox.h, metrics.defaultRowHeight),
+              minWidth: Math.max(editBox.w, 260),
+            }}
+          />
+        </>
       )}
     </div>
   )

@@ -229,6 +229,16 @@ export class EngineHandle {
     return this.inner.definedNames() as [string, string][]
   }
 
+  /**
+   * Every function the engine answers to, for editor completion.
+   *
+   * Fixed for the life of the build, so callers should read it once — it
+   * crosses the wasm boundary and allocates a 135-element array each time.
+   */
+  functionNames(): string[] {
+    return this.inner.functionNames() as string[]
+  }
+
   columnValues(sheet: string, rangeA1: string, col: number): string[] {
     return this.inner.columnValues(sheet, rangeA1, col) as string[]
   }

@@ -220,6 +220,53 @@ const EXPORT_SQL: &str = "SELECT event_id, actor_id, session_id, workbook_id, se
      ORDER BY e.actor_id, e.session_id, e.seq
      LIMIT ?";
 
+/// The caller's own most recent events, newest first.
+///
+/// Deliberately not admin-gated: this is the user's own record, and a
+/// transparency page that can only describe what *would* be captured is half a
+/// promise. It is still consent-gated by the same clause as the export, so an
+/// actor who has revoked cannot read back what was collected before — the
+/// alternative would make revocation weaker than it says it is.
+const RECENT_SQL: &str = "SELECT event_id, actor_id, session_id, workbook_id, seq, ts_ms, action,
+            payload, context, client_version
+     FROM events e
+     WHERE e.actor_id = ?
+       AND EXISTS (
+           SELECT 1 FROM consents c
+           WHERE c.actor_id = e.actor_id
+             AND c.id = (SELECT MAX(id) FROM consents c2 WHERE c2.actor_id = e.actor_id)
+             AND c.revoked_at IS NULL
+             AND c.mode <> 'off'
+       )
+     ORDER BY e.received_at DESC, e.seq DESC
+     LIMIT ?";
+
+/// How many events `recent` will return at most, however large a limit asks.
+const MAX_RECENT: i64 = 200;
+
+#[derive(Debug, serde::Deserialize)]
+pub struct RecentParams {
+    pub limit: Option<i64>,
+}
+
+pub async fn recent(
+    State(pool): State<SqlitePool>,
+    user: AuthUser,
+    Query(params): Query<RecentParams>,
+) -> Result<Json<Vec<EventEnvelope>>, ApiError> {
+    let limit = params.limit.unwrap_or(50).clamp(1, MAX_RECENT);
+    let rows = sqlx::query(RECENT_SQL)
+        .bind(&user.id)
+        .bind(limit)
+        .fetch_all(&pool)
+        .await?;
+    let mut out = Vec::with_capacity(rows.len());
+    for row in rows {
+        out.push(envelope(row)?);
+    }
+    Ok(Json(out))
+}
+
 /// Admin-only JSONL export, one envelope per line. Actors whose current
 /// consent is `off` or revoked are excluded here, in the query — the promise
 /// in `docs/PRIVACY.md` is enforced by the exporter, not by convention.
@@ -261,13 +308,19 @@ pub async fn export(
         .into_response())
 }
 
-fn envelope_line(row: sqlx::sqlite::SqliteRow) -> Result<String, ApiError> {
+/// One stored row back into the envelope the client sent.
+///
+/// Shared by the export and the caller's own history so the two cannot drift:
+/// what a user reads on the transparency page is byte-for-byte what an
+/// exporter would receive, which is the only version of that page worth
+/// showing.
+fn envelope(row: sqlx::sqlite::SqliteRow) -> Result<EventEnvelope, ApiError> {
     let payload: serde_json::Value = serde_json::from_str(row.try_get("payload")?)
         .map_err(|e| ApiError::BadRequest(e.to_string()))?;
     let context: EventContext = serde_json::from_str(row.try_get("context")?)
         .map_err(|e| ApiError::BadRequest(e.to_string()))?;
     let seq: i64 = row.try_get("seq")?;
-    let envelope = EventEnvelope {
+    Ok(EventEnvelope {
         schema_version: SCHEMA_VERSION,
         event_id: row.try_get("event_id")?,
         session_id: row.try_get("session_id")?,
@@ -279,9 +332,12 @@ fn envelope_line(row: sqlx::sqlite::SqliteRow) -> Result<String, ApiError> {
         payload,
         context,
         client_version: row.try_get("client_version")?,
-    };
+    })
+}
+
+fn envelope_line(row: sqlx::sqlite::SqliteRow) -> Result<String, ApiError> {
     let mut line =
-        serde_json::to_string(&envelope).map_err(|e| ApiError::BadRequest(e.to_string()))?;
+        serde_json::to_string(&envelope(row)?).map_err(|e| ApiError::BadRequest(e.to_string()))?;
     line.push('\n');
     Ok(line)
 }

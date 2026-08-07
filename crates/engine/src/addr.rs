@@ -175,6 +175,57 @@ impl ParsedRef {
         )
     }
 
+    /// Just the column, as `A` or `$A` — one end of a `A:C` reference.
+    pub fn to_col(&self) -> String {
+        format!(
+            "{}{}",
+            if self.abs_col { "$" } else { "" },
+            col_letters(self.col)
+        )
+    }
+
+    /// Just the row, as `1` or `$1` — one end of a `1:5` reference.
+    pub fn to_row(&self) -> String {
+        format!("{}{}", if self.abs_row { "$" } else { "" }, self.row + 1)
+    }
+
+    /// Parse a bare column, `A` or `$C`. The row is left at 0.
+    pub fn parse_col(s: &str) -> Option<ParsedRef> {
+        let abs_col = s.starts_with('$');
+        let letters = if abs_col { &s[1..] } else { s };
+        if letters.is_empty()
+            || letters.len() > 3
+            || !letters.bytes().all(|b| b.is_ascii_alphabetic())
+        {
+            return None;
+        }
+        Some(ParsedRef {
+            row: 0,
+            col: parse_col_letters(letters)?,
+            abs_row: false,
+            abs_col,
+        })
+    }
+
+    /// Parse a bare row number, `1` or `$5`. The column is left at 0.
+    pub fn parse_row(s: &str) -> Option<ParsedRef> {
+        let abs_row = s.starts_with('$');
+        let digits = if abs_row { &s[1..] } else { s };
+        if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        let row_1: u32 = digits.parse().ok()?;
+        if row_1 == 0 || row_1 > MAX_ROWS {
+            return None;
+        }
+        Some(ParsedRef {
+            row: row_1 - 1,
+            col: 0,
+            abs_row,
+            abs_col: false,
+        })
+    }
+
     /// Shift the relative parts by (dr, dc); returns None when out of bounds (#REF!).
     pub fn shifted(&self, dr: i64, dc: i64) -> Option<ParsedRef> {
         let row = if self.abs_row {

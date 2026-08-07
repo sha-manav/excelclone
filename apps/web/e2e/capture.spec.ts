@@ -296,3 +296,227 @@ test('every action in a batch is captured, not just the first', async ({ page, c
     .filter((e) => e.action === 'cell.edit')
   expect(edits.length, 'the batch was captured as fewer events than it had').toBe(4)
 })
+
+test.describe('a rejected batch is visible', () => {
+  /**
+   * The failure this exists for: a blank auth token.
+   *
+   * Every ingest answers 401, a 401 is not retryable, so the queue discards
+   * the batch — and the app went on reporting "capturing, 0 waiting" while
+   * one hundred percent of events were being thrown away. There was no
+   * backlog to notice and no error anywhere in the UI. The only way to find
+   * out was to query the database.
+   */
+  async function stubRejectingApi(page: Page) {
+    await page.route('**/v1/**', async (route) => {
+      const url = route.request().url()
+      if (url.includes('/v1/consent/me')) {
+        return route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ mode: 'full', captures: true }),
+        })
+      }
+      return route.fulfill({
+        status: 401,
+        contentType: 'application/json',
+        body: JSON.stringify({ error: 'missing or unknown bearer token' }),
+      })
+    })
+  }
+
+  test('the chip stops claiming to capture when the server refuses', async ({ page }) => {
+    await stubRejectingApi(page)
+    await page.addInitScript(
+      ({ key, consent }) => {
+        window.localStorage.clear()
+        window.localStorage.setItem(key, consent)
+      },
+      { key: CONSENT_KEY, consent: grantedConsent('full') },
+    )
+    await page.goto('/')
+    await expect(page.locator('canvas')).toBeVisible({ timeout: 30_000 })
+
+    await clickCell(page, 0, 0)
+    await typeInCell(page, '42')
+
+    const chip = page.getByTestId('capture-chip')
+    await expect(chip).toHaveAttribute('data-state', 'rejected', { timeout: 15_000 })
+    await expect(chip).toContainText('not recording')
+    await expect(page.getByTestId('capture-rejected')).toBeVisible()
+  })
+
+  test('the transparency page says so in words', async ({ page }) => {
+    await stubRejectingApi(page)
+    await page.addInitScript(
+      ({ key, consent }) => {
+        window.localStorage.clear()
+        window.localStorage.setItem(key, consent)
+      },
+      { key: CONSENT_KEY, consent: grantedConsent('full') },
+    )
+    await page.goto('/')
+    await expect(page.locator('canvas')).toBeVisible({ timeout: 30_000 })
+    await clickCell(page, 0, 0)
+    await typeInCell(page, '42')
+    await expect(page.getByTestId('capture-rejected')).toBeVisible({ timeout: 15_000 })
+
+    await page.locator('.toolbar__link').click()
+    const alert = page.getByTestId('transparency-rejected')
+    await expect(alert).toBeVisible()
+    await expect(alert).toContainText('Nothing is being recorded')
+  })
+
+  test('a healthy server leaves the chip alone', async ({ page }) => {
+    // The other half: this must not fire on an ordinary session, or it becomes
+    // one more warning nobody reads.
+    await gotoFresh(page, { consent: grantedConsent('full') })
+    await expect(page.locator('canvas')).toBeVisible({ timeout: 30_000 })
+    await clickCell(page, 0, 0)
+    await typeInCell(page, '42')
+    await page.waitForTimeout(6_000)
+
+    await expect(page.getByTestId('capture-chip')).toHaveAttribute('data-state', 'capturing')
+    await expect(page.getByTestId('capture-rejected')).toHaveCount(0)
+  })
+})
+
+test.describe('the captured log', () => {
+  /** The API, with a history the page can read back. */
+  async function stubApiWithHistory(page: Page, events: unknown[]) {
+    await page.route('**/v1/**', async (route) => {
+      const url = route.request().url()
+      if (url.includes('/v1/consent/me')) {
+        return route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ mode: 'structural', captures: true }),
+        })
+      }
+      if (url.includes('/v1/events/recent')) {
+        return route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify(events),
+        })
+      }
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ accepted: 0, duplicates: 0, rejected: 0, warnings: [] }),
+      })
+    })
+    await page.addInitScript(
+      ({ key, tokenKey, consent }) => {
+        window.localStorage.clear()
+        window.localStorage.setItem(tokenKey, 'test-token')
+        window.localStorage.setItem(key, consent)
+      },
+      { key: CONSENT_KEY, tokenKey: TOKEN_KEY, consent: grantedConsent('structural') },
+    )
+    await page.goto('/')
+    await expect(page.locator('canvas')).toBeVisible({ timeout: 30_000 })
+    await page.locator('.toolbar__link').click()
+  }
+
+  const storedEvent = (overrides: Record<string, unknown> = {}) => ({
+    schema_version: 1,
+    event_id: 'ev_1',
+    session_id: 's_1',
+    actor_id: 'u_1',
+    workbook_id: 'wb_1',
+    seq: 1,
+    ts_ms: 1_700_000_000_000,
+    action: 'cell.edit',
+    payload: {
+      addr: 'A1',
+      input: { hash: '90020ebfd48797ad', len: 5, type: 'number' },
+      is_formula: false,
+    },
+    context: { sheet: 'h', selection: 'A1', privacy_mode: 'structural' },
+    client_version: '0.1.0',
+    ...overrides,
+  })
+
+  test('shows the stored events, with redacted values shown as hashes', async ({ page }) => {
+    await stubApiWithHistory(page, [storedEvent()])
+    const rows = page.getByTestId('captured-log-row')
+    await expect(rows).toHaveCount(1)
+    await expect(rows.first()).toContainText('cell.edit')
+    await expect(rows.first()).toContainText('addr=A1')
+    // The literal must not appear, and the thing that replaced it must.
+    await expect(rows.first()).toContainText('number:5')
+    await expect(rows.first()).not.toContainText('48250')
+  })
+
+  test('an empty history says so rather than showing nothing', async ({ page }) => {
+    // The state that used to be indistinguishable from a working pipeline.
+    await stubApiWithHistory(page, [])
+    await expect(page.getByTestId('captured-log-empty')).toBeVisible()
+  })
+
+  test('an unreachable server is reported, not rendered as an empty log', async ({ page }) => {
+    await page.route('**/v1/events/recent*', (route) => route.abort())
+    await page.route('**/v1/consent/me', (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ mode: 'structural', captures: true }),
+      }),
+    )
+    await page.route('**/v1/events', (route) =>
+      route.fulfill({ status: 200, contentType: 'application/json', body: '{}' }),
+    )
+    await page.addInitScript(
+      ({ key, consent }) => {
+        window.localStorage.clear()
+        window.localStorage.setItem(key, consent)
+      },
+      { key: CONSENT_KEY, consent: grantedConsent('structural') },
+    )
+    await page.goto('/')
+    await expect(page.locator('canvas')).toBeVisible({ timeout: 30_000 })
+    await page.locator('.toolbar__link').click()
+
+    await expect(page.getByTestId('captured-log-error')).toBeVisible()
+    await expect(page.getByTestId('captured-log-empty')).toHaveCount(0)
+  })
+})
+
+test.describe('a standalone build', () => {
+  /**
+   * The published site has no backend, and that is a promise about behaviour,
+   * not just a missing button: a link sent to a friend must not record what
+   * they type, and a consent notice offering a choice that cannot take effect
+   * would be worse than no notice at all.
+   *
+   * This drives the real production bundle rather than the dev server, because
+   * the flag is inlined at build time and only the built artefact can show
+   * what was inlined.
+   */
+  test.skip(
+    !process.env.GRIDLINE_STANDALONE_URL,
+    'set GRIDLINE_STANDALONE_URL to a served standalone build',
+  )
+
+  test('shows no capture controls and talks to no server', async ({ page }) => {
+    const calls: string[] = []
+    page.on('request', (r) => {
+      if (r.url().includes('/v1/')) calls.push(r.url())
+    })
+
+    await page.goto(process.env.GRIDLINE_STANDALONE_URL!)
+    await expect(page.locator('canvas')).toBeVisible({ timeout: 30_000 })
+
+    await expect(page.getByTestId('consent-modal')).toHaveCount(0)
+    await expect(page.getByTestId('capture-chip')).toHaveCount(0)
+    await expect(page.locator('.toolbar__link')).toHaveCount(0)
+    await expect(page.getByRole('button', { name: 'Routines' })).toHaveCount(0)
+
+    await clickCell(page, 0, 0)
+    await typeInCell(page, '42')
+    await page.waitForTimeout(6_000)
+
+    expect(calls, `standalone build called the API: ${calls.join(', ')}`).toHaveLength(0)
+  })
+})

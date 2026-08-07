@@ -8,6 +8,7 @@
  */
 
 import { expect, test, type Page } from '@playwright/test'
+import { openGrid } from './support'
 
 /** Click the cell at (row, col), 0-based, using the grid's default metrics. */
 async function clickCell(page: Page, row: number, col: number) {
@@ -41,15 +42,9 @@ test.beforeEach(async ({ page }) => {
   page.on('console', (m) => {
     if (m.type() === 'error') errors.push(m.text())
   })
-  await page.goto('/')
-  await expect(page.locator('canvas')).toBeVisible({ timeout: 30_000 })
+  await openGrid(page)
   // Surface engine load failures immediately rather than as a mystery later.
   expect(errors, `page errors on load: ${errors.join('; ')}`).toHaveLength(0)
-  // First run shows the consent notice, which is modal by design. These tests
-  // are about the grid, so decline: capture off means no events and no
-  // network, and the rest of the suite behaves exactly as it did before.
-  await page.getByTestId('consent-decline').click()
-  await expect(page.getByTestId('consent-modal')).toHaveCount(0)
 })
 
 test('grid renders with headers and sheet tabs', async ({ page }) => {

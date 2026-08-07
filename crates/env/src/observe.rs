@@ -558,6 +558,21 @@ fn to_r1c1(e: &engine::ast::Expr, at: CellAddr) -> engine::ast::Expr {
     use engine::ast::Expr;
     match e {
         Expr::Cell(c) => Expr::Name(format!("{}{}", sheet_prefix(&c.sheet), r1c1(&c.r, at))),
+        // An axis the formula never named is not part of its shape. Spelling
+        // out `R[-3]C[0]:R[1048572]C[0]` would make `=SUM(A:A)` a different
+        // shape in every row, which is the one thing R1C1 exists to prevent.
+        Expr::Range(r) if r.span.open_rows() => Expr::Name(format!(
+            "{}{}:{}",
+            sheet_prefix(&r.sheet),
+            r1c1_col(&r.start, at),
+            r1c1_col(&r.end, at)
+        )),
+        Expr::Range(r) if r.span.open_cols() => Expr::Name(format!(
+            "{}{}:{}",
+            sheet_prefix(&r.sheet),
+            r1c1_row(&r.start, at),
+            r1c1_row(&r.end, at)
+        )),
         Expr::Range(r) => Expr::Name(format!(
             "{}{}:{}",
             sheet_prefix(&r.sheet),
@@ -578,17 +593,23 @@ fn to_r1c1(e: &engine::ast::Expr, at: CellAddr) -> engine::ast::Expr {
 }
 
 fn r1c1(r: &engine::addr::ParsedRef, at: CellAddr) -> String {
-    let row = if r.abs_row {
+    format!("{}{}", r1c1_row(r, at), r1c1_col(r, at))
+}
+
+fn r1c1_row(r: &engine::addr::ParsedRef, at: CellAddr) -> String {
+    if r.abs_row {
         format!("R{}", r.row + 1)
     } else {
         format!("R[{}]", r.row as i64 - at.row as i64)
-    };
-    let col = if r.abs_col {
+    }
+}
+
+fn r1c1_col(r: &engine::addr::ParsedRef, at: CellAddr) -> String {
+    if r.abs_col {
         format!("C{}", r.col + 1)
     } else {
         format!("C[{}]", r.col as i64 - at.col as i64)
-    };
-    format!("{row}{col}")
+    }
 }
 
 /// A sheet qualifier for a shape key. Unquoted even when the name needs

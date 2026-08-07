@@ -5,6 +5,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { a1, type Addr } from '../engine/actions'
+import { FunctionMenu, useCompletion } from './FunctionMenu'
 
 export interface FormulaBarProps {
   active: Addr
@@ -12,6 +13,8 @@ export interface FormulaBarProps {
   cellInput: string
   editing: boolean
   editValue: string
+  /** Function names to complete against, from the engine. */
+  functionNames: readonly string[]
   onChange(value: string): void
   onCommit(): void
   onCancel(): void
@@ -81,6 +84,7 @@ export function FormulaBar({
   cellInput,
   editing,
   editValue,
+  functionNames,
   onChange,
   onCommit,
   onCancel,
@@ -88,6 +92,7 @@ export function FormulaBar({
   onNameBox,
 }: FormulaBarProps) {
   const inputRef = useRef<HTMLInputElement>(null)
+  const completion = useCompletion(inputRef, functionNames, onChange)
   // The name box shows the address until the user types in it, and goes back
   // to showing the address as soon as the selection moves — otherwise a
   // half-typed name would sit there looking like where you are.
@@ -136,8 +141,19 @@ export function FormulaBar({
           onFocus={() => {
             if (!editing) onBeginEdit()
           }}
-          onChange={(e) => onChange(e.target.value)}
+          onChange={(e) => {
+            onChange(e.target.value)
+            completion.refresh(e.target.value, e.target.selectionStart ?? e.target.value.length)
+          }}
+          onSelect={(e) => {
+            const el = e.currentTarget
+            completion.refresh(el.value, el.selectionStart ?? el.value.length)
+          }}
+          onBlur={completion.close}
           onKeyDown={(e) => {
+            // While the menu is open Enter picks a function rather than
+            // committing the cell, which is the whole point of the menu.
+            if (completion.handleKeyDown(e)) return
             if (e.key === 'Enter') {
               e.preventDefault()
               onCommit()
@@ -147,6 +163,7 @@ export function FormulaBar({
             }
           }}
         />
+        <FunctionMenu api={completion} style={{ left: 0, top: '100%', minWidth: 320 }} />
       </div>
     </div>
   )

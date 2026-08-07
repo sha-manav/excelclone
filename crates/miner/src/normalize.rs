@@ -366,6 +366,21 @@ fn render_r1c1(e: &Expr, row: i64, col: i64) -> String {
         Expr::Cell(c) => {
             format!("{}{}", sheet_prefix(&c.sheet), r1c1(&c.r, row, col))
         }
+        // A whole-column or whole-row reference names one axis. Rendering the
+        // other would put its million-row span in the shape and make
+        // `=SUM(A:A)` mine as a different habit in every row it appears in.
+        Expr::Range(r) if r.span.open_rows() => format!(
+            "{}{}:{}",
+            sheet_prefix(&r.sheet),
+            r1c1_col(&r.start, col),
+            r1c1_col(&r.end, col)
+        ),
+        Expr::Range(r) if r.span.open_cols() => format!(
+            "{}{}:{}",
+            sheet_prefix(&r.sheet),
+            r1c1_row(&r.start, row),
+            r1c1_row(&r.end, row)
+        ),
         Expr::Range(r) => format!(
             "{}{}:{}",
             sheet_prefix(&r.sheet),
@@ -403,17 +418,23 @@ fn sheet_prefix(sheet: &Option<String>) -> &'static str {
 }
 
 fn r1c1(r: &engine::addr::ParsedRef, row: i64, col: i64) -> String {
-    let rp = if r.abs_row {
+    format!("{}{}", r1c1_row(r, row), r1c1_col(r, col))
+}
+
+fn r1c1_row(r: &engine::addr::ParsedRef, row: i64) -> String {
+    if r.abs_row {
         format!("R{}", r.row)
     } else {
         format!("R[{}]", r.row as i64 - row)
-    };
-    let cp = if r.abs_col {
+    }
+}
+
+fn r1c1_col(r: &engine::addr::ParsedRef, col: i64) -> String {
+    if r.abs_col {
         format!("C{}", r.col)
     } else {
         format!("C[{}]", r.col as i64 - col)
-    };
-    format!("{rp}{cp}")
+    }
 }
 
 #[cfg(test)]

@@ -3,6 +3,11 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
 export default defineConfig({
+  // GitHub Pages serves a project site from `/<repo>/`, so the asset URLs have
+  // to carry that prefix. `VITE_BASE` is set by the deploy workflow; every
+  // other build — dev, `make ci`, a self-hosted copy at a domain root — is
+  // unaffected.
+  base: process.env.VITE_BASE ?? '/',
   plugins: [react()],
   // The engine is a local wasm-pack package linked from crates/wasm/pkg.
   // Pre-bundling it breaks the `?url` asset import the loader relies on, and

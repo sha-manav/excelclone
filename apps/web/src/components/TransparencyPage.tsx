@@ -10,12 +10,15 @@
 
 import { useMemo } from 'react'
 import { captureVocabulary, type CaptureState, type PrivacyMode } from '../capture/capture'
+import { CapturedLog } from './CapturedLog'
 
 interface Props {
   mode: PrivacyMode
   state: CaptureState
   dropped: number
   pending: number
+  /** Envelopes the server refused; above zero, capture is not working. */
+  rejected: number
   durable: boolean
   onChangeMode: (mode: PrivacyMode) => void
   onBack: () => void
@@ -49,6 +52,7 @@ export function TransparencyPage({
   state,
   dropped,
   pending,
+  rejected,
   durable,
   onChangeMode,
   onBack,
@@ -86,6 +90,17 @@ export function TransparencyPage({
           Your current mode is <strong data-testid="transparency-mode">{mode}</strong> and capture
           is <strong data-testid="transparency-state">{state}</strong>.
         </p>
+        {/* A rejection is the one status that has to interrupt: the numbers
+            below it all read as healthy while nothing is being recorded, which
+            is what a blank auth token looks like from here. */}
+        {rejected > 0 && (
+          <p className="transparency__alert" data-testid="transparency-rejected">
+            <strong>Nothing is being recorded.</strong> The server refused {rejected} event
+            {rejected === 1 ? '' : 's'}, so they were discarded rather than queued. That usually
+            means the API server is not running or the auth token is missing — check{' '}
+            <code>.dev-token</code> and the console for a 401.
+          </p>
+        )}
         <p className="transparency__muted">
           {pending} event{pending === 1 ? '' : 's'} waiting to send
           {durable ? ' (queued on disk)' : ' (queued in memory only)'}
@@ -109,6 +124,10 @@ export function TransparencyPage({
           ))}
         </div>
       </section>
+
+      {/* Before the rules, not after: "what do you have on me" is the
+          question people actually arrive with, and it is answerable. */}
+      <CapturedLog refreshKey={rejected} />
 
       <section>
         <h2>The three modes</h2>

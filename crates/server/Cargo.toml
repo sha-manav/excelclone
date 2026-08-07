@@ -3,6 +3,11 @@ name = "server"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+# The crate ships two binaries — the API server and the demo seeder — so a
+# bare `cargo run -p server` is ambiguous and fails. Naming the default here
+# rather than passing `--bin server` at each call site fixes it for the
+# scripts, the Makefile, and anyone who types the obvious thing.
+default-run = "server"
 
 [dependencies]
 engine = { path = "../engine" }

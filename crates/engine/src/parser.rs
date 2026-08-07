@@ -10,7 +10,7 @@
 //! - `%` is a postfix operator.
 
 use crate::addr::ParsedRef;
-use crate::ast::{BinOp, CellRef, Expr, RangeRef};
+use crate::ast::{BinOp, CellRef, Expr, RangeRef, RangeSpan};
 use crate::value::ErrorKind;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -393,6 +393,10 @@ impl Parser {
         let at = self.toks.get(self.pos).map(|(_, p)| *p).unwrap_or(0);
         match self.next() {
             None => Err(ParseError::UnexpectedEnd),
+            // `1:5` is a whole-row range, and it starts with something the
+            // lexer had every reason to read as a number. The colon is the
+            // only thing that tells them apart.
+            Some(Tok::Num(n)) if self.peek() == Some(&Tok::Colon) => self.whole_rows(n, at),
             Some(Tok::Num(n)) => Ok(Expr::Number(n)),
             Some(Tok::Str(s)) => Ok(Expr::Text(s)),
             Some(Tok::ErrorLit(e)) => Ok(Expr::Error(e)),
@@ -462,6 +466,14 @@ impl Parser {
         at: usize,
     ) -> Result<Expr, ParseError> {
         let Some(start) = ParsedRef::parse(first) else {
+            // `A:C` — bare column letters on both sides of the colon. Checked
+            // before giving up on the identifier, because `A` on its own is a
+            // name and only the colon that follows makes it a column.
+            if self.peek() == Some(&Tok::Colon) {
+                if let Some(range) = self.whole_columns(sheet.clone(), first)? {
+                    return Ok(range);
+                }
+            }
             // A bare identifier that is not a reference. It keeps its text
             // rather than collapsing to #NAME? at parse time, because LET
             // binds names and the evaluator is the only thing that knows
@@ -479,7 +491,7 @@ impl Parser {
                 Some(Tok::Ident(id2)) => {
                     let end = ParsedRef::parse(&id2)
                         .ok_or_else(|| ParseError::BadRef(id2.to_string()))?;
-                    Ok(Expr::Range(RangeRef { sheet, start, end }))
+                    Ok(Expr::Range(RangeRef::cells(sheet, start, end)))
                 }
                 _ => Err(ParseError::UnexpectedToken(at2)),
             }
@@ -487,6 +499,85 @@ impl Parser {
             Ok(Expr::Cell(CellRef { sheet, r: start }))
         }
     }
+
+    /// `A:C` when both sides are bare column letters, else None with the
+    /// parser left exactly where it was.
+    ///
+    /// Backtracking rather than committing, because `A` is also a perfectly
+    /// good LET binding and `A:C` is only a column range if `C` turns up on
+    /// the far side. Anything else has to stay parseable as whatever it was.
+    fn whole_columns(
+        &mut self,
+        sheet: Option<String>,
+        first: &str,
+    ) -> Result<Option<Expr>, ParseError> {
+        let Some(start) = ParsedRef::parse_col(first) else {
+            return Ok(None);
+        };
+        let save = self.pos;
+        self.next(); // the colon
+        let end = match self.peek() {
+            Some(Tok::Ident(id2)) => ParsedRef::parse_col(id2),
+            _ => None,
+        };
+        match end {
+            Some(end) => {
+                self.next();
+                Ok(Some(Expr::Range(RangeRef {
+                    sheet,
+                    // The rows belong to the sheet; these are the widest span
+                    // the grid has, and `RangeSpan::Cols` is what stops them
+                    // being printed or shifted as if somebody wrote them.
+                    start: ParsedRef { row: 0, ..start },
+                    end: ParsedRef {
+                        row: crate::addr::MAX_ROWS - 1,
+                        ..end
+                    },
+                    span: RangeSpan::Cols,
+                })))
+            }
+            None => {
+                self.pos = save;
+                Ok(None)
+            }
+        }
+    }
+
+    /// `1:5` — whole rows. Reached from the number branch of `primary`,
+    /// because a row range starts with something the lexer read as a number.
+    fn whole_rows(&mut self, first: f64, at: usize) -> Result<Expr, ParseError> {
+        let start = row_ref(first).ok_or(ParseError::UnexpectedToken(at))?;
+        self.next(); // the colon
+        let at2 = self.toks.get(self.pos).map(|(_, p)| *p).unwrap_or(0);
+        let end = match self.next() {
+            Some(Tok::Num(n)) => row_ref(n).ok_or(ParseError::UnexpectedToken(at2))?,
+            _ => return Err(ParseError::UnexpectedToken(at2)),
+        };
+        Ok(Expr::Range(RangeRef {
+            sheet: None,
+            start: ParsedRef { col: 0, ..start },
+            end: ParsedRef {
+                col: crate::addr::MAX_COLS - 1,
+                ..end
+            },
+            span: RangeSpan::Rows,
+        }))
+    }
+}
+
+/// A whole-row endpoint from the number the lexer read. Whole rows are
+/// written as plain integers, so anything else — `1.5:2`, a row past the
+/// bottom of the grid — is not one.
+fn row_ref(n: f64) -> Option<ParsedRef> {
+    if n.fract() != 0.0 || n < 1.0 || n > crate::addr::MAX_ROWS as f64 {
+        return None;
+    }
+    Some(ParsedRef {
+        row: n as u32 - 1,
+        col: 0,
+        abs_row: false,
+        abs_col: false,
+    })
 }
 
 #[cfg(test)]

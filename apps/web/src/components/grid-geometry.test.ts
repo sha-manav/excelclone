@@ -27,6 +27,7 @@ import {
   moveAddr,
   moveWithMerges,
   nextVisibleRow,
+  fitGeneralNumber,
   overflowHashes,
   pageJump,
   pointInRect,
@@ -627,6 +628,48 @@ describe('text helpers', () => {
     expect(overflowHashes(0, 8)).toBe('#')
     expect(overflowHashes(1000, 8)).toBe('#'.repeat(32))
     expect(overflowHashes(40, 0)).toBe('####')
+  })
+
+  describe('fitGeneralNumber', () => {
+    // The grid's cell font is monospace, so a character count stands in for
+    // measureText exactly.
+    const chars = (n: number) => (s: string) => s.length * (n / n)
+    const width = chars(1)
+
+    it('drops decimals until the number fits', () => {
+      // The reported case: AVERAGE(1, 3, 4) in a column that holds 10
+      // characters used to render as hashes.
+      expect(fitGeneralNumber('2.66666666666667', 10, width)).toBe('2.66666667')
+      expect(fitGeneralNumber('2.66666666666667', 4, width)).toBe('2.67')
+    })
+
+    it('rounds rather than truncating', () => {
+      // Truncating would show 0.99, which is a different number.
+      expect(fitGeneralNumber('0.999', 3, width)).toBe('1')
+      expect(fitGeneralNumber('1.28', 3, width)).toBe('1.3')
+    })
+
+    it('leaves no trailing zeros behind', () => {
+      expect(fitGeneralNumber('1.10000000000001', 4, width)).toBe('1.1')
+    })
+
+    it('keeps the sign and the whole part', () => {
+      expect(fitGeneralNumber('-2.66666666666667', 5, width)).toBe('-2.67')
+      expect(fitGeneralNumber('1234.56789', 6, width)).toBe('1234.6')
+    })
+
+    it('gives up when even the integer will not fit', () => {
+      // This is the case hashes are actually for.
+      expect(fitGeneralNumber('123456.789', 4, width)).toBeNull()
+    })
+
+    it('declines anything that is not a plain decimal', () => {
+      // An integer has nothing to give up, and rewriting scientific notation
+      // is a different job from dropping digits.
+      expect(fitGeneralNumber('1234567', 4, width)).toBeNull()
+      expect(fitGeneralNumber('1.2E20', 4, width)).toBeNull()
+      expect(fitGeneralNumber('#DIV/0!', 4, width)).toBeNull()
+    })
   })
 
   it('clamps column widths to the minimum', () => {

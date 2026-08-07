@@ -18,7 +18,14 @@ import {
   type PrivacyMode,
 } from '../capture/capture'
 import { EventQueue, openQueueStorage } from '../capture/queue'
-import { api, authToken, setAuthToken, type ConsentRecord } from '../capture/api'
+import { isStandalone } from '../standalone'
+import {
+  api,
+  authToken,
+  setAuthRecovery,
+  setAuthToken,
+  type ConsentRecord,
+} from '../capture/api'
 
 const CONSENT_KEY = 'gridline.consent'
 const ACTOR_KEY = 'gridline.actor'
@@ -127,6 +134,19 @@ function getPipeline(): Pipeline {
   const devToken = devEnv('VITE_DEV_TOKEN')
   if (devToken && !authToken()) setAuthToken(devToken)
 
+  // …but only while it works. A stored token the server rejects is dead, and
+  // "the hand-typed one wins" must not mean "wins forever": re-seeding a
+  // development database left the browser presenting a token that database
+  // had never heard of, with no reload, restart or re-seed able to recover.
+  // On a 401 the dev token replaces it and the request is tried once more.
+  // Production builds have no dev token, so this does nothing there.
+  setAuthRecovery(() => {
+    const fresh = devEnv('VITE_DEV_TOKEN')
+    if (!fresh || authToken() === fresh) return false
+    setAuthToken(fresh)
+    return true
+  })
+
   const consent = readConsent()
   const workbookId = readOrCreate(
     WORKBOOK_KEY,
@@ -162,6 +182,14 @@ export interface CaptureApi {
   dropped: number
   /** Envelopes accepted but not yet acknowledged by the server. */
   pending: number
+  /**
+   * Envelopes the server refused outright — a bad token, a malformed batch.
+   *
+   * Distinct from `pending`, and the more urgent of the two: a queue that is
+   * backing up will drain when the server comes back, while a rejected one
+   * never will. Any number above zero means capture is not working.
+   */
+  rejected: number
   /** True until the user has answered the consent notice. */
   needsConsent: boolean
   /** Whether the backlog would survive a reload. */
@@ -219,9 +247,10 @@ export function useCapture({ engine, sheet, selection }: CaptureInput): CaptureA
 
   // Reconcile with the server's record when there is a session to ask about.
   // Without a token there is nobody to ask, and asking anyway would be a
-  // network call the user never authorised.
+  // network call the user never authorised. A standalone build has no server
+  // at all, so it has nothing to reconcile with and stays at `off`.
   useEffect(() => {
-    if (!authToken()) return
+    if (isStandalone() || !authToken()) return
     let cancelled = false
     void api.getConsent().then((res) => {
       if (cancelled || !res.ok) return
@@ -274,6 +303,10 @@ export function useCapture({ engine, sheet, selection }: CaptureInput): CaptureA
     mode: stats.mode,
     dropped: stats.dropped,
     pending: queueState.pending,
+    // Batches the server refused outright. Surfaced rather than kept as an
+    // internal counter: a permanent rejection means capture is not working at
+    // all, and "capturing, 0 waiting" is a worse lie than any error message.
+    rejected: queueState.discarded,
     needsConsent: consent === null,
     durable: queueState.durable,
     toggle,

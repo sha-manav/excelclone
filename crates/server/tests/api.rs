@@ -605,3 +605,85 @@ async fn an_empty_batch_is_accepted_not_forbidden() {
     assert_eq!(body["accepted"], 0);
     assert_eq!(body["rejected"], 0);
 }
+
+#[tokio::test]
+async fn recent_returns_only_the_callers_own_events() {
+    // The transparency page reads this, so the blast radius of getting it
+    // wrong is one user seeing another's work. Ordinary token, not admin —
+    // it is your own record — but scoped by the query, not by trust.
+    let pool = test_pool().await;
+    let me = server::seed_user(&pool, false).await.expect("seed");
+    let other = server::seed_user(&pool, false).await.expect("seed");
+
+    for (user, id) in [(&me, "ev_mine"), (&other, "ev_theirs")] {
+        grant(&pool, &user.token, "full").await;
+        let events = batch(vec![envelope(&user.id, id, 1, 1_000)]);
+        let (status, _) = send(&pool, post("/v1/events", &user.token, &events)).await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    let (status, body) = send(&pool, get("/v1/events/recent", &me.token)).await;
+    assert_eq!(status, StatusCode::OK);
+    let ids: Vec<&str> = body
+        .as_array()
+        .expect("array")
+        .iter()
+        .map(|e| e["event_id"].as_str().expect("id"))
+        .collect();
+    assert_eq!(ids, vec!["ev_mine"]);
+}
+
+#[tokio::test]
+async fn recent_needs_a_token_and_stops_after_revocation() {
+    let pool = test_pool().await;
+    let user = server::seed_user(&pool, false).await.expect("seed");
+
+    let anonymous = Request::builder()
+        .uri("/v1/events/recent")
+        .body(Body::empty())
+        .expect("request");
+    let (status, _) = send(&pool, anonymous).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    grant(&pool, &user.token, "full").await;
+    let events = batch(vec![envelope(&user.id, "ev_1", 1, 1_000)]);
+    send(&pool, post("/v1/events", &user.token, &events)).await;
+
+    let (_, body) = send(&pool, get("/v1/events/recent", &user.token)).await;
+    assert_eq!(body.as_array().expect("array").len(), 1);
+
+    // Revoking hides what was already collected, exactly as the export does.
+    // Reading your own history back must not be a way around that.
+    grant(&pool, &user.token, "off").await;
+    let (_, body) = send(&pool, get("/v1/events/recent", &user.token)).await;
+    assert!(body.as_array().expect("array").is_empty(), "{body}");
+}
+
+#[tokio::test]
+async fn recent_is_newest_first_and_bounded() {
+    let pool = test_pool().await;
+    let user = server::seed_user(&pool, false).await.expect("seed");
+    grant(&pool, &user.token, "full").await;
+
+    let events = batch(
+        (1..=5)
+            .map(|i| envelope(&user.id, &format!("ev_{i}"), i, i as i64 * 1_000))
+            .collect(),
+    );
+    send(&pool, post("/v1/events", &user.token, &events)).await;
+
+    let (_, body) = send(&pool, get("/v1/events/recent?limit=3", &user.token)).await;
+    let ids: Vec<&str> = body
+        .as_array()
+        .expect("array")
+        .iter()
+        .map(|e| e["event_id"].as_str().expect("id"))
+        .collect();
+    assert_eq!(ids, vec!["ev_5", "ev_4", "ev_3"]);
+
+    // An absurd limit is clamped rather than honoured, so this endpoint can
+    // never be a way to pull the whole table one request at a time.
+    let (status, body) = send(&pool, get("/v1/events/recent?limit=100000", &user.token)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body.as_array().expect("array").len(), 5);
+}

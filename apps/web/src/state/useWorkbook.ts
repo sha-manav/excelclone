@@ -27,7 +27,13 @@ export interface Selection {
 export interface EditState {
   addr: Addr
   value: string
-  /** True when typing replaced the cell rather than opening it with F2. */
+  /**
+   * True when typing replaced the cell rather than opening it with F2.
+   *
+   * This is Excel's enter-mode/edit-mode distinction, and the arrow keys are
+   * where it shows: in enter mode they commit and move, in edit mode they
+   * belong to the caret. See the arrow handling in `Grid`.
+   */
   replacing: boolean
 }
 
@@ -223,7 +229,14 @@ export function useWorkbook(): WorkbookApi {
     [activeSheet, apply, moveSelection],
   )
 
-  const cancelEdit = useCallback(() => setEditing(null), [])
+  const cancelEdit = useCallback(() => {
+    // The ref has to go too, and now rather than at the next render: cancelling
+    // unmounts the editor, which blurs it, and blur commits. Leaving the
+    // discarded value in the ref for that one tick would write it to the cell —
+    // Escape would save exactly what the user pressed Escape to throw away.
+    editingRef.current = null
+    setEditing(null)
+  }, [])
 
   /**
    * An import replaces the whole workbook behind the handle, so every piece of

@@ -406,6 +406,11 @@ Living checklist. Updated every session.
   the viewport, and the button freezes above the cursor; putting the cursor
   near the bottom of a long sheet and pressing it leaves almost nothing to
   scroll. Excel refuses; this does not.
+- **`COUNTBLANK` and `ROWS` over an open reference answer about the used range,
+  not the column.** Evaluation narrows `A:A` to what the sheet uses, which is
+  invisible to everything that aggregates what is *there* and visible to the
+  two functions that count what is *absent*. Both are recorded in `PARITY.md`.
+  Fixing them means teaching each counting function that its range may be open.
 
 Two entries that stood here for several milestones were struck after checking
 them rather than after fixing them: the grid *does* paint merged ranges (M5)
@@ -417,14 +422,42 @@ is worse than no gap list, because it is read as current.
 M0-M7, the parity track P0-P7, the environment track E1-E4, the agent track
 A1-A5 and the improvement loop C1-C4 are complete and green: `make ci` passes (fmt, clippy -D
 warnings, 671 Rust tests, the parity report check, the dataset replay check,
-`tsc -b`, the vite build, 167 web unit tests and 55 Playwright end-to-end
+`tsc -b`, the vite build, 215 web unit tests and 104 Playwright end-to-end
 tests). `./scripts/demo.sh` runs the whole seeded scenario end to end and
 `./scripts/dataset.sh` regenerates the training dataset.
 
-Parity stands at **99.1%** cell match over 320 settled cases, **100%**
+Editing and selection were rebuilt to Excel's rules after the grid was
+reported as sticky: a press on the grid commits the edit before the selection
+moves, losing focus commits too (the formula bar excepted), and the arrow keys
+commit-and-move when the edit started by typing while staying on the caret
+when it started with F2 or a double-click. `apps/web/e2e/editing.spec.ts`
+holds all eleven gestures; five of them failed before the change.
+
+Formula authoring followed, for the same reason: writing one meant knowing
+every function name by heart and typing every reference by hand. Pointing
+turns a click, a drag or an arrow key into a reference when the formula is
+mid-expression and leaves a finished one alone (`e2e/pointing.spec.ts`), and
+the completion menu offers the engine's own function list with signatures
+(`e2e/completion.spec.ts`). Both surfaces — the cell editor and the formula
+bar — do both. The `###########` in the same report was a third bug: General
+format is "as much precision as the column holds", and the renderer was
+hashing anything the engine printed too wide instead of dropping decimals.
+
+Pointing at a column or row header turned out to need an engine feature rather
+than a UI one — the parser rejected `A:A` outright, so the gesture could only
+have produced a formula the engine refused. Whole-column and whole-row
+references now parse, print, rewrite and evaluate (`crates/engine/tests/
+open_ranges.rs`): an axis the formula never named does not shift when rows are
+inserted, evaluation narrows it to the used range so `SUM(A:A)` does not
+densify a million cells, and the dependency keeps the whole column so filling a
+row below still recalculates. Parity fell from 99.1% to 98.5% because the two
+functions that count *absence* — `COUNTBLANK` and `ROWS` — now differ
+measurably rather than not existing.
+
+Parity stands at **98.5%** cell match over 327 settled cases, **100%**
 function coverage of the tier-1 and tier-2 target list, and 100% round-trip
-fidelity. Three differences are recorded rather than fixed and four questions
-are open; all seven are in `PARITY.md` with what Gridline currently answers.
+fidelity. Five differences are recorded rather than fixed and four questions
+are open; all nine are in `PARITY.md` with what Gridline currently answers.
 
 The environment resets, observes, steps and grades deterministically;
 episodes are recorded as replayable trajectories; one validated demonstration
@@ -456,3 +489,49 @@ Next, in the order they are worth doing:
    formulas) cost.
 6. **Charts.** A model, an authoring surface and a renderer; the biggest of
    the six and the least like the rest of the codebase.
+
+## Capture, made checkable
+
+Three things a user found by trying to answer "what have you got on me?".
+
+- An empty `.dev-token` — left behind by a run that died at the seeding step
+  months of commits ago — made every ingest 401, and a 401 is not retryable,
+  so the queue discarded each batch. `dev.sh` now requires a non-empty token
+  and writes through a temporary file.
+- The queue had counted permanently-rejected envelopes since M4 and nothing
+  rendered the number, so the app reported "capturing, 0 waiting" while
+  discarding everything. The chip now reads **not recording** and the
+  transparency page says so in words.
+- The transparency page described the rules and never showed the record.
+  `GET /v1/events/recent` and a table under *What has been captured* close
+  that: your own events, newest first, exactly as stored, with a redacted
+  literal shown as the hash that replaced it.
+- Re-seeding to fix the first bug caused a second one: the browser kept
+  presenting a token the new database had never heard of, because the stored
+  token was only ever replaced when there was none. A 401 now swaps in the
+  dev token and retries once.
+- The grid specs clicked *Decline* on the consent modal, which made them
+  depend on a database they do not control — green in CI, thirty seconds of
+  timeout per test on a machine that had answered the notice once.
+  `e2e/support.ts` answers it in `localStorage` instead.
+
+## Shareable
+
+The app builds to a static site — four files, 1.2 MB gzipped, no server. A
+`VITE_STANDALONE=1` build drops capture, consent, the transparency page and
+routines, so a public link records nothing and asks for no decision it cannot
+honour; an end-to-end test drives the built bundle and fails on any request to
+the API. `.github/workflows/pages.yml` publishes it to GitHub Pages, which
+needs *Settings → Pages → Source: GitHub Actions* enabled once.
+
+The stock **Deploy Jekyll with GitHub Pages dependencies preinstalled**
+template was added alongside it and is now removed. It builds `source: ./`,
+so the site it publishes is the repository's markdown rendered as a blog, and
+it claims the same `pages` concurrency group with `cancel-in-progress: false`
+— two workflows deploying to one environment on every push, with the winner
+decided by whichever started first.
+
+`main` has been red since PR #1 merged, on a `collapsible_match` lint in
+`crates/engine/src/functions/math.rs` that Rust 1.97 added and the pinned
+`dtolnay/rust-toolchain@stable` picked up. The fix is on this branch, so
+merging clears it.

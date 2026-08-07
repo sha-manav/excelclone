@@ -167,7 +167,7 @@ impl<'a> EvalCtx<'a> {
                 Err(k) => Operand::Scalar(Value::Error(k)),
                 Ok(sid) => Operand::Range {
                     sheet: sid,
-                    range: RangeAddr::new(r.start.addr(), r.end.addr()),
+                    range: self.clamp_open(sid, r),
                 },
             },
             // A few functions produce a *reference* rather than a value, so
@@ -400,6 +400,43 @@ impl<'a> EvalCtx<'a> {
     /// Dense rows × cols view of a range, including empty cells. Used by
     /// lookup and conditional-aggregation functions, which need positional
     /// alignment rather than "populated cells only".
+    /// A range's addresses, with any axis the formula did not name narrowed to
+    /// what the sheet actually uses.
+    ///
+    /// `A:A` is 1,048,576 cells on paper. Evaluating it as written would build
+    /// a vector that size for every `SUM(A:A)` on the sheet, which is the
+    /// reason a spreadsheet either supports whole-column references properly
+    /// or not at all. Everything past the used range is empty, so narrowing
+    /// changes no aggregate's answer — the exceptions are the functions that
+    /// count *absence*, and those are recorded in PARITY.md rather than
+    /// pretended about.
+    ///
+    /// Dependencies are deliberately not clamped: the watcher keeps the whole
+    /// column, so filling a cell below today's used range still recalculates
+    /// the formulas that read it.
+    fn clamp_open(&self, sheet: SheetId, r: &crate::ast::RangeRef) -> RangeAddr {
+        let full = RangeAddr::new(r.start.addr(), r.end.addr());
+        if r.span == crate::ast::RangeSpan::Cells {
+            return full;
+        }
+        let Some(used) = self.wb.sheet(sheet).and_then(|s| s.used_range()) else {
+            // Nothing on the sheet: one empty cell is the honest answer, and
+            // it keeps `SUM` at 0 rather than erroring.
+            return RangeAddr::new(full.start, full.start);
+        };
+        let mut start = full.start;
+        let mut end = full.end;
+        if r.span.open_rows() {
+            start.row = used.start.row;
+            end.row = used.end.row.max(used.start.row);
+        }
+        if r.span.open_cols() {
+            start.col = used.start.col;
+            end.col = used.end.col.max(used.start.col);
+        }
+        RangeAddr::new(start, end)
+    }
+
     pub fn range_grid(&self, sheet: SheetId, range: RangeAddr) -> Vec<Vec<Value>> {
         let Some(s) = self.wb.sheet(sheet) else {
             return vec![vec![Value::Error(ErrorKind::Ref)]];

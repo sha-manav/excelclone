@@ -307,6 +307,18 @@ impl Gridline {
             .unwrap_or_default()
     }
 
+    /// Every function name the engine answers to, for editor completion.
+    ///
+    /// Read from the same list the parity harness reads, and the one a test
+    /// pins to the dispatcher, so the completion menu cannot offer a function
+    /// that does not exist or quietly stop offering one that was added. A
+    /// hand-kept copy on the TypeScript side would drift the first time
+    /// somebody added a function without thinking about the UI.
+    #[wasm_bindgen(js_name = functionNames)]
+    pub fn function_names(&self) -> Result<JsValue, JsValue> {
+        to_js(&engine::functions::IMPLEMENTED.to_vec())
+    }
+
     /// Every defined name, as `[name, refers_to]` pairs in name order.
     #[wasm_bindgen(js_name = definedNames)]
     pub fn defined_names(&self) -> Result<JsValue, JsValue> {
