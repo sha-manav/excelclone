@@ -523,3 +523,15 @@ routines, so a public link records nothing and asks for no decision it cannot
 honour; an end-to-end test drives the built bundle and fails on any request to
 the API. `.github/workflows/pages.yml` publishes it to GitHub Pages, which
 needs *Settings → Pages → Source: GitHub Actions* enabled once.
+
+The stock **Deploy Jekyll with GitHub Pages dependencies preinstalled**
+template was added alongside it and is now removed. It builds `source: ./`,
+so the site it publishes is the repository's markdown rendered as a blog, and
+it claims the same `pages` concurrency group with `cancel-in-progress: false`
+— two workflows deploying to one environment on every push, with the winner
+decided by whichever started first.
+
+`main` has been red since PR #1 merged, on a `collapsible_match` lint in
+`crates/engine/src/functions/math.rs` that Rust 1.97 added and the pinned
+`dtolnay/rust-toolchain@stable` picked up. The fix is on this branch, so
+merging clears it.
