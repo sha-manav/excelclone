@@ -422,7 +422,7 @@ is worse than no gap list, because it is read as current.
 M0-M7, the parity track P0-P7, the environment track E1-E4, the agent track
 A1-A5 and the improvement loop C1-C4 are complete and green: `make ci` passes (fmt, clippy -D
 warnings, 671 Rust tests, the parity report check, the dataset replay check,
-`tsc -b`, the vite build, 214 web unit tests and 104 Playwright end-to-end
+`tsc -b`, the vite build, 215 web unit tests and 104 Playwright end-to-end
 tests). `./scripts/demo.sh` runs the whole seeded scenario end to end and
 `./scripts/dataset.sh` regenerates the training dataset.
 
@@ -514,3 +514,12 @@ Three things a user found by trying to answer "what have you got on me?".
   depend on a database they do not control — green in CI, thirty seconds of
   timeout per test on a machine that had answered the notice once.
   `e2e/support.ts` answers it in `localStorage` instead.
+
+## Shareable
+
+The app builds to a static site — four files, 1.2 MB gzipped, no server. A
+`VITE_STANDALONE=1` build drops capture, consent, the transparency page and
+routines, so a public link records nothing and asks for no decision it cannot
+honour; an end-to-end test drives the built bundle and fails on any request to
+the API. `.github/workflows/pages.yml` publishes it to GitHub Pages, which
+needs *Settings → Pages → Source: GitHub Actions* enabled once.

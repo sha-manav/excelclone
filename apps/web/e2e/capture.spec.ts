@@ -482,3 +482,41 @@ test.describe('the captured log', () => {
     await expect(page.getByTestId('captured-log-empty')).toHaveCount(0)
   })
 })
+
+test.describe('a standalone build', () => {
+  /**
+   * The published site has no backend, and that is a promise about behaviour,
+   * not just a missing button: a link sent to a friend must not record what
+   * they type, and a consent notice offering a choice that cannot take effect
+   * would be worse than no notice at all.
+   *
+   * This drives the real production bundle rather than the dev server, because
+   * the flag is inlined at build time and only the built artefact can show
+   * what was inlined.
+   */
+  test.skip(
+    !process.env.GRIDLINE_STANDALONE_URL,
+    'set GRIDLINE_STANDALONE_URL to a served standalone build',
+  )
+
+  test('shows no capture controls and talks to no server', async ({ page }) => {
+    const calls: string[] = []
+    page.on('request', (r) => {
+      if (r.url().includes('/v1/')) calls.push(r.url())
+    })
+
+    await page.goto(process.env.GRIDLINE_STANDALONE_URL!)
+    await expect(page.locator('canvas')).toBeVisible({ timeout: 30_000 })
+
+    await expect(page.getByTestId('consent-modal')).toHaveCount(0)
+    await expect(page.getByTestId('capture-chip')).toHaveCount(0)
+    await expect(page.locator('.toolbar__link')).toHaveCount(0)
+    await expect(page.getByRole('button', { name: 'Routines' })).toHaveCount(0)
+
+    await clickCell(page, 0, 0)
+    await typeInCell(page, '42')
+    await page.waitForTimeout(6_000)
+
+    expect(calls, `standalone build called the API: ${calls.join(', ')}`).toHaveLength(0)
+  })
+})

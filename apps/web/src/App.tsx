@@ -33,6 +33,7 @@ import {
 import { readClipboard, toHtml, toTsv, type Block } from './engine/clipboard'
 import type { CellFormat } from './engine/bridge'
 import type { MoveDirection } from './state/useWorkbook'
+import { isStandalone } from './standalone'
 
 const TRANSPARENCY_PATH = '/transparency'
 
@@ -62,6 +63,9 @@ type Overlay =
   | null
 
 export default function App() {
+  // A build with no server behind it: the spreadsheet entire, and none of the
+  // controls for a capture pipeline that has nowhere to send anything.
+  const standalone = isStandalone()
   const wb = useWorkbook()
   const [clipboard, setClipboard] = useState<Clipboard | null>(null)
   const [overlay, setOverlay] = useState<Overlay>(null)
@@ -781,7 +785,7 @@ export default function App() {
 
   // The transparency page is reachable before consent is answered — the modal
   // links to it, so covering it with the modal would make the link useless.
-  if (path === TRANSPARENCY_PATH) {
+  if (path === TRANSPARENCY_PATH && !standalone) {
     return (
       <TransparencyPage
         mode={capture.mode}
@@ -860,36 +864,42 @@ export default function App() {
           <button onClick={() => setFinding((v) => !v)} title="Find & replace (Cmd/Ctrl+F)">
             Find
           </button>
-          <button
-            onClick={() => setShowRoutines((v) => !v)}
-            aria-pressed={showRoutines}
-            className={showRoutines ? 'is-on' : undefined}
-            title="Work Gridline noticed you repeating"
-          >
-            Routines
-          </button>
+          {!standalone && (
+            <button
+              onClick={() => setShowRoutines((v) => !v)}
+              aria-pressed={showRoutines}
+              className={showRoutines ? 'is-on' : undefined}
+              title="Work Gridline noticed you repeating"
+            >
+              Routines
+            </button>
+          )}
         </div>
 
         <div className="toolbar__spacer" />
         <span className="toolbar__status">{rangeA1(sel.range)}</span>
-        <CaptureChip
-          state={capture.state}
-          mode={capture.mode}
-          dropped={capture.dropped}
-          pending={capture.pending}
-          rejected={capture.rejected}
-          onToggle={capture.toggle}
-        />
-        <a
-          className="toolbar__link"
-          href={TRANSPARENCY_PATH}
-          onClick={(e) => {
-            e.preventDefault()
-            navigate(TRANSPARENCY_PATH)
-          }}
-        >
-          What&rsquo;s captured
-        </a>
+        {!standalone && (
+          <>
+            <CaptureChip
+              state={capture.state}
+              mode={capture.mode}
+              dropped={capture.dropped}
+              pending={capture.pending}
+              rejected={capture.rejected}
+              onToggle={capture.toggle}
+            />
+            <a
+              className="toolbar__link"
+              href={TRANSPARENCY_PATH}
+              onClick={(e) => {
+                e.preventDefault()
+                navigate(TRANSPARENCY_PATH)
+              }}
+            >
+              What&rsquo;s captured
+            </a>
+          </>
+        )}
       </header>
 
       {finding && (
@@ -1038,7 +1048,7 @@ export default function App() {
         </div>
       )}
 
-      {capture.needsConsent && (
+      {!standalone && capture.needsConsent && (
         <ConsentModal
           onChoose={capture.choose}
           onOpenTransparency={() => navigate(TRANSPARENCY_PATH)}

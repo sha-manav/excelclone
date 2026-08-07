@@ -18,6 +18,7 @@ import {
   type PrivacyMode,
 } from '../capture/capture'
 import { EventQueue, openQueueStorage } from '../capture/queue'
+import { isStandalone } from '../standalone'
 import {
   api,
   authToken,
@@ -246,9 +247,10 @@ export function useCapture({ engine, sheet, selection }: CaptureInput): CaptureA
 
   // Reconcile with the server's record when there is a session to ask about.
   // Without a token there is nobody to ask, and asking anyway would be a
-  // network call the user never authorised.
+  // network call the user never authorised. A standalone build has no server
+  // at all, so it has nothing to reconcile with and stays at `off`.
   useEffect(() => {
-    if (!authToken()) return
+    if (isStandalone() || !authToken()) return
     let cancelled = false
     void api.getConsent().then((res) => {
       if (cancelled || !res.ok) return

@@ -47,6 +47,35 @@ work produced, the routine mined out of it, and a demonstration dataset — plus
 a second actor who declined capture, whose events are in the log and in none of
 the output. It prints the browser steps when it finishes.
 
+## Sharing it
+
+The spreadsheet is a static site. The engine is wasm and runs in the browser,
+so formulas, functions, xlsx import and export all work with no server at
+all — `apps/web/dist` is four files and 1.2 MB gzipped.
+
+```sh
+cd apps/web && VITE_STANDALONE=1 npm run build   # then serve dist/ anywhere
+```
+
+`VITE_STANDALONE=1` drops the half that *does* need a server: capture, the
+consent notice, the transparency page and mined routines. That is not only
+convenience. A link you send someone should not be quietly recording what they
+type, and a consent notice offering a choice that cannot take effect is worse
+than no notice — it asks for a decision and then ignores it. An end-to-end test
+drives the built bundle and fails if it makes a single request to the API.
+
+`.github/workflows/pages.yml` builds exactly that and publishes it to GitHub
+Pages on every push to `main`, or on demand from the Actions tab. It needs
+**Settings → Pages → Source: GitHub Actions** switched on once; after that the
+site is at `https://<owner>.github.io/<repo>/`. Any static host works the same
+way — Cloudflare Pages, Netlify, S3 — the only setting that matters is
+`VITE_BASE`, which must match the subpath the site is served from.
+
+Hosting the *whole* thing, capture included, is a different job: the axum
+server and its SQLite database need somewhere to run and something to back up,
+and then you are collecting other people's events and owe them the consent
+flow for real.
+
 ## Layout
 
 ```

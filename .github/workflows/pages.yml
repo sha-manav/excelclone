@@ -1,0 +1,80 @@
+# Publish the spreadsheet as a static site anybody can open.
+#
+name: Pages
+
+# Only the spreadsheet goes up: `VITE_STANDALONE=1` drops capture, consent and
+# routines, so the published site has no backend to talk to and collects
+# nothing from whoever opens the link. See `apps/web/src/standalone.ts`.
+on:
+  push:
+    branches: [main]
+  # So a branch can be published before it is merged, which is the whole point
+  # of having a link to send somebody.
+  workflow_dispatch:
+
+# One deployment at a time, and a newer push supersedes an older one that has
+# not started — a queue of stale builds helps nobody.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - uses: jetli/wasm-pack-action@v0.4.0
+        with:
+          version: v0.13.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # The engine is a `file:` dependency, so the wasm package has to exist
+      # before npm resolves anything.
+      - name: Build the engine for the browser
+        run: wasm-pack build crates/wasm --target web --out-dir pkg
+
+      - name: Install
+        working-directory: apps/web
+        run: npm install --no-audit --no-fund
+
+      - name: Build the standalone app
+        working-directory: apps/web
+        env:
+          VITE_STANDALONE: '1'
+          # A project site lives at `/<repo>/`, so every asset URL needs that
+          # prefix. `github.event.repository.name` keeps it right through a
+          # rename or a fork.
+          VITE_BASE: /${{ github.event.repository.name }}/
+        run: npm run build
+
+      # GitHub Pages has no rewrite rules, so a deep link would 404 on reload.
+      # Serving index.html as the 404 page makes the app's own routing answer
+      # instead — the standard trick for a single-page app here.
+      - name: Fall back to the app for unknown paths
+        run: cp apps/web/dist/index.html apps/web/dist/404.html
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: apps/web/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4
