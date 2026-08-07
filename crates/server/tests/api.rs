@@ -687,3 +687,209 @@ async fn recent_is_newest_first_and_bounded() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body.as_array().expect("array").len(), 5);
 }
+
+// ---------------------------------------------------------------------------
+// Public registration and rate limiting.
+//
+// These drive `app_with` and hold one `ServerConfig` across requests on
+// purpose: the limiter lives in the config, and the helpers above build a
+// fresh router per call, so a test that used them would reset the bucket
+// between every request and assert nothing.
+// ---------------------------------------------------------------------------
+
+async fn send_cfg(
+    pool: &SqlitePool,
+    cfg: &server::ServerConfig,
+    req: Request<Body>,
+) -> (StatusCode, Value) {
+    let response = server::app_with(pool.clone(), cfg.clone())
+        .oneshot(req)
+        .await
+        .expect("router response");
+    let status = response.status();
+    let bytes = response
+        .into_body()
+        .collect()
+        .await
+        .expect("body")
+        .to_bytes();
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
+}
+
+/// A registration request, optionally claiming to come from an address.
+fn register_from(xff: Option<&str>) -> Request<Body> {
+    let mut b = Request::builder().method("POST").uri("/v1/register");
+    if let Some(v) = xff {
+        b = b.header("x-forwarded-for", v);
+    }
+    b.body(Body::empty()).expect("request")
+}
+
+#[tokio::test]
+async fn registration_is_refused_unless_the_deployment_opts_in() {
+    let pool = test_pool().await;
+    let cfg = server::ServerConfig::closed();
+    let (status, body) = send_cfg(&pool, &cfg, register_from(None)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    // Said out loud, not a bare 404: a client that cannot tell "no such
+    // endpoint" from "not accepting anyone" retries forever.
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("registrations"),
+        "unhelpful refusal: {body}"
+    );
+    // And no user was created on the way to refusing.
+    let users: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users")
+        .fetch_one(&pool)
+        .await
+        .expect("count");
+    assert_eq!(users, 0);
+}
+
+#[tokio::test]
+async fn a_registered_token_authenticates_as_the_actor_it_named() {
+    let pool = test_pool().await;
+    let cfg = server::ServerConfig::open();
+    let (status, body) = send_cfg(&pool, &cfg, register_from(Some("203.0.113.1"))).await;
+    assert_eq!(status, StatusCode::OK);
+    let token = body["token"].as_str().expect("token").to_string();
+    let actor = body["actor_id"].as_str().expect("actor_id").to_string();
+
+    // The client adopts `actor_id` and stamps it on every envelope, so if the
+    // server disagreed about who this token is, every event would be rejected
+    // as a mismatched actor.
+    let (status, me) = send_cfg(&pool, &cfg, get("/v1/consent/me", &token)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(me["actor_id"], actor);
+}
+
+#[tokio::test]
+async fn registering_does_not_grant_consent() {
+    let pool = test_pool().await;
+    let cfg = server::ServerConfig::open();
+    let (_, body) = send_cfg(&pool, &cfg, register_from(None)).await;
+    let token = body["token"].as_str().expect("token").to_string();
+    let actor = body["actor_id"].as_str().expect("actor_id").to_string();
+
+    // No record on file, which is what makes the client show the notice.
+    let (_, me) = send_cfg(&pool, &cfg, get("/v1/consent/me", &token)).await;
+    assert!(
+        me["mode"].is_null(),
+        "a new account must not arrive pre-consented: {me}"
+    );
+
+    // And the server enforces it rather than trusting the client to ask.
+    let events = batch(vec![envelope(&actor, "ev_1", 1, 1_000)]);
+    let (status, ack) = send_cfg(&pool, &cfg, post("/v1/events", &token, &events)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "ack: {ack}");
+    assert_eq!(count_events(&pool).await, 0);
+}
+
+#[tokio::test]
+async fn two_registrations_are_two_different_people() {
+    let pool = test_pool().await;
+    let cfg = server::ServerConfig::open();
+    let (_, a) = send_cfg(&pool, &cfg, register_from(Some("203.0.113.1"))).await;
+    let (_, b) = send_cfg(&pool, &cfg, register_from(Some("203.0.113.2"))).await;
+    assert_ne!(a["token"], b["token"]);
+    assert_ne!(a["actor_id"], b["actor_id"]);
+}
+
+#[tokio::test]
+async fn registration_is_limited_per_address() {
+    let pool = test_pool().await;
+    let cfg = server::ServerConfig::open();
+    // Capacity is 5/hour; the sixth from one address is refused.
+    for i in 0..5 {
+        let (status, _) = send_cfg(&pool, &cfg, register_from(Some("198.51.100.7"))).await;
+        assert_eq!(status, StatusCode::OK, "registration {i} should be allowed");
+    }
+    let (status, _) = send_cfg(&pool, &cfg, register_from(Some("198.51.100.7"))).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+
+    // Somebody else is not paying for it.
+    let (status, _) = send_cfg(&pool, &cfg, register_from(Some("198.51.100.8"))).await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn a_spoofed_forwarded_for_does_not_buy_a_fresh_bucket() {
+    let pool = test_pool().await;
+    let cfg = server::ServerConfig::open();
+    // The proxy appends what it saw, so the rightmost entry is ours. A caller
+    // varying the part they control must still land in the same bucket.
+    for _ in 0..5 {
+        let (status, _) = send_cfg(&pool, &cfg, register_from(Some("1.1.1.1, 198.51.100.9"))).await;
+        assert_eq!(status, StatusCode::OK);
+    }
+    let (status, _) = send_cfg(&pool, &cfg, register_from(Some("2.2.2.2, 198.51.100.9"))).await;
+    assert_eq!(
+        status,
+        StatusCode::TOO_MANY_REQUESTS,
+        "changing the client-supplied part of X-Forwarded-For reset the limit"
+    );
+}
+
+#[tokio::test]
+async fn ingest_is_limited_per_user_and_refused_retryably() {
+    let pool = test_pool().await;
+    let cfg = server::ServerConfig::open();
+    let user = server::seed_user(&pool, false).await.expect("seed");
+    assert_eq!(
+        send_cfg(
+            &pool,
+            &cfg,
+            post(
+                "/v1/consent",
+                &user.token,
+                &json!({ "mode": "structural", "consent_text_version": CONSENT_VERSION }),
+            )
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+
+    // Capacity is 120/minute.
+    for i in 0..120 {
+        let events = batch(vec![envelope(&user.id, &format!("ev_{i}"), i + 1, 1_000)]);
+        let (status, _) = send_cfg(&pool, &cfg, post("/v1/events", &user.token, &events)).await;
+        assert_eq!(status, StatusCode::OK, "batch {i}");
+    }
+    let events = batch(vec![envelope(&user.id, "ev_over", 999, 1_000)]);
+    let (status, _) = send_cfg(&pool, &cfg, post("/v1/events", &user.token, &events)).await;
+    // 429 and not 401: the client treats 401 as permanent and *discards* the
+    // batch, which is exactly the silent data loss this project already had
+    // once. A rate-limited batch has to come back.
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(
+        count_events(&pool).await,
+        120,
+        "a refused batch must not be half-written"
+    );
+
+    // A second user is unaffected: the bucket is per actor, not global.
+    let other = server::seed_user(&pool, false).await.expect("seed");
+    assert_eq!(
+        send_cfg(
+            &pool,
+            &cfg,
+            post(
+                "/v1/consent",
+                &other.token,
+                &json!({ "mode": "structural", "consent_text_version": CONSENT_VERSION }),
+            )
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    let events = batch(vec![envelope(&other.id, "ev_other", 1, 1_000)]);
+    let (status, _) = send_cfg(&pool, &cfg, post("/v1/events", &other.token, &events)).await;
+    assert_eq!(status, StatusCode::OK);
+}

@@ -5,20 +5,24 @@
 //! CORS and migrations.
 
 pub mod auth;
+pub mod config;
 pub mod consent;
 pub mod error;
 pub mod events;
+pub mod ratelimit;
+pub mod register;
 pub mod routines;
 pub mod sessions;
 pub mod workbooks;
 
 pub use auth::{seed_user, AdminUser, AuthUser, SeededUser};
+pub use config::ServerConfig;
 pub use error::ApiError;
 pub use sessions::{sessions_for, SessionSummary, SESSION_GAP_MS};
 
 use axum::{
     routing::{get, post},
-    Json, Router,
+    Extension, Json, Router,
 };
 use serde_json::{json, Value};
 use sqlx::SqlitePool;
@@ -29,9 +33,16 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::migrate::MigrateErro
     sqlx::migrate!().run(pool).await
 }
 
+/// The router with the default posture: registration closed. Every existing
+/// caller — the tests, the demo seeder — keeps working unchanged.
 pub fn app(pool: SqlitePool) -> Router {
+    app_with(pool, ServerConfig::closed())
+}
+
+pub fn app_with(pool: SqlitePool, config: ServerConfig) -> Router {
     Router::new()
         .route("/health", get(health))
+        .route("/v1/register", post(register::register))
         .route("/v1/events", post(events::ingest))
         .route("/v1/events/export", get(events::export))
         .route("/v1/events/recent", get(events::recent))
@@ -45,6 +56,7 @@ pub fn app(pool: SqlitePool) -> Router {
         .route("/v1/routines", get(routines::list))
         .route("/v1/routines/{id}/feedback", post(routines::feedback))
         .route("/v1/sessions", get(sessions::list))
+        .layer(Extension(config))
         .with_state(pool)
 }
 

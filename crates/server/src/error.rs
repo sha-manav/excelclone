@@ -18,6 +18,10 @@ pub enum ApiError {
     NotFound,
     #[error("{0}")]
     BadRequest(String),
+    /// Rate limited. The web client already treats 429 as retryable, so a
+    /// batch refused here is held and re-sent rather than discarded.
+    #[error("{0}")]
+    TooManyRequests(String),
     #[error("internal error")]
     Db(#[from] sqlx::Error),
 }
@@ -29,6 +33,7 @@ impl IntoResponse for ApiError {
             ApiError::Forbidden(_) => StatusCode::FORBIDDEN,
             ApiError::NotFound => StatusCode::NOT_FOUND,
             ApiError::BadRequest(_) => StatusCode::BAD_REQUEST,
+            ApiError::TooManyRequests(_) => StatusCode::TOO_MANY_REQUESTS,
             // The client learns nothing about the database; the operator does.
             ApiError::Db(e) => {
                 tracing::error!(error = %e, "database error");

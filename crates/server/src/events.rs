@@ -9,7 +9,7 @@ use axum::{
     extract::{Query, State},
     http::{header, StatusCode},
     response::{IntoResponse, Response},
-    Json,
+    Extension, Json,
 };
 use chrono::{DateTime, SecondsFormat, Utc};
 use engine::telemetry::{
@@ -121,9 +121,20 @@ fn check(
 
 pub async fn ingest(
     State(pool): State<SqlitePool>,
+    Extension(cfg): Extension<crate::config::ServerConfig>,
     user: AuthUser,
     Json(req): Json<IngestRequest>,
 ) -> Result<Response, ApiError> {
+    // Keyed by user, not by address: a household behind one address is many
+    // people, and one runaway tab should not silence the rest of them. The
+    // 429 this produces is retryable client-side, so a batch refused here is
+    // held in the queue and re-sent rather than discarded.
+    if !cfg.ingest_limit.allow(&user.id) {
+        return Err(ApiError::TooManyRequests(
+            "too many batches; slow down and retry".into(),
+        ));
+    }
+
     let consent = consent::current(&pool, &user.id).await?;
     let received_at = now_rfc3339();
     let mut out = IngestResponse::default();
